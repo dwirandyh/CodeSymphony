@@ -18,48 +18,28 @@ import {
   isOperationalWorktreeStatus,
   isUnavailableWorktreeErrorMessage,
 } from "../services/worktreeService.js";
+import {
+  getCachedWorktreeGitBranchDiffSummary,
+  getCachedWorktreeGitStatus,
+  invalidateCachedWorktreeGitData,
+} from "../services/worktreeGitQueryCache.js";
 import { appendRuntimeDebugLog } from "./debug.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
-const GIT_STATUS_CACHE_TTL_MS = 2_000;
 // These sidebar metadata requests are non-critical and expensive enough that
 // recomputing them on every page refresh can stall other thread bootstrap
 // requests behind the browser's per-origin connection limits.
-const GIT_BRANCH_DIFF_CACHE_TTL_MS = 30_000;
 const REPOSITORY_REVIEW_CACHE_TTL_MS = 60_000;
 
-type GitStatusResult = Awaited<ReturnType<typeof getGitStatus>>;
-type GitBranchDiffSummaryResult = Awaited<ReturnType<typeof getGitBranchDiffSummary>>;
 type RepositoryReviewStateResult = Awaited<ReturnType<FastifyInstance["reviewService"]["getRepositoryReviews"]>>;
 
-const cachedGitStatusByWorktreeId = new Map<string, { expiresAt: number; value: GitStatusResult }>();
-const inFlightGitStatusByWorktreeId = new Map<string, Promise<GitStatusResult>>();
-const cachedBranchDiffByWorktreeKey = new Map<string, { expiresAt: number; value: GitBranchDiffSummaryResult }>();
-const inFlightBranchDiffByWorktreeKey = new Map<string, Promise<GitBranchDiffSummaryResult>>();
 const cachedReviewsByRepositoryId = new Map<string, { expiresAt: number; value: RepositoryReviewStateResult }>();
 const inFlightReviewsByRepositoryId = new Map<string, Promise<RepositoryReviewStateResult>>();
 
 function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
   const relative = path.relative(rootPath, targetPath);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function invalidateCachedWorktreeGitData(worktreeId: string) {
-  cachedGitStatusByWorktreeId.delete(worktreeId);
-  inFlightGitStatusByWorktreeId.delete(worktreeId);
-
-  for (const key of cachedBranchDiffByWorktreeKey.keys()) {
-    if (key.startsWith(`${worktreeId}:`)) {
-      cachedBranchDiffByWorktreeKey.delete(key);
-    }
-  }
-
-  for (const key of inFlightBranchDiffByWorktreeKey.keys()) {
-    if (key.startsWith(`${worktreeId}:`)) {
-      inFlightBranchDiffByWorktreeKey.delete(key);
-    }
-  }
 }
 
 function isBinaryBuffer(buffer: Buffer): boolean {
@@ -121,34 +101,6 @@ async function resolveWorktreeDirectory(worktree: { path: string }, inputPath?: 
   };
 }
 
-async function getCachedGitStatus(worktreeId: string, worktreePath: string): Promise<GitStatusResult> {
-  const now = Date.now();
-  const cached = cachedGitStatusByWorktreeId.get(worktreeId);
-  if (cached && cached.expiresAt > now) {
-    return cached.value;
-  }
-
-  const inFlight = inFlightGitStatusByWorktreeId.get(worktreeId);
-  if (inFlight) {
-    return inFlight;
-  }
-
-  const requestPromise = getGitStatus(worktreePath)
-    .then((status) => {
-      cachedGitStatusByWorktreeId.set(worktreeId, {
-        value: status,
-        expiresAt: Date.now() + GIT_STATUS_CACHE_TTL_MS,
-      });
-      return status;
-    })
-    .finally(() => {
-      inFlightGitStatusByWorktreeId.delete(worktreeId);
-    });
-
-  inFlightGitStatusByWorktreeId.set(worktreeId, requestPromise);
-  return requestPromise;
-}
-
 async function getCachedRepositoryReviews(app: FastifyInstance, repositoryId: string): Promise<RepositoryReviewStateResult> {
   const now = Date.now();
   const cached = cachedReviewsByRepositoryId.get(repositoryId);
@@ -174,35 +126,6 @@ async function getCachedRepositoryReviews(app: FastifyInstance, repositoryId: st
     });
 
   inFlightReviewsByRepositoryId.set(repositoryId, requestPromise);
-  return requestPromise;
-}
-
-async function getCachedGitBranchDiffSummary(worktreeId: string, worktreePath: string, baseBranch: string): Promise<GitBranchDiffSummaryResult> {
-  const cacheKey = `${worktreeId}:${baseBranch}`;
-  const now = Date.now();
-  const cached = cachedBranchDiffByWorktreeKey.get(cacheKey);
-  if (cached && cached.expiresAt > now) {
-    return cached.value;
-  }
-
-  const inFlight = inFlightBranchDiffByWorktreeKey.get(cacheKey);
-  if (inFlight) {
-    return inFlight;
-  }
-
-  const requestPromise = getGitBranchDiffSummary(worktreePath, baseBranch)
-    .then((summary) => {
-      cachedBranchDiffByWorktreeKey.set(cacheKey, {
-        value: summary,
-        expiresAt: Date.now() + GIT_BRANCH_DIFF_CACHE_TTL_MS,
-      });
-      return summary;
-    })
-    .finally(() => {
-      inFlightBranchDiffByWorktreeKey.delete(cacheKey);
-    });
-
-  inFlightBranchDiffByWorktreeKey.set(cacheKey, requestPromise);
   return requestPromise;
 }
 
@@ -687,7 +610,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const status = await getCachedGitStatus(worktree.id, worktree.path);
+      const status = await getCachedWorktreeGitStatus(worktree.id, worktree.path);
       return { data: status };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to get git status";
@@ -708,7 +631,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const summary = await getCachedGitBranchDiffSummary(worktree.id, worktree.path, worktree.baseBranch);
+      const summary = await getCachedWorktreeGitBranchDiffSummary(worktree.id, worktree.path, worktree.baseBranch);
       const durationMs = Date.now() - startedAt;
       if (durationMs >= 500) {
         appendRuntimeDebugLog({
@@ -746,7 +669,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       const diff = await getGitDiff(worktree.path, query.filePath);
-      const status = await getCachedGitStatus(worktree.id, worktree.path);
+      const status = await getCachedWorktreeGitStatus(worktree.id, worktree.path);
       const summary = status.entries.map((e) => `${e.status}: ${e.path}`).join("\n");
       return { data: { diff, summary } };
     } catch (error) {

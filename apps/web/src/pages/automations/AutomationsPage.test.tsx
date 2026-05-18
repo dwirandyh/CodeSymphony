@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Automation, AutomationPromptVersion, AutomationRun, Repository } from "@codesymphony/shared-types";
+import { queryKeys } from "../../lib/queryKeys";
 import { AutomationDetailPage, AutomationsListPage, WorkspaceAutomationsPanel } from "./AutomationsPage";
 
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -264,7 +265,80 @@ function findButtonByAriaLabel(label: string): HTMLButtonElement {
   return button;
 }
 
+function findInputByPlaceholder(placeholder: string): HTMLInputElement {
+  const input = Array.from(document.body.querySelectorAll("input")).find(
+    (entry) => entry.getAttribute("placeholder") === placeholder,
+  );
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`Input not found: ${placeholder}`);
+  }
+  return input;
+}
+
+function findSelectOption(label: string): HTMLElement {
+  const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
+    (entry) => entry.textContent?.trim() === label,
+  );
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`Select option not found: ${label}`);
+  }
+  return option;
+}
+
+async function chooseSelectOption(ariaLabel: string, optionLabel: string) {
+  const PointerEventCtor = globalThis.PointerEvent ?? MouseEvent;
+  const trigger = findButtonByAriaLabel(ariaLabel);
+  await act(async () => {
+    trigger.dispatchEvent(new PointerEventCtor("pointerdown", {
+      bubbles: true,
+      button: 0,
+      ctrlKey: false,
+      pointerId: 1,
+    }));
+    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+
+  if (!document.body.querySelector('[role="option"]')) {
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    await flushEffects();
+  }
+
+  await act(async () => {
+    findSelectOption(optionLabel).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+}
+
 beforeEach(() => {
+  if (!HTMLElement.prototype.hasPointerCapture) {
+    Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+      configurable: true,
+      value: () => false,
+    });
+  }
+  if (!HTMLElement.prototype.setPointerCapture) {
+    Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+      configurable: true,
+      value: () => undefined,
+    });
+  }
+  if (!HTMLElement.prototype.releasePointerCapture) {
+    Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+      configurable: true,
+      value: () => undefined,
+    });
+  }
+  if (!HTMLElement.prototype.scrollIntoView) {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: () => undefined,
+    });
+  }
+
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -626,6 +700,98 @@ describe("AutomationsListPage", () => {
     expect(document.body.textContent).toContain("Running");
     expect(findButtonByAriaLabel("Run now Nightly audit").disabled).toBe(true);
   });
+
+  it("preserves the selected project filter after the list refreshes from an external create", async () => {
+    const repoOne = makeRepository();
+    const repoTwo = makeRepository({
+      id: "repo-2",
+      name: "other-repo",
+      rootPath: "/tmp/other-repo",
+      worktrees: [
+        {
+          id: "wt-2",
+          repositoryId: "repo-2",
+          branch: "main",
+          path: "/tmp/other-repo",
+          status: "active",
+          baseBranch: "main",
+          branchRenamed: false,
+          lastCreateError: null,
+          lastDeleteError: null,
+          createdAt: "2026-05-10T10:00:00.000Z",
+          updatedAt: "2026-05-10T10:00:00.000Z",
+        },
+      ],
+    });
+
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [repoOne, repoTwo],
+      isLoading: false,
+    });
+    apiMocks.listAutomations.mockImplementation(async (filters?: { repositoryId?: string; enabled?: boolean }) => {
+      if (filters?.repositoryId === "repo-2") {
+        return [
+          makeAutomation({
+            id: "automation-2",
+            repositoryId: "repo-2",
+            targetWorktreeId: "wt-2",
+            name: "Other repo audit",
+          }),
+        ];
+      }
+      return [];
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    await chooseSelectOption("Project filter", "other-repo");
+
+    expect(findButtonByAriaLabel("Project filter").textContent).toContain("other-repo");
+
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [],
+      isLoading: true,
+    });
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushEffects();
+
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [repoOne, repoTwo],
+      isLoading: false,
+    });
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushEffects();
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.automations.lists });
+    });
+    await flushEffects();
+    await flushEffects();
+
+    expect(findButtonByAriaLabel("Project filter").textContent).toContain("other-repo");
+    expect(document.body.textContent).toContain("Other repo audit");
+  });
 });
 
 describe("AutomationDetailPage", () => {
@@ -758,6 +924,81 @@ describe("AutomationDetailPage", () => {
     expect(getEditorText(promptField)).toContain(restoredAutomation.prompt);
   });
 
+  it("refreshes the editable fields after an external automation update when there are no unsaved edits", async () => {
+    const currentAutomation = makeAutomation({
+      name: "Nightly audit",
+      prompt: "Inspect the repository root and summarize the next action.",
+      latestRun: makeRun(),
+    });
+    const updatedAutomation = makeAutomation({
+      name: "Nightly audit v2",
+      prompt: "List one obvious file and the branch name.",
+      latestRun: makeRun(),
+    });
+
+    apiMocks.getAutomation.mockResolvedValue(currentAutomation);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" layout="panel" onBack={vi.fn()} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    const titleInput = findInputByPlaceholder("Automation title");
+    const promptField = document.body.querySelector('[data-testid="automation-detail-prompt-editor"]');
+    if (!(promptField instanceof HTMLElement)) {
+      throw new Error("Prompt field not found");
+    }
+
+    expect(titleInput.value).toBe(currentAutomation.name);
+    expect(getEditorText(promptField)).toContain(currentAutomation.prompt);
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.automations.detail("automation-1"), updatedAutomation);
+    });
+    await flushEffects();
+    await flushEffects();
+
+    expect(titleInput.value).toBe(updatedAutomation.name);
+    expect(getEditorText(promptField)).toContain(updatedAutomation.prompt);
+  });
+
+  it("returns to the automation list after an external delete removes the current detail", async () => {
+    const onBack = vi.fn();
+    apiMocks.getAutomation
+      .mockResolvedValueOnce(makeAutomation({ latestRun: makeRun() }))
+      .mockRejectedValue(new Error("Automation not found"));
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" layout="panel" onBack={onBack} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Nightly audit");
+
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: queryKeys.automations.detail("automation-1"), type: "active" });
+    });
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
   it("opens a run through the workspace callback instead of router navigation in panel mode", async () => {
     const onOpenRun = vi.fn();
 
@@ -774,6 +1015,7 @@ describe("AutomationDetailPage", () => {
       );
     });
 
+    await flushEffects();
     await flushEffects();
     await flushEffects();
     await flushEffects();

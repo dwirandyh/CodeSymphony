@@ -106,6 +106,7 @@ let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
 const invalidateQueriesMock = vi.fn();
+const removeQueriesMock = vi.fn();
 
 function makeTimelineSnapshot(): ChatTimelineSnapshot {
   return {
@@ -159,6 +160,8 @@ beforeEach(() => {
   invalidateQueriesMock.mockReset();
   invalidateQueriesMock.mockResolvedValue(undefined);
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
+  removeQueriesMock.mockReset();
+  queryClient.removeQueries = removeQueriesMock as typeof queryClient.removeQueries;
 
   getTimelineSnapshotMock.mockReset();
   getTimelineSnapshotMock.mockResolvedValue(makeTimelineSnapshot());
@@ -206,6 +209,7 @@ describe("useWorkspaceSyncStream", () => {
 
     expect(refetchRepositoriesCollectionMock).toHaveBeenCalledTimes(1);
     expect(refetchAllThreadsCollectionsMock).toHaveBeenCalledTimes(1);
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["automations"] });
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["threads"] });
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["worktrees"] });
 
@@ -261,5 +265,110 @@ describe("useWorkspaceSyncStream", () => {
     expect(getThreadStatusSnapshotMock).toHaveBeenCalledWith("thread-1");
     expect(queryClient.getQueryData(queryKeys.threads.timelineSnapshot("thread-1"))).toEqual(makeTimelineSnapshot());
     expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot("thread-1"))).toEqual(makeStatusSnapshot());
+  });
+
+  it("invalidates automation queries from workspace automation events", async () => {
+    renderHook();
+
+    act(() => {
+      MockEventSource.instances[0]!.open();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    invalidateQueriesMock.mockClear();
+    removeQueriesMock.mockClear();
+
+    act(() => {
+      MockEventSource.instances[0]!.emit({
+        id: "ws-automation-run",
+        type: "automation.run.updated",
+        automationId: "automation-1",
+        repositoryId: null,
+        worktreeId: null,
+        threadId: null,
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+    });
+
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.automations.lists });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.automations.detail("automation-1") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.automations.runs("automation-1") });
+    expect(removeQueriesMock).not.toHaveBeenCalled();
+
+    invalidateQueriesMock.mockClear();
+    removeQueriesMock.mockClear();
+
+    act(() => {
+      MockEventSource.instances[0]!.emit({
+        id: "ws-automation-delete",
+        type: "automation.deleted",
+        automationId: "automation-1",
+        repositoryId: null,
+        worktreeId: null,
+        threadId: null,
+        createdAt: "2026-01-01T00:00:01Z",
+      });
+    });
+
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.automations.lists });
+    expect(removeQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.automations.detail("automation-1") });
+    expect(removeQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.automations.runs("automation-1") });
+    expect(removeQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.automations.versions("automation-1") });
+  });
+
+  it("invalidates worktree git and file caches from granular workspace events", async () => {
+    renderHook();
+
+    act(() => {
+      MockEventSource.instances[0]!.open();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    invalidateQueriesMock.mockClear();
+
+    act(() => {
+      MockEventSource.instances[0]!.emit({
+        id: "ws-files-update",
+        type: "worktree.files.updated",
+        repositoryId: "repo-1",
+        worktreeId: "wt-1",
+        threadId: null,
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+    });
+
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitStatus("wt-1") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitDiffScope("wt-1") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["worktrees", "wt-1", "gitBranchDiffSummary"] });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.fileIndex("wt-1") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.fileTreeScope("wt-1") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["worktrees", "wt-1", "slashCommands"] });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
+
+    invalidateQueriesMock.mockClear();
+
+    act(() => {
+      MockEventSource.instances[0]!.emit({
+        id: "ws-git-update",
+        type: "worktree.git.updated",
+        repositoryId: "repo-1",
+        worktreeId: "wt-1",
+        threadId: null,
+        createdAt: "2026-01-01T00:00:01Z",
+      });
+    });
+
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitStatus("wt-1") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitDiffScope("wt-1") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: ["worktrees", "wt-1", "gitBranchDiffSummary"] });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.fileIndex("wt-1") });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.fileTreeScope("wt-1") });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
   });
 });

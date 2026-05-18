@@ -48,6 +48,7 @@ export type WorkspaceSyncEventHub = {
     type: WorkspaceSyncEventType,
     payload?: {
       repositoryId?: string | null;
+      automationId?: string | null;
       worktreeId?: string | null;
       threadId?: string | null;
     },

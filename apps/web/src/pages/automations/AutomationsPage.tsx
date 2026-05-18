@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type {
@@ -128,12 +128,18 @@ const AUTOMATION_STATUS_FILTER_OPTIONS: Array<{
 ];
 
 const ALL_PROJECTS_FILTER_VALUE = "__all_projects__";
+const AUTOMATION_LIST_FALLBACK_REFETCH_MS = 60_000;
+const AUTOMATION_DETAIL_FALLBACK_REFETCH_MS = 60_000;
+const AUTOMATION_RUNS_FALLBACK_REFETCH_MS = 30_000;
+const AUTOMATION_VERSIONS_FALLBACK_REFETCH_MS = 5 * 60_000;
 
 const rememberedAutomationListState: {
   repositoryFilter: string | null;
+  repositoryFilterLabel: string | null;
   enabledFilter: "all" | "enabled" | "paused";
 } = {
   repositoryFilter: null,
+  repositoryFilterLabel: null,
   enabledFilter: "enabled",
 };
 
@@ -437,6 +443,14 @@ function formToPayload(form: AutomationFormState) {
 function formToUpdatePayload(form: AutomationFormState) {
   const { repositoryId: _repositoryId, ...payload } = formToPayload(form);
   return payload;
+}
+
+function serializeAutomationUpdatePayload(form: AutomationFormState) {
+  return JSON.stringify(formToUpdatePayload(form));
+}
+
+function isAutomationNotFoundError(error: unknown) {
+  return error instanceof Error && error.message === "Automation not found";
 }
 
 function getProvidersForAgent(providers: ModelProvider[], agent: CliAgent) {
@@ -1347,8 +1361,9 @@ export function AutomationsListPage({
   const cursorModelsQuery = useCursorModels();
   const opencodeModelsQuery = useOpencodeModels();
   const repositories = repositoriesQuery.data;
-  const [repositoryFilter, setRepositoryFilter] = useState(() => rememberedAutomationListState.repositoryFilter ?? "");
-  const [enabledFilter, setEnabledFilter] = useState<"all" | "enabled" | "paused">(() => rememberedAutomationListState.enabledFilter);
+  const [repositoryFilterState, setRepositoryFilterState] = useState(() => rememberedAutomationListState.repositoryFilter ?? "");
+  const [repositoryFilterLabelState, setRepositoryFilterLabelState] = useState(() => rememberedAutomationListState.repositoryFilterLabel);
+  const [enabledFilterState, setEnabledFilterState] = useState<"all" | "enabled" | "paused">(() => rememberedAutomationListState.enabledFilter);
   const [createDialogOpen, setCreateDialogOpen] = useState(prefills?.create ?? false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createValidationErrors, setCreateValidationErrors] = useState<AutomationFormValidationErrors>({});
@@ -1356,6 +1371,23 @@ export function AutomationsListPage({
   const [createForm, setCreateForm] = useState<AutomationFormState>(() => toFormState(repositories, providers, null, prefills));
   const [createDialogPopoverHost, setCreateDialogPopoverHost] = useState<HTMLDivElement | null>(null);
   const compactLayout = layout === "panel";
+  const repositoryFilter = repositoryFilterState;
+  const repositoryFilterLabel = repositoryFilterLabelState;
+  const enabledFilter = enabledFilterState;
+
+  const setRepositoryFilter = useCallback((value: string) => {
+    const matchedRepository = value ? findRepositoryById(repositories, value) : null;
+    const nextLabel = value ? matchedRepository?.name ?? rememberedAutomationListState.repositoryFilterLabel ?? value : null;
+    rememberedAutomationListState.repositoryFilter = value;
+    rememberedAutomationListState.repositoryFilterLabel = nextLabel;
+    setRepositoryFilterState(value);
+    setRepositoryFilterLabelState(nextLabel);
+  }, [repositories]);
+
+  const setEnabledFilter = useCallback((value: "all" | "enabled" | "paused") => {
+    rememberedAutomationListState.enabledFilter = value;
+    setEnabledFilterState(value);
+  }, []);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     setCreateDialogOpen(open);
@@ -1380,9 +1412,22 @@ export function AutomationsListPage({
   }, [repositories, providers, prefills]);
 
   useEffect(() => {
-    rememberedAutomationListState.repositoryFilter = repositoryFilter;
-    rememberedAutomationListState.enabledFilter = enabledFilter;
-  }, [enabledFilter, repositoryFilter]);
+    if (!repositoryFilter) {
+      if (repositoryFilterLabel !== null) {
+        rememberedAutomationListState.repositoryFilterLabel = null;
+        setRepositoryFilterLabelState(null);
+      }
+      return;
+    }
+
+    const matchedRepository = findRepositoryById(repositories, repositoryFilter);
+    if (!matchedRepository || matchedRepository.name === repositoryFilterLabel) {
+      return;
+    }
+
+    rememberedAutomationListState.repositoryFilterLabel = matchedRepository.name;
+    setRepositoryFilterLabelState(matchedRepository.name);
+  }, [repositories, repositoryFilter, repositoryFilterLabel]);
 
   const automationsQuery = useQuery({
     queryKey: queryKeys.automations.list(
@@ -1393,7 +1438,8 @@ export function AutomationsListPage({
       repositoryId: repositoryFilter || undefined,
       enabled: enabledFilter === "all" ? undefined : enabledFilter === "enabled",
     }),
-    refetchInterval: 10_000,
+    refetchInterval: AUTOMATION_LIST_FALLBACK_REFETCH_MS,
+    staleTime: AUTOMATION_LIST_FALLBACK_REFETCH_MS - 1_000,
   });
   const automations = automationsQuery.data ?? [];
   const automationById = useMemo(
@@ -1494,6 +1540,16 @@ export function AutomationsListPage({
   const cursorModels = cursorModelsQuery.data?.models ?? [];
   const opencodeModels = opencodeModelsQuery.data?.models ?? [];
   const codexBuiltinModelOverride = runtimeInfo.data?.codexCliProviderOverride?.model ?? null;
+  const projectFilterOptions = [
+    { value: ALL_PROJECTS_FILTER_VALUE, label: "All projects" },
+    ...(repositoryFilter && !repositories.some((repository) => repository.id === repositoryFilter)
+      ? [{ value: repositoryFilter, label: repositoryFilterLabel ?? repositoryFilter }]
+      : []),
+    ...repositories.map((repository) => ({
+      value: repository.id,
+      label: repository.name,
+    })),
+  ];
   const createProjectOptions = repositories.map((repository) => ({
     value: repository.id,
     label: repository.name,
@@ -1574,13 +1630,7 @@ export function AutomationsListPage({
                 ariaLabel="Project filter"
                 value={repositoryFilter || ALL_PROJECTS_FILTER_VALUE}
                 onValueChange={(value) => setRepositoryFilter(value === ALL_PROJECTS_FILTER_VALUE ? "" : value)}
-                options={[
-                  { value: ALL_PROJECTS_FILTER_VALUE, label: "All projects" },
-                  ...repositories.map((repository) => ({
-                    value: repository.id,
-                    label: repository.name,
-                  })),
-                ]}
+                options={projectFilterOptions}
               />
             </ComposerFooterField>
             <ComposerFooterField label="Status" className="min-w-[180px]">
@@ -1829,6 +1879,8 @@ export function AutomationDetailPage({
   const repositories = repositoriesQuery.data;
   const detailQueryKey = queryKeys.automations.detail(automationId);
   const compactLayout = layout === "panel";
+  const lastSyncedPayloadRef = useRef<string | null>(null);
+  const missingAutomationHandledRef = useRef(false);
   const handleBack = useCallback(() => {
     if (onBack) {
       onBack();
@@ -1843,17 +1895,23 @@ export function AutomationDetailPage({
   const automationQuery = useQuery({
     queryKey: detailQueryKey,
     queryFn: () => api.getAutomation(automationId),
-    refetchInterval: 5_000,
+    refetchInterval: AUTOMATION_DETAIL_FALLBACK_REFETCH_MS,
+    staleTime: AUTOMATION_DETAIL_FALLBACK_REFETCH_MS - 1_000,
+    retry: false,
   });
   const runsQuery = useQuery({
     queryKey: queryKeys.automations.runs(automationId),
     queryFn: () => api.listAutomationRuns(automationId),
-    refetchInterval: 5_000,
+    refetchInterval: AUTOMATION_RUNS_FALLBACK_REFETCH_MS,
+    staleTime: AUTOMATION_RUNS_FALLBACK_REFETCH_MS - 1_000,
+    retry: false,
   });
   const versionsQuery = useQuery({
     queryKey: queryKeys.automations.versions(automationId),
     queryFn: () => api.listAutomationPromptVersions(automationId),
-    refetchInterval: 15_000,
+    refetchInterval: AUTOMATION_VERSIONS_FALLBACK_REFETCH_MS,
+    staleTime: AUTOMATION_VERSIONS_FALLBACK_REFETCH_MS - 1_000,
+    retry: false,
   });
 
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -1864,17 +1922,58 @@ export function AutomationDetailPage({
     if (!automationQuery.data) {
       return;
     }
+
+    missingAutomationHandledRef.current = false;
     const nextForm = toFormState(repositories, providers, automationQuery.data);
+    const nextPayload = serializeAutomationUpdatePayload(nextForm);
     setForm((current) => {
       if (current === null) {
+        lastSyncedPayloadRef.current = nextPayload;
         return nextForm;
       }
 
-      const currentPayload = JSON.stringify(formToUpdatePayload(current));
-      const nextPayload = JSON.stringify(formToUpdatePayload(nextForm));
-      return currentPayload === nextPayload ? nextForm : current;
+      const currentPayload = serializeAutomationUpdatePayload(current);
+      const lastSyncedPayload = lastSyncedPayloadRef.current;
+      const hasUnsavedChanges = lastSyncedPayload !== null && currentPayload !== lastSyncedPayload;
+
+      if (currentPayload === nextPayload || !hasUnsavedChanges) {
+        lastSyncedPayloadRef.current = nextPayload;
+        return nextForm;
+      }
+
+      return current;
     });
   }, [automationQuery.data, repositories, providers]);
+
+  useEffect(() => {
+    if (form === null || automationQuery.data != null) {
+      return;
+    }
+
+    if (queryClient.getQueryState(detailQueryKey) != null || missingAutomationHandledRef.current) {
+      return;
+    }
+
+    missingAutomationHandledRef.current = true;
+    handleBack();
+  }, [automationQuery.data, detailQueryKey, form, handleBack, queryClient]);
+
+  useEffect(() => {
+    if (!automationQuery.isError || !isAutomationNotFoundError(automationQuery.error)) {
+      missingAutomationHandledRef.current = false;
+      return;
+    }
+
+    if (missingAutomationHandledRef.current) {
+      return;
+    }
+
+    missingAutomationHandledRef.current = true;
+    queryClient.removeQueries({ queryKey: detailQueryKey });
+    queryClient.removeQueries({ queryKey: queryKeys.automations.runs(automationId) });
+    queryClient.removeQueries({ queryKey: queryKeys.automations.versions(automationId) });
+    handleBack();
+  }, [automationId, automationQuery.error, automationQuery.isError, detailQueryKey, handleBack, queryClient]);
 
   const saveMutation = useMutation({
     mutationFn: (payload: ReturnType<typeof formToUpdatePayload>) => api.updateAutomation(automationId, payload),
@@ -1946,6 +2045,7 @@ export function AutomationDetailPage({
     mutationFn: (versionId: string) => api.restoreAutomationPromptVersion(automationId, versionId),
     onSuccess: (restoredAutomation) => {
       queryClient.setQueryData(detailQueryKey, restoredAutomation);
+      lastSyncedPayloadRef.current = serializeAutomationUpdatePayload(toFormState(repositories, providers, restoredAutomation));
       setForm((current) => current
         ? { ...current, prompt: restoredAutomation.prompt }
         : toFormState(repositories, providers, restoredAutomation));
@@ -1957,6 +2057,16 @@ export function AutomationDetailPage({
   });
 
   const automation = automationQuery.data;
+
+  if (automationQuery.isError && !isAutomationNotFoundError(automationQuery.error)) {
+    return (
+      <AutomationPageShell layout={layout}>
+        <div className="w-full border-y border-destructive/30 bg-destructive/10 px-3 py-8 text-sm text-destructive-foreground">
+          {automationQuery.error instanceof Error ? automationQuery.error.message : "Unable to load automation."}
+        </div>
+      </AutomationPageShell>
+    );
+  }
 
   if (automationQuery.isLoading || form === null || automation == null) {
     return (

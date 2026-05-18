@@ -5,6 +5,8 @@ import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { api } from "../lib/api";
 import { queryKeys } from "../lib/queryKeys";
 
+const FILE_INDEX_FALLBACK_REFETCH_MS = 5 * 60_000;
+
 function compareFileEntries(left: FileEntry, right: FileEntry) {
   return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: "base" });
 }
@@ -25,8 +27,8 @@ function createFileIndexCollection(queryClient: QueryClient, worktreeId: string)
       queryClient,
       getKey: (entry) => entry.path,
       compare: compareFileEntries,
-      refetchInterval: 60_000,
-      staleTime: 55_000,
+      refetchInterval: FILE_INDEX_FALLBACK_REFETCH_MS,
+      staleTime: FILE_INDEX_FALLBACK_REFETCH_MS - 5_000,
     }),
   );
 }
