@@ -1,10 +1,11 @@
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
 import { SettingsDialog } from "./SettingsDialog";
 import { AGENT_DEFAULTS_STORAGE_KEY } from "../../pages/workspace/agentDefaults";
+import { DEFAULT_GENERAL_SETTINGS, getModifierEnterLabel } from "../../lib/generalSettings";
 
 const apiMocks = vi.hoisted(() => ({
   updateRepositoryScripts: vi.fn(),
@@ -58,27 +59,59 @@ const codexModels = [
     isDefault: false,
   },
 ] as const;
-
-function act(callback: () => void): void;
-function act(callback: () => Promise<void>): Promise<void>;
-function act(callback: () => void | Promise<void>): void | Promise<void> {
-  let result: void | Promise<void> | undefined;
-  flushSync(() => {
-    result = callback();
-  });
-
-  if (result && typeof result.then === "function") {
-    return result.then(async () => {
-      await Promise.resolve();
-    });
-  }
-}
+const cursorModels = [
+  {
+    id: "default[]",
+    name: "Auto",
+  },
+  {
+    id: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+    name: "GPT-5.4",
+  },
+] as const;
+const opencodeModels = [
+  {
+    id: "github-copilot/gpt-5.5",
+    name: "GPT-5.5",
+    providerId: "github-copilot",
+  },
+  {
+    id: "zai/glm-5-turbo",
+    name: "GLM-5-Turbo",
+    providerId: "zai",
+  },
+  {
+    id: "jatevo/gpt-5.5",
+    name: "gpt-5.5 Jetevo",
+    providerId: "Jetevo",
+  },
+] as const;
+const defaultGeneralSettings = DEFAULT_GENERAL_SETTINGS;
 
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (typeof globalThis.ResizeObserver === "undefined") {
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  }
+  if (!HTMLElement.prototype.hasPointerCapture) {
+    HTMLElement.prototype.hasPointerCapture = () => false;
+  }
+  if (!HTMLElement.prototype.setPointerCapture) {
+    HTMLElement.prototype.setPointerCapture = () => {};
+  }
+  if (!HTMLElement.prototype.releasePointerCapture) {
+    HTMLElement.prototype.releasePointerCapture = () => {};
+  }
+  if (!HTMLElement.prototype.scrollIntoView) {
+    HTMLElement.prototype.scrollIntoView = () => {};
+  }
   apiMocks.updateRepositoryScripts.mockImplementation(async (_repoId: string, payload: Record<string, unknown>) => ({
     ...makeRepo(),
     ...(payload.runScript ? { runScript: payload.runScript as string[] } : {}),
@@ -147,9 +180,13 @@ function renderDialog(
           repositories={repositories}
           selectedRepositoryId={options?.selectedRepositoryId}
           codexModels={codexModels}
+          cursorModels={cursorModels}
+          opencodeModels={opencodeModels}
+          generalSettings={defaultGeneralSettings}
           runtimeLabel={options?.runtimeLabel}
           runtimeTitle={options?.runtimeTitle}
           onRemoveRepository={vi.fn()}
+          onGeneralSettingsChange={vi.fn()}
           onProvidersChanged={onProvidersChanged}
         />
       </QueryClientProvider>,
@@ -171,9 +208,42 @@ async function openModelsTab() {
   await flushEffects();
 }
 
+async function openGeneralTab() {
+  const generalButton = Array.from(document.body.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "General",
+  );
+  if (!generalButton) {
+    throw new Error("General tab not found");
+  }
+
+  await act(async () => {
+    generalButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+}
+
+async function openWorkspaceTab() {
+  const workspaceButton = Array.from(document.body.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Workspace",
+  );
+  if (!workspaceButton) {
+    throw new Error("Workspace tab not found");
+  }
+
+  await act(async () => {
+    workspaceButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+}
+
 async function flushEffects() {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (vi.isFakeTimers()) {
+      await vi.advanceTimersByTimeAsync(0);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await Promise.resolve();
   });
 }
 
@@ -190,22 +260,87 @@ async function setInputValue(input: HTMLInputElement, value: string) {
   });
 }
 
-async function setSelectValue(select: HTMLSelectElement, value: string) {
-  const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-  if (!valueSetter) {
-    throw new Error("Select value setter not available");
+function normalizeText(value: string | null | undefined) {
+  return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+function getRadixSelectTrigger(label: string) {
+  const trigger = document.body.querySelector(`[aria-label="${label}"]`);
+  if (!(trigger instanceof HTMLElement)) {
+    throw new Error(`${label} trigger not found`);
+  }
+
+  return trigger;
+}
+
+async function openRadixSelect(label: string) {
+  const trigger = getRadixSelectTrigger(label);
+
+  await act(async () => {
+    if (typeof PointerEvent === "function") {
+      trigger.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        pointerId: 1,
+        ctrlKey: false,
+      }));
+    } else {
+      trigger.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+    }
+  });
+  await flushEffects();
+
+  let options = Array.from(document.body.querySelectorAll('[role="option"]'));
+  if (options.length === 0) {
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    await flushEffects();
+    options = Array.from(document.body.querySelectorAll('[role="option"]'));
+  }
+
+  return options;
+}
+
+async function setRadixSelectValue(label: string, optionText: string) {
+  const options = await openRadixSelect(label);
+
+  const normalizedOptionText = optionText.replace(/\s+/g, "").toLowerCase();
+  const option = options.find((candidate) => {
+    const candidateText = candidate.textContent?.replace(/\s+/g, "").toLowerCase() ?? "";
+    return candidateText === normalizedOptionText || candidateText.includes(normalizedOptionText);
+  });
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`${optionText} option not found`);
   }
 
   await act(async () => {
-    valueSetter.call(select, value);
-    select.dispatchEvent(new Event("input", { bubbles: true }));
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    option.click();
   });
+  await flushEffects();
+}
+
+async function getRadixSelectOptions(label: string) {
+  const options = await openRadixSelect(label);
+  const labels = options.map((option) => normalizeText(option.textContent)).filter((value) => value.length > 0);
+
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  await flushEffects();
+
+  return labels;
+}
+
+function getRadixSelectTriggerText(label: string) {
+  return normalizeText(getRadixSelectTrigger(label).textContent);
 }
 
 describe("SettingsDialog", () => {
-  it("renders nothing when closed", () => {
-    act(() => {
+  it("renders nothing when closed", async () => {
+    await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SettingsDialog
@@ -213,11 +348,14 @@ describe("SettingsDialog", () => {
             onClose={vi.fn()}
             repositories={[makeRepo()]}
             codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
             onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={vi.fn()}
           />
         </QueryClientProvider>
       );
     });
+    await flushEffects();
     expect(document.body.textContent).not.toContain("Settings");
   });
 
@@ -230,7 +368,9 @@ describe("SettingsDialog", () => {
             onClose={vi.fn()}
             repositories={[makeRepo()]}
             codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
             onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={vi.fn()}
           />
         </QueryClientProvider>
       );
@@ -238,7 +378,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Settings");
   });
 
-  it("shows Workspace and Models tabs", async () => {
+  it("shows General, Workspace, Models, and Licenses tabs", async () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -247,14 +387,109 @@ describe("SettingsDialog", () => {
             onClose={vi.fn()}
             repositories={[makeRepo()]}
             codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
             onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={vi.fn()}
           />
         </QueryClientProvider>
       );
     });
+    expect(document.body.textContent).toContain("General");
     expect(document.body.textContent).toContain("Workspace");
     expect(document.body.textContent).toContain("Models");
     expect(document.body.textContent).toContain("Licenses");
+  });
+
+  it("places the General tab first in the settings sidebar", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    const sidebar = document.body.querySelector<HTMLElement>('[data-testid="settings-sidebar"]');
+    if (!sidebar) {
+      throw new Error("Settings sidebar not found");
+    }
+
+    const sidebarButtons = Array.from(sidebar.querySelectorAll("button"));
+    expect(sidebarButtons[1]?.textContent?.trim()).toBe("General");
+    expect(sidebarButtons[2]?.textContent?.trim()).toBe("Workspace");
+  });
+
+  it("opens on the General tab by default", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Send messages with");
+    expect(document.body.textContent).not.toContain("Default Branch");
+  });
+
+  it("updates send-message preference from the General tab", async () => {
+    const onGeneralSettingsChange = vi.fn();
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsDialog
+            open={true}
+            onClose={vi.fn()}
+            repositories={[makeRepo()]}
+            codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
+            onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={onGeneralSettingsChange}
+          />
+        </QueryClientProvider>
+      );
+    });
+    await openGeneralTab();
+
+    await setRadixSelectValue("Send messages with", getModifierEnterLabel());
+
+    expect(onGeneralSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+      sendMessagesWith: "mod_enter",
+    }));
+  });
+
+  it("enables desktop notifications directly in the desktop shell", async () => {
+    const onGeneralSettingsChange = vi.fn();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {},
+      configurable: true,
+    });
+    Object.defineProperty(window.navigator, "userAgentData", {
+      value: { platform: "macOS" },
+      configurable: true,
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsDialog
+            open={true}
+            onClose={vi.fn()}
+            repositories={[makeRepo()]}
+            codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
+            onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={onGeneralSettingsChange}
+          />
+        </QueryClientProvider>
+      );
+    });
+    await openGeneralTab();
+
+    const toggle = document.body.querySelector('[aria-label="Desktop notifications"]');
+    if (!(toggle instanceof HTMLButtonElement)) {
+      throw new Error("Desktop notifications toggle not found");
+    }
+
+    await act(async () => {
+      toggle.click();
+    });
+    await flushEffects();
+
+    expect(onGeneralSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+      desktopNotificationsEnabled: true,
+    }));
+    expect(document.body.textContent).toContain("OS notification settings");
   });
 
   it("renders Default Agent controls in the Models tab", async () => {
@@ -273,22 +508,98 @@ describe("SettingsDialog", () => {
     await flushEffects();
     await openModelsTab();
 
-    const newChatAgentSelect = document.body.querySelector('select[aria-label="Agent for new chats CLI Agent"]') as HTMLSelectElement | null;
-    if (!newChatAgentSelect) {
-      throw new Error("Agent for new chats select not found");
-    }
+    expect(getRadixSelectTriggerText("Agent for new chats model")).toBe("Sonnet 4.6");
 
-    await setSelectValue(newChatAgentSelect, "codex");
-
-    const newChatModelSelect = document.body.querySelector('select[aria-label="Agent for new chats model"]') as HTMLSelectElement | null;
-    if (!newChatModelSelect) {
-      throw new Error("Agent for new chats model select not found");
-    }
-
-    await setSelectValue(newChatModelSelect, "builtin::gpt-5.3-codex");
+    await setRadixSelectValue("Agent for new chats CLI Agent", "Codex");
+    const codexOptions = await getRadixSelectOptions("Agent for new chats model");
+    expect(codexOptions).toContain("GPT-5.5 · Built-in");
+    await setRadixSelectValue("Agent for new chats model", "GPT-5.3 Codex");
 
     expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"agent\":\"codex\"");
     expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"model\":\"gpt-5.3-codex\"");
+  });
+
+  it("uses the shared OpenCode catalog for settings model options", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openModelsTab();
+
+    await setRadixSelectValue("Agent for new chats CLI Agent", "OpenCode");
+    const options = await getRadixSelectOptions("Agent for new chats model");
+
+    expect(options).toContain("GPT-5.5 · github-copilot");
+    expect(options).toContain("GLM-5-Turbo · zai");
+    expect(options).toContain("gpt-5.5 Jetevo · Jetevo");
+  });
+
+  it("preserves selected OpenCode built-in models across dialog remounts", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openModelsTab();
+
+    await setRadixSelectValue("Agent for new chats CLI Agent", "OpenCode");
+    await setRadixSelectValue("Agent for new chats model", "GPT-5.5");
+
+    expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"agent\":\"opencode\"");
+    expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"model\":\"github-copilot/gpt-5.5\"");
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openModelsTab();
+
+    expect(getRadixSelectTriggerText("Agent for new chats CLI Agent")).toBe("OpenCode");
+    expect(getRadixSelectTriggerText("Agent for new chats model")).toBe("GPT-5.5");
+  });
+
+  it("renders settings model options with composer-style model and provider detail", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openModelsTab();
+
+    const trigger = getRadixSelectTrigger("Agent for new chats model");
+    expect(trigger.querySelector(".font-medium")?.textContent).toBe("Sonnet 4.6");
+    expect(trigger.querySelector(".text-muted-foreground")).toBeNull();
+
+    const options = await openRadixSelect("Agent for new chats model");
+    const sonnetOption = options.find((option) => normalizeText(option.textContent) === "Sonnet 4.6 · Built-in");
+    if (!(sonnetOption instanceof HTMLElement)) {
+      throw new Error("Sonnet option not found");
+    }
+
+    expect(sonnetOption.querySelector(".font-medium")?.textContent).toBe("Sonnet 4.6");
+    expect(sonnetOption.querySelector(".text-muted-foreground")?.textContent).toBe("Built-in");
+  });
+
+  it("separates custom provider models from built-in models in the settings picker", async () => {
+    apiMocks.listModelProviders.mockResolvedValue([{
+      id: "provider-openai-1",
+      compatibility: "openai" as const,
+      name: "OpenAI QA",
+      modelId: "gpt-5-custom",
+      baseUrl: "https://api.openai.com/v1",
+      apiKeyMasked: "••••",
+      isActive: true,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }]);
+
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openModelsTab();
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("OpenAI QA");
+
+    await setRadixSelectValue("Agent for new chats CLI Agent", "OpenCode");
+    await openRadixSelect("Agent for new chats model");
+
+    const customSeparator = document.body.querySelector('[data-model-separator="custom"]');
+    expect(customSeparator).not.toBeNull();
+    expect(document.body.textContent).toContain("gpt-5-custom");
+    expect(document.body.textContent).toContain("OpenAI QA");
   });
 
   it("reserves the macOS title bar area when running inside the desktop shell", async () => {
@@ -307,6 +618,25 @@ describe("SettingsDialog", () => {
     const sidebar = document.body.querySelector<HTMLElement>('[data-testid="settings-sidebar"]');
     expect(sidebar).not.toBeNull();
     expect(sidebar?.className).toContain("pt-[46px]");
+  });
+
+  it("renders a desktop top spacer in the settings content when running inside the desktop shell", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {},
+      configurable: true,
+    });
+    Object.defineProperty(window.navigator, "userAgentData", {
+      value: { platform: "macOS" },
+      configurable: true,
+    });
+
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    const appBar = document.body.querySelector<HTMLElement>('[data-testid="settings-desktop-appbar"]');
+    expect(appBar).not.toBeNull();
+    expect(appBar?.className).toContain("bg-background");
+    expect(appBar?.textContent?.trim()).toBe("");
   });
 
   it("shows bundled open-source license details in the Licenses tab", async () => {
@@ -338,11 +668,14 @@ describe("SettingsDialog", () => {
             onClose={vi.fn()}
             repositories={[makeRepo()]}
             codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
             onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={vi.fn()}
           />
         </QueryClientProvider>
       );
     });
+    await openWorkspaceTab();
     expect(document.body.textContent).toContain("test-repo");
   });
 
@@ -361,14 +694,15 @@ describe("SettingsDialog", () => {
       { selectedRepositoryId: "r2" },
     );
     await flushEffects();
+    await openWorkspaceTab();
 
-    const repoSelect = document.body.querySelectorAll("select")[0] as HTMLSelectElement | undefined;
-    expect(repoSelect?.value).toBe("r2");
+    expect(getRadixSelectTriggerText("Repository")).toBe("codesymphony");
   });
 
   it("shows script configuration fields in workspace settings", async () => {
     renderDialog([makeRepo()]);
     await flushEffects();
+    await openWorkspaceTab();
 
     expect(document.body.textContent).toContain("Default Branch");
     expect(document.body.textContent).toContain("Run Script");
@@ -400,6 +734,16 @@ describe("SettingsDialog", () => {
     try {
       renderDialog([makeRepo()]);
       await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const workspaceButton = Array.from(document.body.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Workspace",
+      );
+      if (!workspaceButton) {
+        throw new Error("Workspace tab not found");
+      }
+      await act(async () => {
+        workspaceButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         await vi.advanceTimersByTimeAsync(0);
       });
 
@@ -445,6 +789,16 @@ describe("SettingsDialog", () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
+      const workspaceButton = Array.from(document.body.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Workspace",
+      );
+      if (!workspaceButton) {
+        throw new Error("Workspace tab not found");
+      }
+      await act(async () => {
+        workspaceButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await vi.advanceTimersByTimeAsync(0);
+      });
 
       const enabledCheckbox = document.body.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
       if (!enabledCheckbox) {
@@ -455,17 +809,7 @@ describe("SettingsDialog", () => {
         enabledCheckbox.click();
       });
 
-      const templateSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-        Array.from(select.options).some((option) => option.value === "flutter_hot_reload"),
-      ) as HTMLSelectElement | undefined;
-      if (!templateSelect) {
-        throw new Error("Save automation template select not found");
-      }
-
-      await act(async () => {
-        templateSelect.value = "flutter_hot_reload";
-        templateSelect.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+      await setRadixSelectValue("Save automation preset", "Flutter hot reload");
 
       const payloadInput = document.body.querySelector('input[placeholder="reload"]') as HTMLInputElement | null;
       const filePatternsTextarea = Array.from(document.body.querySelectorAll("textarea")).find((textarea) =>
@@ -521,16 +865,13 @@ describe("SettingsDialog", () => {
   it("keeps dirty workspace form values when repositories refresh", async () => {
     renderDialog([makeRepo({ runScript: ["npm run dev"] })]);
     await flushEffects();
+    await openWorkspaceTab();
 
-    const defaultBranchSelect = document.body.querySelectorAll("select")[1] as HTMLSelectElement;
-    expect(defaultBranchSelect.value).toBe("main");
+    expect(getRadixSelectTriggerText("Default Branch")).toBe("main");
 
-    await act(async () => {
-      defaultBranchSelect.value = "dev";
-      defaultBranchSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setRadixSelectValue("Default Branch", "dev");
     await flushEffects();
-    expect((document.body.querySelectorAll("select")[1] as HTMLSelectElement).value).toBe("dev");
+    expect(getRadixSelectTriggerText("Default Branch")).toBe("dev");
 
     renderDialog([
       makeRepo({
@@ -540,7 +881,7 @@ describe("SettingsDialog", () => {
     ]);
     await flushEffects();
 
-    expect((document.body.querySelectorAll("select")[1] as HTMLSelectElement).value).toBe("dev");
+    expect(getRadixSelectTriggerText("Default Branch")).toBe("dev");
   });
 
 
@@ -555,28 +896,24 @@ describe("SettingsDialog", () => {
       }),
     ]);
     await flushEffects();
+    await openWorkspaceTab();
 
-    const repoSelect = document.body.querySelectorAll("select")[0] as HTMLSelectElement;
-    await act(async () => {
-      repoSelect.value = "r2";
-      repoSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setRadixSelectValue("Repository", "other-repo");
     await flushEffects();
 
     renderDialog([makeRepo()]);
     await flushEffects();
 
-    const nextRepoSelect = document.body.querySelectorAll("select")[0] as HTMLSelectElement;
     const runScriptTextarea = document.body.querySelector('textarea[rows="3"]') as HTMLTextAreaElement;
 
-    expect(nextRepoSelect.value).toBe("r1");
+    expect(getRadixSelectTriggerText("Repository")).toBe("test-repo");
     expect(runScriptTextarea.value).toBe("");
   });
 
   it("syncs fetched model providers back to the parent when the Models tab opens", async () => {
     const providers = [{
       id: "provider-1",
-      agent: "claude" as const,
+      compatibility: "anthropic" as const,
       name: "Custom",
       modelId: "claude-custom",
       baseUrl: "https://example.com",
@@ -598,7 +935,7 @@ describe("SettingsDialog", () => {
   it("does not show active or inactive controls in the Models tab", async () => {
     const providers = [{
       id: "provider-1",
-      agent: "claude" as const,
+      compatibility: "anthropic" as const,
       name: "Custom",
       modelId: "claude-custom",
       baseUrl: "https://example.com",
@@ -614,10 +951,10 @@ describe("SettingsDialog", () => {
 
     expect(document.body.textContent).not.toContain("Active");
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.title === "Activate" || button.title === "Deactivate")).toBe(false);
-    expect(document.body.textContent).toContain("choose them per thread under Claude in the composer");
+    expect(document.body.textContent).toContain("matching agents are available");
   });
 
-  it("switches provider placeholders based on the selected agent and supports endpoint tests for Codex and OpenCode entries", async () => {
+  it("opens the provider dialog and switches placeholders based on API compatibility", async () => {
     renderDialog([makeRepo()]);
     await openModelsTab();
 
@@ -633,104 +970,21 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
-    if (!agentSelect) {
-      throw new Error("Agent select not found");
-    }
-
-    expect(document.body.textContent).toContain("Agent");
+    expect(document.body.textContent).toContain("API Compatibility");
     expect(document.body.querySelector('input[placeholder=\'e.g. "claude-sonnet-4-6", "glm-4.7"\']')).not.toBeNull();
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
 
-    await setSelectValue(agentSelect, "codex");
+    await setRadixSelectValue("Provider API Compatibility", "OpenAI");
     await flushEffects();
 
     expect(document.body.querySelector('input[placeholder=\'e.g. "gpt-5.4", "gpt-5.3-codex"\']')).not.toBeNull();
-    expect(document.body.querySelector('input[placeholder="Leave empty to use Codex CLI defaults"]')).not.toBeNull();
-    expect(document.body.querySelector('input[placeholder="Only if your Codex setup needs it"]')).not.toBeNull();
-    expect(document.body.textContent).toContain("Responses-compatible entries can be simple model aliases like gpt-5.4");
-    expect(document.body.textContent).toContain("Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts.");
-    expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
-
-    await setSelectValue(agentSelect, "opencode");
-    await flushEffects();
-
-    expect(document.body.querySelector('input[placeholder=\'e.g. "openai/gpt-5" or "gpt-5-custom"\']')).not.toBeNull();
-    expect(document.body.querySelector('input[placeholder="Leave empty when Model ID already uses provider/model"]')).not.toBeNull();
-    expect(document.body.querySelector('input[placeholder="Only for custom OpenCode endpoints"]')).not.toBeNull();
-    expect(document.body.textContent).toContain("For built-in OpenCode providers, enter Model ID as provider/model");
-    expect(document.body.textContent).toContain("Built-in OpenCode auth and /connect flows still work even if you never add an entry here.");
+    expect(document.body.querySelector('input[placeholder="e.g. https://api.openai.com/v1 or https://lb.jatevo.ai/v1"]')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="API Key"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Works with Codex and OpenCode.");
+    expect(document.body.textContent).toContain("For Codex, the endpoint must implement the OpenAI Responses API.");
   });
 
-  it("does not offer Cursor as a custom provider option and keeps Cursor provider edits non-testable", async () => {
-    const providers = [{
-      id: "provider-cursor-1",
-      agent: "cursor" as const,
-      name: "Cursor Account",
-      modelId: "default[]",
-      baseUrl: null,
-      apiKeyMasked: "",
-      isActive: false,
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:00:00Z",
-    }];
-    apiMocks.listModelProviders.mockResolvedValueOnce(providers);
-
-    renderDialog([makeRepo()]);
-    await openModelsTab();
-
-    expect(document.body.textContent).toContain("Cursor Account");
-    expect(document.body.textContent).toContain("Cursor");
-
-    const addButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Add",
-    );
-    if (!addButton) {
-      throw new Error("Add provider button not found");
-    }
-
-    await act(async () => {
-      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushEffects();
-
-    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
-    if (!agentSelect) {
-      throw new Error("Agent select not found");
-    }
-
-    expect(Array.from(agentSelect.options).map((option) => option.value)).toEqual(["claude", "codex", "opencode"]);
-
-    const editButton = document.body.querySelector('button[aria-label="Edit Cursor provider Cursor Account (default[])"]') as HTMLButtonElement | null;
-    if (!editButton) {
-      throw new Error("Edit Cursor provider button not found");
-    }
-
-    await act(async () => {
-      editButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushEffects();
-
-    expect(document.body.querySelector('input[placeholder="Cursor built-in models are managed via Cursor account settings"]')).not.toBeNull();
-    expect(document.body.querySelector('input[placeholder="Cursor custom endpoints are not supported"]')).not.toBeNull();
-    expect(document.body.textContent).toContain("Cursor models come from the authenticated Cursor account over ACP.");
-
-    const testButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Test",
-    ) as HTMLButtonElement | undefined;
-    const saveButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Save",
-    ) as HTMLButtonElement | undefined;
-    if (!testButton || !saveButton) {
-      throw new Error("Cursor provider form buttons not found");
-    }
-
-    expect(testButton.disabled).toBe(true);
-    expect(saveButton.disabled).toBe(true);
-    expect(document.body.textContent).toContain("No custom provider rows or endpoint tests are available for Cursor.");
-  });
-
-  it("passes the selected OpenCode agent when testing a provider", async () => {
+  it("passes the selected compatibility when testing a provider", async () => {
     renderDialog([makeRepo()]);
     await openModelsTab();
 
@@ -746,23 +1000,22 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
     const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
-    if (!agentSelect || !providerNameInput) {
+    if (!providerNameInput) {
       throw new Error("Provider form fields not found");
     }
 
-    await setSelectValue(agentSelect, "opencode");
+    await setRadixSelectValue("Provider API Compatibility", "OpenAI");
     await flushEffects();
 
     const modelIdInput = document.body.querySelector('input[aria-label="Provider Model ID"]') as HTMLInputElement | null;
     const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
     const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
     if (!modelIdInput || !baseUrlInput || !apiKeyInput) {
-      throw new Error("OpenCode test controls not found");
+      throw new Error("Provider test controls not found");
     }
 
-    await setInputValue(providerNameInput, "OpenCode QA");
+    await setInputValue(providerNameInput, "OpenAI QA");
     await setInputValue(modelIdInput, "gpt-5-custom");
     await setInputValue(baseUrlInput, "https://api.openai.com/v1");
     await setInputValue(apiKeyInput, "sk-test");
@@ -781,17 +1034,125 @@ describe("SettingsDialog", () => {
     });
 
     expect(apiMocks.testModelProvider).toHaveBeenCalledWith({
-      agent: "opencode",
+      compatibility: "openai",
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
       modelId: "gpt-5-custom",
     });
   });
 
+  it("disables provider testing and saving until the base URL is valid", async () => {
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    const addButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add",
+    );
+    if (!addButton) {
+      throw new Error("Add provider button not found");
+    }
+
+    await act(async () => {
+      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[aria-label="Provider Model ID"]') as HTMLInputElement | null;
+    const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
+    const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
+    if (!providerNameInput || !modelIdInput || !baseUrlInput || !apiKeyInput) {
+      throw new Error("Provider form fields not found");
+    }
+
+    await setInputValue(providerNameInput, "OpenAI QA");
+    await setInputValue(modelIdInput, "gpt-5-custom");
+    await setInputValue(baseUrlInput, "url openai: https://api.z.ai/api/paas/v4");
+    await setInputValue(apiKeyInput, "sk-test");
+    await flushEffects();
+
+    const testButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    ) as HTMLButtonElement | undefined;
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Save",
+    ) as HTMLButtonElement | undefined;
+    if (!testButton || !saveButton) {
+      throw new Error("Provider action buttons not found");
+    }
+
+    expect(baseUrlInput.getAttribute("aria-invalid")).toBe("true");
+    expect(document.body.textContent).toContain("Enter a valid http:// or https:// URL.");
+    expect(testButton.disabled).toBe(true);
+    expect(saveButton.disabled).toBe(true);
+
+    await setInputValue(baseUrlInput, "https://api.z.ai/api/paas/v4");
+    await flushEffects();
+
+    expect(baseUrlInput.getAttribute("aria-invalid")).toBe("false");
+    expect(document.body.textContent).not.toContain("Enter a valid http:// or https:// URL.");
+    expect(testButton.disabled).toBe(false);
+    expect(saveButton.disabled).toBe(false);
+  });
+
+  it("clears the previous provider test result when the form changes", async () => {
+    apiMocks.testModelProvider.mockResolvedValueOnce({
+      success: false,
+      error: "Provider returned 404: not found",
+    });
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    const addButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add",
+    );
+    if (!addButton) {
+      throw new Error("Add provider button not found");
+    }
+
+    await act(async () => {
+      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[aria-label="Provider Model ID"]') as HTMLInputElement | null;
+    const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
+    const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
+    if (!providerNameInput || !modelIdInput || !baseUrlInput || !apiKeyInput) {
+      throw new Error("Provider form fields not found");
+    }
+
+    await setInputValue(providerNameInput, "OpenAI QA");
+    await setInputValue(modelIdInput, "gpt-5-custom");
+    await setInputValue(baseUrlInput, "https://api.openai.com/v1");
+    await setInputValue(apiKeyInput, "sk-test");
+    await flushEffects();
+
+    const testButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    ) as HTMLButtonElement | undefined;
+    if (!testButton) {
+      throw new Error("Test button not found");
+    }
+
+    await act(async () => {
+      testButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Provider returned 404: not found");
+
+    await setInputValue(baseUrlInput, "https://api.z.ai/api/paas/v4");
+    await flushEffects();
+
+    expect(document.body.textContent).not.toContain("Provider returned 404: not found");
+  });
+
   it("adds explicit labels to provider edit and delete actions", async () => {
     const providers = [{
       id: "provider-1",
-      agent: "codex" as const,
+      compatibility: "openai" as const,
       name: "OpenAI",
       modelId: "gpt-5.4",
       baseUrl: null,
@@ -801,10 +1162,10 @@ describe("SettingsDialog", () => {
       updatedAt: "2026-01-01T00:00:00Z",
     }, {
       id: "provider-2",
-      agent: "opencode" as const,
-      name: "OpenCode QA",
-      modelId: "openai/gpt-5",
-      baseUrl: null,
+      compatibility: "anthropic" as const,
+      name: "Anthropic QA",
+      modelId: "claude-sonnet-4-6",
+      baseUrl: "https://api.anthropic.com/v1",
       apiKeyMasked: null,
       isActive: false,
       createdAt: "2026-01-01T00:00:00Z",
@@ -815,9 +1176,9 @@ describe("SettingsDialog", () => {
     renderDialog([makeRepo()]);
     await openModelsTab();
 
-    expect(document.body.querySelector('button[aria-label="Edit Codex provider OpenAI (gpt-5.4)"]')).not.toBeNull();
-    expect(document.body.querySelector('button[aria-label="Delete Codex provider OpenAI (gpt-5.4)"]')).not.toBeNull();
-    expect(document.body.querySelector('button[aria-label="Edit OpenCode provider OpenCode QA (openai/gpt-5)"]')).not.toBeNull();
-    expect(document.body.querySelector('button[aria-label="Delete OpenCode provider OpenCode QA (openai/gpt-5)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Edit OpenAI provider OpenAI (gpt-5.4)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Delete OpenAI provider OpenAI (gpt-5.4)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Edit Anthropic provider Anthropic QA (claude-sonnet-4-6)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Delete Anthropic provider Anthropic QA (claude-sonnet-4-6)"]')).not.toBeNull();
   });
 });

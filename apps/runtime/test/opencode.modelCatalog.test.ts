@@ -49,4 +49,36 @@ zai/glm-4.7-flash
       },
     ]);
   });
+
+  it("ignores non-model noise lines in verbose output", () => {
+    const stdout = `npm WARN deprecated left-pad@1.3.0
+at Object.<anonymous> (/tmp/index.js:1:1)
+opencode/minimax-m2.5-free
+{
+  "id": "minimax-m2.5-free",
+  "providerID": "opencode",
+  "name": "MiniMax M2.5 Free"
+}
+[debug] refreshing provider cache
+zai/glm-4.7
+{
+  "id": "glm-4.7",
+  "providerID": "zai",
+  "name": "GLM-4.7"
+}
+`;
+
+    expect(parseOpencodeModelCatalog(stdout)).toEqual([
+      {
+        id: "opencode/minimax-m2.5-free",
+        name: "MiniMax M2.5 Free",
+        providerId: "opencode",
+      },
+      {
+        id: "zai/glm-4.7",
+        name: "GLM-4.7",
+        providerId: "zai",
+      },
+    ]);
+  });
 });

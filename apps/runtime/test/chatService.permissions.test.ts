@@ -397,7 +397,7 @@ describe("chatService permission flow", () => {
       modelProviderService: {
         getActiveProvider: async () => ({
           id: "provider-1",
-          agent: "claude",
+          compatibility: "anthropic",
           apiKey: "provider-key",
           baseUrl: "https://provider.example.com/v1",
           name: "Custom Provider",
@@ -405,7 +405,7 @@ describe("chatService permission flow", () => {
         }),
         getProviderById: async () => ({
           id: "provider-1",
-          agent: "claude",
+          compatibility: "anthropic",
           apiKey: "provider-key",
           baseUrl: "https://provider.example.com/v1",
           name: "Custom Provider",
@@ -418,7 +418,7 @@ describe("chatService permission flow", () => {
     await prisma.modelProvider.create({
       data: {
         id: "provider-1",
-        agent: "claude",
+        compatibility: "anthropic",
         name: "Custom Provider",
         modelId: "claude-3-7-sonnet",
         baseUrl: "https://provider.example.com/v1",

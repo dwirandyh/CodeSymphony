@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.codesymphony.app",
   "build": {
-    "beforeDevCommand": "pnpm --filter @codesymphony/web exec vite --port 5174 --strictPort",
+    "beforeDevCommand": "bash scripts/start-web-dev.sh",
     "beforeBuildCommand": "pnpm --filter @codesymphony/web build",
     "devUrl": "http://127.0.0.1:5174",
     "frontendDist": "../../web/dist"

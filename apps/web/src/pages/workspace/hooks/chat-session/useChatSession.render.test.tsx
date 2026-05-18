@@ -1647,6 +1647,60 @@ describe("useChatSession", () => {
     });
   });
 
+  it("preserves an optimistic OpenCode provider switch while the thread list is still stale", async () => {
+    const selectionDeferred = createDeferred<ChatThread>();
+    threadsState.data = [{
+      ...makeThread("thread-a", true),
+      agent: "codex",
+      model: "gpt-5.5",
+      modelProviderId: "provider-jatevo",
+    }];
+    vi.mocked(api.updateThreadAgentSelection).mockReturnValue(selectionDeferred.promise);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      void hookResult.setThreadAgentSelection("thread-a", {
+        agent: "opencode",
+        model: "gpt-5.5",
+        modelProviderId: "provider-jatevo",
+      });
+      await Promise.resolve();
+    });
+
+    expect(hookResult.composerAgent).toBe("opencode");
+    expect(hookResult.composerModel).toBe("gpt-5.5");
+    expect(hookResult.composerModelProviderId).toBe("provider-jatevo");
+
+    renderHook("thread-a");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.composerAgent).toBe("opencode");
+    expect(hookResult.composerModel).toBe("gpt-5.5");
+    expect(hookResult.composerModelProviderId).toBe("provider-jatevo");
+    expect(hookResult.threads.find((thread) => thread.id === "thread-a")).toMatchObject({
+      agent: "opencode",
+      model: "gpt-5.5",
+      modelProviderId: "provider-jatevo",
+    });
+
+    await act(async () => {
+      selectionDeferred.resolve({
+        ...makeThread("thread-a", true),
+        agent: "opencode",
+        model: "gpt-5.5",
+        modelProviderId: "provider-jatevo",
+      });
+      await Promise.resolve();
+    });
+
+    expect(hookResult.composerAgent).toBe("opencode");
+    expect(hookResult.composerModel).toBe("gpt-5.5");
+    expect(hookResult.composerModelProviderId).toBe("provider-jatevo");
+  });
+
   it("hydrates Cursor thread selection state without losing the agent or model", () => {
     threadsState.data = [{
       ...makeThread("thread-a", true),

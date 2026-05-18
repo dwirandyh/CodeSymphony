@@ -38,6 +38,12 @@ import {
   generateAttachmentId,
   generateClipboardFilename,
 } from "../../../lib/attachments";
+import {
+  AUTO_CONVERT_LONG_TEXT_THRESHOLD,
+  DEFAULT_GENERAL_SETTINGS,
+  hasPrimarySubmitModifier,
+  type SendMessagesWith,
+} from "../../../lib/generalSettings";
 import { cn } from "../../../lib/utils";
 import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
 import { QueuedMessageList } from "../QueuedMessageList";
@@ -97,6 +103,8 @@ type ComposerProps = {
   threadKind?: ChatThreadKind | null;
   threadRunning?: boolean;
   permissionMode: ChatThreadPermissionMode;
+  sendMessagesWith?: SendMessagesWith;
+  autoConvertLongTextEnabled?: boolean;
   hasMessages: boolean;
   queuedMessages?: ChatQueuedMessage[];
   onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
@@ -249,6 +257,8 @@ function ComposerContent({
   threadKind,
   threadRunning = false,
   permissionMode,
+  sendMessagesWith = DEFAULT_GENERAL_SETTINGS.sendMessagesWith,
+  autoConvertLongTextEnabled = DEFAULT_GENERAL_SETTINGS.autoConvertLongTextEnabled,
   hasMessages,
   queuedMessages = [],
   onSubmitMessage,
@@ -273,6 +283,7 @@ function ComposerContent({
   const permissionPopoverRef = useRef<HTMLDivElement>(null);
   const [permissionPreviewMode, setPermissionPreviewMode] = useState<ChatThreadPermissionMode | null>(null);
   const [mobileSessionSheetOpen, setMobileSessionSheetOpen] = useState(false);
+  const [composerPopoverHost, setComposerPopoverHost] = useState<HTMLDivElement | null>(null);
   const hasProvidedFileIndex = fileIndex !== undefined && typeof fileIndexLoading === "boolean";
   const [hasRequestedFileIndex, setHasRequestedFileIndex] = useState(() => hasProvidedFileIndex);
   const [isMobile, setIsMobile] = useState(() => {
@@ -574,9 +585,9 @@ function ComposerContent({
 
     afterChipHTMLRef.current = null;
 
-    if (inserted > 300) {
+    if (autoConvertLongTextEnabled && inserted > AUTO_CONVERT_LONG_TEXT_THRESHOLD) {
       const pastedText = currentText.slice(prevLen).trim() || currentText.trim();
-      if (pastedText.length > 300) {
+      if (pastedText.length > AUTO_CONVERT_LONG_TEXT_THRESHOLD) {
         const filename = generateClipboardFilename(pastedText);
         const att: PendingAttachment = {
           id: generateAttachmentId(),
@@ -618,7 +629,7 @@ function ComposerContent({
     syncValueFromEditor();
     detectMention();
     detectSlashCommand();
-  }, [syncValueFromEditor, applyAttachmentsChange, detectMention, detectSlashCommand]);
+  }, [autoConvertLongTextEnabled, syncValueFromEditor, applyAttachmentsChange, detectMention, detectSlashCommand]);
 
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;
@@ -820,7 +831,7 @@ function ComposerContent({
         return;
       }
 
-      if (text.length > 300) {
+      if (autoConvertLongTextEnabled && text.length > AUTO_CONVERT_LONG_TEXT_THRESHOLD) {
         const editor = editorRef.current;
         const preHTML = editor?.innerHTML ?? "";
 
@@ -900,7 +911,7 @@ function ComposerContent({
       prevContentLenRef.current = (editorRef.current?.textContent ?? "").length;
       lastStableHTMLRef.current = editorRef.current?.innerHTML ?? "";
     },
-    [syncValueFromEditor, applyAttachmentsChange, handlePasteImages],
+    [autoConvertLongTextEnabled, syncValueFromEditor, applyAttachmentsChange, handlePasteImages],
   );
 
   const handleKeyDown = useCallback(
@@ -1025,7 +1036,7 @@ function ComposerContent({
         return;
       }
 
-      if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+      if (event.key !== "Enter" || event.nativeEvent.isComposing) {
         return;
       }
 
@@ -1037,10 +1048,21 @@ function ComposerContent({
         return;
       }
 
+      const submitWithModifier = sendMessagesWith === "mod_enter";
+      const hasSubmitModifier = hasPrimarySubmitModifier(event);
+
+      if (submitWithModifier && !hasSubmitModifier) {
+        return;
+      }
+
+      if (!submitWithModifier && event.shiftKey) {
+        return;
+      }
+
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashCommandSuggestions, selectedSlashCommandIndex, selectSlashCommandSuggestion, closeSlashCommand, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashCommandSuggestions, selectedSlashCommandIndex, selectSlashCommandSuggestion, closeSlashCommand, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, sendMessagesWith, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {
@@ -1085,7 +1107,6 @@ function ComposerContent({
             <button
               type="button"
               disabled={selectionLocked}
-              title={option.model}
               className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
                 selected
                   ? "bg-accent text-accent-foreground"
@@ -1245,6 +1266,12 @@ function ComposerContent({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
+          <div
+            ref={setComposerPopoverHost}
+            data-composer-popover-host="true"
+            className="pointer-events-none absolute inset-0 z-[60] overflow-visible"
+          />
+
           {isDragOver && (
             <div className={`absolute inset-0 z-10 flex items-center justify-center bg-primary/10 ${attachedTop ? "rounded-b-2xl rounded-t-none lg:rounded-b-3xl" : "rounded-2xl lg:rounded-3xl"}`}>
               <span className="text-sm font-medium text-primary">Drop files here</span>
@@ -1501,6 +1528,7 @@ function ComposerContent({
                   codexBuiltinModelOverride={codexBuiltinModelOverride}
                   showAgentList={showAgentList}
                   selectionLockedReason={selectionBlockedReason}
+                  popoverContainer={composerPopoverHost}
                   onSelectionChange={(nextSelection) => {
                     onAgentSelectionChange(nextSelection);
                   }}
