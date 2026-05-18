@@ -662,7 +662,7 @@ describe("Composer", () => {
     const providers: ModelProvider[] = [
       {
         id: "provider-claude-1",
-        agent: "claude",
+        compatibility: "anthropic",
         name: "Team Claude",
         modelId: "claude-opus-4-6",
         baseUrl: "https://api.example.com/v1",
@@ -709,7 +709,7 @@ describe("Composer", () => {
     const providers: ModelProvider[] = [
       {
         id: "provider-claude-1",
-        agent: "claude",
+        compatibility: "anthropic",
         name: "Anthropic Proxy",
         modelId: "claude-sonnet-4-6",
         baseUrl: "https://api.example.com/v1",
@@ -735,7 +735,7 @@ describe("Composer", () => {
     const providers: ModelProvider[] = [
       {
         id: "provider-codex-1",
-        agent: "codex",
+        compatibility: "openai",
         name: "Team Codex",
         modelId: "gpt-5.4-enterprise",
         baseUrl: null,
@@ -788,12 +788,35 @@ describe("Composer", () => {
     expect(agentList?.querySelectorAll("button")).toHaveLength(4);
   });
 
+  it("renders the desktop agent-model popover in the composer host outside the scroll row", () => {
+    renderComposer();
+
+    const modelButton = getModelSelectorButton();
+    const actionRow = modelButton.closest("div");
+    if (!(actionRow instanceof HTMLDivElement)) {
+      throw new Error("Composer action row not found");
+    }
+
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const popoverHost = container.querySelector<HTMLDivElement>('[data-composer-popover-host="true"]');
+    expect(popoverHost).not.toBeNull();
+
+    expect(popoverHost?.querySelector('[data-agent-model-panel="agent"]')).not.toBeNull();
+
+    const overlayPanel = popoverHost?.querySelector<HTMLElement>('[data-agent-model-panel="overlay"]') ?? null;
+    expect(overlayPanel).not.toBeNull();
+    expect(actionRow.contains(overlayPanel)).toBe(false);
+  });
+
   it("shows agent-specific model options and emits thread agent selection updates", () => {
     const onAgentSelectionChange = vi.fn();
     const providers: ModelProvider[] = [
       {
         id: "provider-codex-1",
-        agent: "codex",
+        compatibility: "openai",
         name: "Team Codex",
         modelId: "gpt-5.3-codex-enterprise",
         baseUrl: null,
@@ -961,7 +984,7 @@ describe("Composer", () => {
     const providers: ModelProvider[] = [
       {
         id: "provider-opencode-1",
-        agent: "opencode",
+        compatibility: "openai",
         name: "OpenCode QA",
         modelId: "gpt-5-custom",
         baseUrl: "https://api.openai.com/v1",
@@ -1053,7 +1076,7 @@ describe("Composer", () => {
     const providers: ModelProvider[] = [
       {
         id: "provider-claude-1",
-        agent: "claude",
+        compatibility: "anthropic",
         name: "z.ai",
         modelId: "glm-4.7",
         baseUrl: null,
@@ -1064,7 +1087,7 @@ describe("Composer", () => {
       },
       {
         id: "provider-codex-1",
-        agent: "codex",
+        compatibility: "openai",
         name: "OpenAI QA",
         modelId: "gpt-5.4-custom",
         baseUrl: null,
@@ -1075,7 +1098,7 @@ describe("Composer", () => {
       },
       {
         id: "provider-opencode-1",
-        agent: "opencode",
+        compatibility: "openai",
         name: "OpenCode QA",
         modelId: "gpt-5-custom",
         baseUrl: "https://api.openai.com/v1",
@@ -1135,7 +1158,7 @@ describe("Composer", () => {
     expect(container.textContent).toContain("MiniMax M2.5 Free");
     expect(container.textContent).toContain("opencode");
     expect(container.textContent).toContain("gpt-5-custom");
-    expect(container.textContent).not.toContain("z.ai");
+    expect(container.textContent).toContain("z.ai");
   });
 
   it("shows OpenCode display names with source labels in the selector", () => {
@@ -1146,7 +1169,7 @@ describe("Composer", () => {
 
     const modelButton = getModelSelectorButton();
     expect(modelButton.textContent).toContain("OpenCode · MiniMax M2.5 Free");
-    expect(modelButton.title).toBe("opencode/minimax-m2.5-free");
+    expect(modelButton.title).toBe("");
 
     act(() => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));

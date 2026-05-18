@@ -1577,4 +1577,96 @@ describe("opencode session runner config", () => {
       }),
     }));
   });
+
+  it("falls back to final session messages when the provider completes without streaming text deltas", async () => {
+    const spawnMock = vi.fn(() => {
+      const child = new MockOpencodeServerProcess();
+      queueMicrotask(() => {
+        child.announce("http://127.0.0.1:9999");
+      });
+      return child;
+    });
+    const promptAsync = vi.fn(async () => ({}));
+    const sessionMessages = vi.fn()
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({
+        data: [{
+          info: {
+            id: "msg_1",
+            sessionID: "sdk-session-1",
+            role: "assistant",
+          },
+          parts: [{
+            id: "part_1",
+            sessionID: "sdk-session-1",
+            messageID: "msg_1",
+            type: "text",
+            text: "Recovered from final session message.",
+          }],
+        }],
+      });
+    const createOpencodeClient = vi.fn(() => ({
+      session: {
+        create: vi.fn(async () => ({ data: { id: "sdk-session-1" } })),
+        messages: sessionMessages,
+        promptAsync,
+        abort: vi.fn(async () => ({})),
+      },
+      event: {
+        subscribe: vi.fn(async () => ({
+          stream: (async function* () {
+            yield {
+              type: "session.idle",
+              properties: {
+                sessionID: "sdk-session-1",
+              },
+            };
+          })(),
+        })),
+      },
+      postSessionIdPermissionsPermissionId: vi.fn(async () => ({})),
+    }));
+    const onText = vi.fn();
+
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+    vi.doMock("@opencode-ai/sdk", async () => {
+      const actual = await vi.importActual<typeof import("@opencode-ai/sdk")>("@opencode-ai/sdk");
+      return {
+        ...actual,
+        createOpencodeClient,
+      };
+    });
+
+    const { runOpencodeWithStreaming } = await import("../src/opencode/sessionRunner");
+
+    const result = await runOpencodeWithStreaming({
+      prompt: "Need a non-streaming provider fallback.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      providerBaseUrl: "https://lb.jatevo.ai/v1",
+      providerApiKey: "test-key",
+      providerCompatibility: "openai",
+      model: "gpt-5.5",
+      onText,
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(result).toEqual({
+      output: "Recovered from final session message.",
+      sessionId: "sdk-session-1",
+    });
+    expect(onText).toHaveBeenCalledWith("Recovered from final session message.");
+    expect(sessionMessages).toHaveBeenCalledTimes(2);
+  });
 });

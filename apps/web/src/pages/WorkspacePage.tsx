@@ -3037,6 +3037,8 @@ export function WorkspacePage() {
         repositories={repos.repositories}
         selectedRepositoryId={repos.selectedRepositoryId}
         codexModels={codexModels}
+        cursorModels={cursorModels}
+        opencodeModels={opencodeModels}
         generalSettings={generalSettings}
         runtimeLabel={runtimeLabel}
         runtimeTitle={runtimeTitle}

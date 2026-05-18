@@ -122,6 +122,7 @@ type PendingRequest = {
 const CODEX_BINARY = process.env.CODEX_BINARY_PATH ?? "codex";
 const REQUEST_TIMEOUT_MS = 20_000;
 const CODEX_CUSTOM_PROVIDER_ID = "codesymphony_custom";
+const CODEX_CUSTOM_PROVIDER_NAME = "CodeSymphony OpenAI-compatible";
 const CODEX_CUSTOM_PROVIDER_API_KEY_ENV = "CODESYMPHONY_CODEX_API_KEY";
 const CODEX_APP_SERVER_INITIALIZED_MESSAGE = { method: "initialized" } as const;
 
@@ -174,6 +175,8 @@ function buildCodexCustomProviderArgs(params: {
     `model=${escapeTomlString(params.model.trim())}`,
     "-c",
     `model_provider=${escapeTomlString(CODEX_CUSTOM_PROVIDER_ID)}`,
+    "-c",
+    `model_providers.${CODEX_CUSTOM_PROVIDER_ID}.name=${escapeTomlString(CODEX_CUSTOM_PROVIDER_NAME)}`,
     "-c",
     `model_providers.${CODEX_CUSTOM_PROVIDER_ID}.base_url=${escapeTomlString(normalizedBaseUrl)}`,
     "-c",
@@ -287,6 +290,7 @@ async function withCodexAppServerSession<T>(params: {
   });
   const output = readline.createInterface({ input: child.stdout });
   const pending = new Map<string, PendingRequest>();
+  const stderrLines: string[] = [];
   let finished = false;
 
   const finish = (error?: Error) => {
@@ -381,7 +385,15 @@ async function withCodexAppServerSession<T>(params: {
       if (finished) {
         return;
       }
-      finish(new Error(`codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"})`));
+      finish(createCodexAppServerExitError({
+        code,
+        signal,
+        stderrLines,
+      }));
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      appendCodexStderr(stderrLines, chunk);
     });
 
     await sendRequest("initialize", {
@@ -485,6 +497,35 @@ function createAbortError(): Error {
   const error = new Error("Aborted");
   error.name = "AbortError";
   return error;
+}
+
+function appendCodexStderr(stderrLines: string[], chunk: Buffer): void {
+  const nextLines = chunk.toString()
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (nextLines.length === 0) {
+    return;
+  }
+
+  stderrLines.push(...nextLines);
+  if (stderrLines.length > 3) {
+    stderrLines.splice(0, stderrLines.length - 3);
+  }
+}
+
+function createCodexAppServerExitError(params: {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stderrLines: string[];
+}): Error {
+  const stderrSuffix = params.stderrLines.length > 0
+    ? `: ${params.stderrLines.join(" | ").slice(0, 400)}`
+    : "";
+  return new Error(
+    `codex app-server exited (code=${params.code ?? "null"}, signal=${params.signal ?? "null"})${stderrSuffix}`,
+  );
 }
 
 function isResponse(value: unknown): value is JsonRpcResponse {
@@ -708,6 +749,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   const output = readline.createInterface({ input: child.stdout });
 
   const pending = new Map<string, PendingRequest>();
+  const stderrLines: string[] = [];
   const toolStartedAt = new Map<string, number>();
   const toolContextById = new Map<string, ToolContext>();
   const agentMessagePhaseById = new Map<string, string>();
@@ -838,7 +880,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     rejectCompletion = reject;
 
     child.on("error", (error) => {
-      rejectWith(error);
+      finish(error);
     });
 
     child.on("exit", (code, signal) => {
@@ -846,17 +888,18 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         return;
       }
       if (abortController?.signal.aborted) {
-        rejectWith(createAbortError());
+        finish(createAbortError());
         return;
       }
-      rejectWith(new Error(`codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"})`));
+      finish(createCodexAppServerExitError({
+        code,
+        signal,
+        stderrLines,
+      }));
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
-      const stderr = chunk.toString().trim();
-      if (!stderr) {
-        return;
-      }
+      appendCodexStderr(stderrLines, chunk);
       // Codex app-server writes recoverable tool-router diagnostics to stderr
       // even when the turn continues successfully, so stderr alone is not fatal.
     });
@@ -866,7 +909,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
       try {
         parsed = JSON.parse(line);
       } catch {
-        rejectWith(new Error("Received invalid JSON from codex app-server."));
+        finish(new Error("Received invalid JSON from codex app-server."));
         return;
       }
 
@@ -1327,6 +1370,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
       }
     });
   });
+  void completionPromise.catch(() => {});
 
   const abortListener = () => {
     finish(createAbortError());

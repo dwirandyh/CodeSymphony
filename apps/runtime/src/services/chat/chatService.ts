@@ -1274,6 +1274,7 @@ export function createChatService(deps: RuntimeDeps) {
     const providerOptions = {
       agent: selection.agent,
       model: selection.model,
+      providerCompatibility: selection.provider?.compatibility,
       providerApiKey: selection.provider?.apiKey ?? undefined,
       providerBaseUrl: selection.provider?.baseUrl ?? undefined,
     };
@@ -3270,6 +3271,7 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
           abortController,
           permissionMode: "plan",
           model: selection.model,
+          providerCompatibility: selection.provider?.compatibility,
           providerApiKey: selection.provider?.apiKey ?? undefined,
           providerBaseUrl: selection.provider?.baseUrl ?? undefined,
           onText: (chunk) => {

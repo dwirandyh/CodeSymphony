@@ -26,11 +26,13 @@ describe("modelProviderService", () => {
   describe("createProvider", () => {
     it("creates a new provider", async () => {
       const provider = await service.createProvider({
+        compatibility: "openai",
         name: "Test Provider",
         modelId: "gpt-4",
         baseUrl: "https://api.example.com",
         apiKey: "sk-test-key-1234567890",
       });
+      expect(provider.compatibility).toBe("openai");
       expect(provider.name).toBe("Test Provider");
       expect(provider.modelId).toBe("gpt-4");
       expect(provider.baseUrl).toBe("https://api.example.com");
@@ -40,6 +42,7 @@ describe("modelProviderService", () => {
 
     it("masks short API keys", async () => {
       const provider = await service.createProvider({
+        compatibility: "openai",
         name: "Short",
         modelId: "gpt-4",
         baseUrl: "https://api.example.com",
@@ -51,8 +54,8 @@ describe("modelProviderService", () => {
 
   describe("listProviders", () => {
     it("returns all providers ordered by creation", async () => {
-      await service.createProvider({ name: "A", modelId: "m1", baseUrl: "http://a", apiKey: "key-a-1234567890123" });
-      await service.createProvider({ name: "B", modelId: "m2", baseUrl: "http://b", apiKey: "key-b-1234567890123" });
+      await service.createProvider({ compatibility: "anthropic", name: "A", modelId: "m1", baseUrl: "http://a", apiKey: "key-a-1234567890123" });
+      await service.createProvider({ compatibility: "openai", name: "B", modelId: "m2", baseUrl: "http://b", apiKey: "key-b-1234567890123" });
       const providers = await service.listProviders();
       expect(providers.length).toBe(2);
       expect(providers[0].name).toBe("A");
@@ -63,6 +66,7 @@ describe("modelProviderService", () => {
   describe("updateProvider", () => {
     it("updates provider fields", async () => {
       const created = await service.createProvider({
+        compatibility: "openai",
         name: "Original",
         modelId: "m1",
         baseUrl: "http://old",
@@ -77,6 +81,7 @@ describe("modelProviderService", () => {
   describe("deleteProvider", () => {
     it("removes provider", async () => {
       const created = await service.createProvider({
+        compatibility: "openai",
         name: "ToDelete",
         modelId: "m1",
         baseUrl: "http://x",
@@ -90,19 +95,43 @@ describe("modelProviderService", () => {
 
   describe("activateProvider", () => {
     it("activates provider and deactivates others", async () => {
-      const a = await service.createProvider({ name: "A", modelId: "m1", baseUrl: "http://a", apiKey: "key-a-1234567890123" });
-      const b = await service.createProvider({ name: "B", modelId: "m2", baseUrl: "http://b", apiKey: "key-b-1234567890123" });
+      const a = await service.createProvider({ compatibility: "openai", name: "A", modelId: "m1", baseUrl: "http://a", apiKey: "key-a-1234567890123" });
+      const b = await service.createProvider({ compatibility: "openai", name: "B", modelId: "m2", baseUrl: "http://b", apiKey: "key-b-1234567890123" });
       await service.activateProvider(a.id);
       await service.activateProvider(b.id);
       const providers = await service.listProviders();
       expect(providers.find(p => p.id === a.id)?.isActive).toBe(false);
       expect(providers.find(p => p.id === b.id)?.isActive).toBe(true);
     });
+
+    it("keeps separate active providers for different compatibilities", async () => {
+      const anthropic = await service.createProvider({
+        compatibility: "anthropic",
+        name: "Anthropic",
+        modelId: "claude-sonnet-4-6",
+        baseUrl: "http://anthropic",
+        apiKey: "key-anthropic-1234567890123",
+      });
+      const openai = await service.createProvider({
+        compatibility: "openai",
+        name: "OpenAI",
+        modelId: "gpt-5.4",
+        baseUrl: "http://openai",
+        apiKey: "key-openai-1234567890123",
+      });
+
+      await service.activateProvider(anthropic.id);
+      await service.activateProvider(openai.id);
+
+      const providers = await service.listProviders();
+      expect(providers.find((provider) => provider.id === anthropic.id)?.isActive).toBe(true);
+      expect(providers.find((provider) => provider.id === openai.id)?.isActive).toBe(true);
+    });
   });
 
   describe("deactivateAll", () => {
     it("deactivates all providers", async () => {
-      const a = await service.createProvider({ name: "A", modelId: "m1", baseUrl: "http://a", apiKey: "key-a-1234567890123" });
+      const a = await service.createProvider({ compatibility: "openai", name: "A", modelId: "m1", baseUrl: "http://a", apiKey: "key-a-1234567890123" });
       await service.activateProvider(a.id);
       await service.deactivateAll();
       const providers = await service.listProviders();
@@ -117,6 +146,7 @@ describe("modelProviderService", () => {
 
     it("returns active provider with raw apiKey", async () => {
       const created = await service.createProvider({
+        compatibility: "anthropic",
         name: "Active",
         modelId: "m1",
         baseUrl: "http://api",
@@ -127,6 +157,27 @@ describe("modelProviderService", () => {
       expect(active).not.toBeNull();
       expect(active!.apiKey).toBe("sk-secret-1234567890");
       expect(active!.name).toBe("Active");
+    });
+
+    it("returns null for OpenCode when multiple compatibilities are active", async () => {
+      const anthropic = await service.createProvider({
+        compatibility: "anthropic",
+        name: "Anthropic",
+        modelId: "claude-sonnet-4-6",
+        baseUrl: "http://anthropic",
+        apiKey: "key-anthropic-1234567890123",
+      });
+      const openai = await service.createProvider({
+        compatibility: "openai",
+        name: "OpenAI",
+        modelId: "gpt-5.4",
+        baseUrl: "http://openai",
+        apiKey: "key-openai-1234567890123",
+      });
+      await service.activateProvider(anthropic.id);
+      await service.activateProvider(openai.id);
+
+      expect(await service.getActiveProvider("opencode")).toBeNull();
     });
   });
 });

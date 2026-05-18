@@ -1,21 +1,21 @@
 import type { FastifyInstance } from "fastify";
 import {
-  type CliAgent,
   CodexModelCatalogSchema,
   CreateModelProviderInputSchema,
   CursorModelCatalogSchema,
   OpencodeModelCatalogSchema,
   TestModelProviderInputSchema,
   UpdateModelProviderInputSchema,
+  type ModelProviderCompatibility,
 } from "@codesymphony/shared-types";
 import * as codexSessionRunner from "../codex/sessionRunner.js";
 import * as cursorSessionRunner from "../cursor/sessionRunner.js";
 import * as opencodeModelCatalog from "../opencode/modelCatalog.js";
 
-function normalizeProviderTestUrl(baseUrl: string, agent: CliAgent): string {
+function normalizeProviderTestUrl(baseUrl: string, compatibility: ModelProviderCompatibility): string {
   const trimmedBaseUrl = baseUrl.replace(/\/+$/, "");
 
-  if (agent === "codex" || agent === "opencode") {
+  if (compatibility === "openai") {
     return trimmedBaseUrl.endsWith("/responses")
       ? trimmedBaseUrl
       : `${trimmedBaseUrl}/responses`;
@@ -28,6 +28,93 @@ function normalizeProviderTestUrl(baseUrl: string, agent: CliAgent): string {
   return trimmedBaseUrl.endsWith("/v1")
     ? `${trimmedBaseUrl}/messages`
     : `${trimmedBaseUrl}/v1/messages`;
+}
+
+function normalizeOpenAiCompatibilityUrl(baseUrl: string, endpoint: "responses" | "chat/completions"): string {
+  const trimmedBaseUrl = baseUrl.replace(/\/+$/, "");
+  const withoutKnownEndpoint = trimmedBaseUrl
+    .replace(/\/responses$/, "")
+    .replace(/\/chat\/completions$/, "");
+  return `${withoutKnownEndpoint}/${endpoint}`;
+}
+
+async function readErrorDetail(response: Response): Promise<string> {
+  const body = await response.text().catch(() => "");
+  return body.length > 0 ? body.slice(0, 300) : `HTTP ${response.status}`;
+}
+
+async function testOpenAiCompatibleProvider(params: {
+  baseUrl: string;
+  apiKey: string;
+  modelId: string;
+}): Promise<{ success: boolean; error?: string }> {
+  const headers = {
+    Authorization: `Bearer ${params.apiKey}`,
+    "Content-Type": "application/json",
+  };
+  const responsesUrl = normalizeOpenAiCompatibilityUrl(params.baseUrl, "responses");
+  const responsesResponse = await fetch(responsesUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: params.modelId,
+      input: "Hi",
+      max_output_tokens: 1,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (responsesResponse.ok) {
+    return { success: true };
+  }
+
+  const responsesDetail = await readErrorDetail(responsesResponse);
+  const shouldProbeChatCompletions =
+    responsesResponse.status === 404
+    || responsesResponse.status === 405
+    || responsesResponse.status === 501;
+  if (!shouldProbeChatCompletions) {
+    return {
+      success: false,
+      error: `Provider returned ${responsesResponse.status}: ${responsesDetail}`,
+    };
+  }
+
+  const chatCompletionsUrl = normalizeOpenAiCompatibilityUrl(params.baseUrl, "chat/completions");
+  const chatCompletionsResponse = await fetch(chatCompletionsUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: params.modelId,
+      messages: [{ role: "user", content: "Hi" }],
+      max_tokens: 1,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (chatCompletionsResponse.ok) {
+    return {
+      success: false,
+      error: "This endpoint supports OpenAI Chat Completions, but Codex requires the OpenAI Responses API. It can work in OpenCode, but not in Codex.",
+    };
+  }
+
+  const chatCompletionsDetail = await readErrorDetail(chatCompletionsResponse);
+  const chatCompletionsLooksSupported =
+    chatCompletionsResponse.status !== 404
+    && chatCompletionsResponse.status !== 405
+    && chatCompletionsResponse.status !== 501;
+  if (chatCompletionsLooksSupported) {
+    return {
+      success: false,
+      error: `This endpoint appears to support OpenAI Chat Completions but not the Responses API. Chat Completions returned ${chatCompletionsResponse.status}: ${chatCompletionsDetail}. It can work in OpenCode, but not in Codex.`,
+    };
+  }
+
+  return {
+    success: false,
+    error: `Provider returned ${responsesResponse.status}: ${responsesDetail}`,
+  };
 }
 
 export async function registerModelRoutes(app: FastifyInstance) {
@@ -126,46 +213,39 @@ export async function registerModelRoutes(app: FastifyInstance) {
 
   app.post("/model-providers/test", async (request, reply) => {
     const input = TestModelProviderInputSchema.parse(request.body);
-    const { agent, baseUrl, apiKey, modelId } = input;
+    const { compatibility, baseUrl, apiKey, modelId } = input;
 
     try {
-      if (agent === "cursor") {
-        return reply.code(400).send({ error: "Cursor does not support custom model providers" });
+      if (compatibility === "openai") {
+        return {
+          data: await testOpenAiCompatibleProvider({
+            baseUrl,
+            apiKey,
+            modelId,
+          }),
+        };
       }
 
-      const url = normalizeProviderTestUrl(baseUrl, agent);
+      const url = normalizeProviderTestUrl(baseUrl, compatibility);
       const response = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(agent === "codex" || agent === "opencode"
-            ? {
-                Authorization: `Bearer ${apiKey}`,
-              }
-            : {
-                "x-api-key": apiKey,
-                "anthropic-version": "2023-06-01",
-              }),
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify(
-          agent === "codex" || agent === "opencode"
-            ? {
-                model: modelId,
-                input: "Hi",
-                max_output_tokens: 1,
-              }
-            : {
-                model: modelId,
-                max_tokens: 1,
-                messages: [{ role: "user", content: "Hi" }],
-              },
+          {
+            model: modelId,
+            max_tokens: 1,
+            messages: [{ role: "user", content: "Hi" }],
+          },
         ),
         signal: AbortSignal.timeout(15_000),
       });
 
       if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        const detail = body.length > 0 ? body.slice(0, 300) : `HTTP ${response.status}`;
+        const detail = await readErrorDetail(response);
         return { data: { success: false, error: `Provider returned ${response.status}: ${detail}` } };
       }
 

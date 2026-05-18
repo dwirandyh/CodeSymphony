@@ -36,6 +36,11 @@ const DEFAULT_AGENT_DEFAULTS: AgentDefaults = {
   },
 };
 
+function isBuiltinOpencodeModelId(value: string): boolean {
+  const slashIndex = value.indexOf("/");
+  return slashIndex > 0 && slashIndex < value.length - 1;
+}
+
 function normalizeSelection(input: unknown, fallback: AgentDefaultSelection): AgentDefaultSelection {
   if (!input || typeof input !== "object") {
     return fallback;
@@ -78,6 +83,14 @@ function normalizeSelection(input: unknown, fallback: AgentDefaultSelection): Ag
   }
 
   if (agent === "codex") {
+    return {
+      agent,
+      model: normalizedModel,
+      modelProviderId: null,
+    };
+  }
+
+  if (agent === "opencode" && isBuiltinOpencodeModelId(normalizedModel)) {
     return {
       agent,
       model: normalizedModel,

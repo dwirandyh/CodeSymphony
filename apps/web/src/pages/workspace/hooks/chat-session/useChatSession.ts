@@ -161,17 +161,26 @@ function mergeTrackedThreads(params: {
   currentThreads: ChatThread[];
   optimisticCreatedThreadIds: Set<string>;
   locallyDeletedThreadIds: Set<string>;
+  pendingAgentSelectionUpdateThreadIds?: Set<string>;
 }): ChatThread[] {
   const {
     queriedThreads,
     currentThreads,
     optimisticCreatedThreadIds,
     locallyDeletedThreadIds,
+    pendingAgentSelectionUpdateThreadIds = new Set<string>(),
   } = params;
+  const currentThreadsById = new Map(currentThreads.map((thread) => [thread.id, thread] as const));
   const optimisticThreads = currentThreads.filter((thread) =>
     optimisticCreatedThreadIds.has(thread.id) && !locallyDeletedThreadIds.has(thread.id),
   );
-  const mergedThreads = queriedThreads.filter((thread) => !locallyDeletedThreadIds.has(thread.id));
+  const mergedThreads = queriedThreads
+    .filter((thread) => !locallyDeletedThreadIds.has(thread.id))
+    .map((thread) => (
+      pendingAgentSelectionUpdateThreadIds.has(thread.id)
+        ? currentThreadsById.get(thread.id) ?? thread
+        : thread
+    ));
 
   for (const optimisticThread of optimisticThreads) {
     if (!mergedThreads.some((thread) => thread.id === optimisticThread.id)) {
@@ -476,12 +485,12 @@ function isPendingWorktreePlaceholderThreadId(threadId: string | null | undefine
   return typeof threadId === "string" && threadId.startsWith(PENDING_WORKTREE_THREAD_ID_PREFIX);
 }
 
-function shouldHydratePristineThreadSelectionFromDefaults(params: {
+function isPristineThreadSelectionCandidate(params: {
   selectedThread: ChatThread | null;
-  messages: ChatMessage[];
-  events: ChatEvent[];
+  messageCount: number;
+  eventCount: number;
 }): boolean {
-  const { selectedThread, messages, events } = params;
+  const { selectedThread, messageCount, eventCount } = params;
   if (!selectedThread) {
     return false;
   }
@@ -490,7 +499,7 @@ function shouldHydratePristineThreadSelectionFromDefaults(params: {
     return false;
   }
 
-  if (messages.length > 0 || events.length > 0) {
+  if (messageCount > 0 || eventCount > 0) {
     return false;
   }
 
@@ -506,6 +515,18 @@ function shouldHydratePristineThreadSelectionFromDefaults(params: {
   return selectedThread.agent === "claude"
     && selectedThread.model === DEFAULT_CHAT_MODEL_BY_AGENT.claude
     && selectedThread.modelProviderId == null;
+}
+
+function shouldHydratePristineThreadSelectionFromDefaults(params: {
+  selectedThread: ChatThread | null;
+  messages: ChatMessage[];
+  events: ChatEvent[];
+}): boolean {
+  return isPristineThreadSelectionCandidate({
+    selectedThread: params.selectedThread,
+    messageCount: params.messages.length,
+    eventCount: params.events.length,
+  });
 }
 
 function getCachedThreadsForWorktree(
@@ -847,6 +868,7 @@ export function useChatSession(
     model: string;
     modelProviderId: string | null;
   } | null>(null);
+  const manuallySelectedThreadIdsRef = useRef<Set<string>>(new Set());
 
   const selectedThreadId = selectedThreadIdOverrideRef.current ?? selectedThreadIdState;
   activeThreadIdRef.current = selectedThreadId;
@@ -1044,6 +1066,7 @@ export function useChatSession(
         currentThreads: current,
         optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
         locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
+        pendingAgentSelectionUpdateThreadIds: new Set(pendingAgentSelectionUpdatesRef.current.keys()),
       });
 
       if (current.length === mergedThreads.length && current.every((t, i) => (
@@ -1071,6 +1094,7 @@ export function useChatSession(
       currentThreads: threadsRef.current,
       optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
       locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
+      pendingAgentSelectionUpdateThreadIds: new Set(pendingAgentSelectionUpdatesRef.current.keys()),
     });
 
     if (requestedThreadSelectionDeferred) {
@@ -1470,10 +1494,12 @@ export function useChatSession(
       return;
     }
 
-    void setThreadAgentSelection(selectedThreadId, {
+    void setThreadAgentSelectionInternal(selectedThreadId, {
       agent: preferredSelection.agent!,
       model: preferredSelection.model!,
       modelProviderId: preferredSelection.modelProviderId ?? null,
+    }, {
+      source: "defaults_hydration",
     });
   }, [events, messages, selectedThread, selectedThreadId]);
 
@@ -2696,12 +2722,38 @@ export function useChatSession(
     }
   }
 
-  async function setThreadAgentSelection(threadId: string, selection: UpdateChatThreadAgentSelectionInput) {
+  async function setThreadAgentSelectionInternal(
+    threadId: string,
+    selection: UpdateChatThreadAgentSelectionInput,
+    options?: {
+      source?: "manual" | "defaults_hydration";
+    },
+  ) {
+    const source = options?.source ?? "manual";
+    if (source === "manual") {
+      manuallySelectedThreadIdsRef.current.add(threadId);
+    }
+
     const previousPendingUpdate = pendingAgentSelectionUpdatesRef.current.get(threadId);
     const mutationPromise = (previousPendingUpdate ?? Promise.resolve())
       .catch(() => {})
       .then(async () => {
         const currentThread = threadByIdRef.current.get(threadId) ?? null;
+        if (source === "defaults_hydration") {
+          if (manuallySelectedThreadIdsRef.current.has(threadId)) {
+            return;
+          }
+
+          const counts = getThreadCollectionCounts(threadId);
+          if (!isPristineThreadSelectionCandidate({
+            selectedThread: currentThread,
+            messageCount: counts?.messagesCount ?? 0,
+            eventCount: counts?.eventsCount ?? 0,
+          })) {
+            return;
+          }
+        }
+
         if (
           currentThread?.agent === selection.agent
           && currentThread.model === selection.model
@@ -2750,6 +2802,10 @@ export function useChatSession(
         pendingAgentSelectionUpdatesRef.current.delete(threadId);
       }
     }
+  }
+
+  async function setThreadAgentSelection(threadId: string, selection: UpdateChatThreadAgentSelectionInput) {
+    await setThreadAgentSelectionInternal(threadId, selection);
   }
 
   async function setComposerPermissionMode(permissionMode: ChatThreadPermissionMode) {

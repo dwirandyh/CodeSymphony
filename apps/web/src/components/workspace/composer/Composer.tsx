@@ -283,6 +283,7 @@ function ComposerContent({
   const permissionPopoverRef = useRef<HTMLDivElement>(null);
   const [permissionPreviewMode, setPermissionPreviewMode] = useState<ChatThreadPermissionMode | null>(null);
   const [mobileSessionSheetOpen, setMobileSessionSheetOpen] = useState(false);
+  const [composerPopoverHost, setComposerPopoverHost] = useState<HTMLDivElement | null>(null);
   const hasProvidedFileIndex = fileIndex !== undefined && typeof fileIndexLoading === "boolean";
   const [hasRequestedFileIndex, setHasRequestedFileIndex] = useState(() => hasProvidedFileIndex);
   const [isMobile, setIsMobile] = useState(() => {
@@ -1106,7 +1107,6 @@ function ComposerContent({
             <button
               type="button"
               disabled={selectionLocked}
-              title={option.model}
               className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
                 selected
                   ? "bg-accent text-accent-foreground"
@@ -1266,6 +1266,12 @@ function ComposerContent({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
+          <div
+            ref={setComposerPopoverHost}
+            data-composer-popover-host="true"
+            className="pointer-events-none absolute inset-0 z-[60] overflow-visible"
+          />
+
           {isDragOver && (
             <div className={`absolute inset-0 z-10 flex items-center justify-center bg-primary/10 ${attachedTop ? "rounded-b-2xl rounded-t-none lg:rounded-b-3xl" : "rounded-2xl lg:rounded-3xl"}`}>
               <span className="text-sm font-medium text-primary">Drop files here</span>
@@ -1522,6 +1528,7 @@ function ComposerContent({
                   codexBuiltinModelOverride={codexBuiltinModelOverride}
                   showAgentList={showAgentList}
                   selectionLockedReason={selectionBlockedReason}
+                  popoverContainer={composerPopoverHost}
                   onSelectionChange={(nextSelection) => {
                     onAgentSelectionChange(nextSelection);
                   }}

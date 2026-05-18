@@ -14,7 +14,7 @@ import type {
   OpencodeModelCatalogEntry,
   Repository,
 } from "@codesymphony/shared-types";
-import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
+import { DEFAULT_CHAT_MODEL_BY_AGENT, supportsModelProviderCompatibility } from "@codesymphony/shared-types";
 import {
   CalendarClock,
   Check,
@@ -440,7 +440,7 @@ function formToUpdatePayload(form: AutomationFormState) {
 }
 
 function getProvidersForAgent(providers: ModelProvider[], agent: CliAgent) {
-  return providers.filter((provider) => provider.agent === agent);
+  return providers.filter((provider) => supportsModelProviderCompatibility(agent, provider.compatibility));
 }
 
 function buildWorkspaceSearch(run: AutomationRun, repositoryId: string) {

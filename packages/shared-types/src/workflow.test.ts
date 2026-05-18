@@ -11,10 +11,12 @@ import {
   CreateModelProviderInputSchema,
   DEFAULT_CHAT_MODEL_BY_AGENT,
   hasSameThreadSelection,
+  MODEL_PROVIDER_AGENTS_BY_COMPATIBILITY,
   ModelProviderSchema,
   resolveApprovedPlanExecutionKind,
   shouldHandoffApprovedPlanExecution,
   shouldPreserveThreadSelectionSessionIds,
+  supportsModelProviderCompatibility,
   TestModelProviderInputSchema,
   UpdateAutomationInputSchema,
   UpdateChatThreadAgentSelectionInputSchema,
@@ -65,47 +67,58 @@ describe("Cursor shared workflow schemas", () => {
     });
   });
 
-  it("accepts Cursor across provider-facing schemas", () => {
+  it("maps provider compatibilities to supported agents", () => {
+    expect(MODEL_PROVIDER_AGENTS_BY_COMPATIBILITY.anthropic).toEqual(["claude", "opencode"]);
+    expect(MODEL_PROVIDER_AGENTS_BY_COMPATIBILITY.openai).toEqual(["codex", "opencode"]);
+    expect(supportsModelProviderCompatibility("claude", "anthropic")).toBe(true);
+    expect(supportsModelProviderCompatibility("claude", "openai")).toBe(false);
+    expect(supportsModelProviderCompatibility("codex", "openai")).toBe(true);
+    expect(supportsModelProviderCompatibility("opencode", "anthropic")).toBe(true);
+  });
+
+  it("accepts compatibility-based provider schemas", () => {
     expect(ModelProviderSchema.parse({
       id: "provider-1",
-      agent: "cursor",
-      name: "Cursor Account",
-      modelId: "default[]",
-      baseUrl: null,
-      apiKeyMasked: "",
+      compatibility: "openai",
+      name: "OpenAI",
+      modelId: "gpt-5.4",
+      baseUrl: "https://api.openai.com/v1",
+      apiKeyMasked: "••••",
       isActive: false,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     })).toMatchObject({
-      agent: "cursor",
-      modelId: "default[]",
+      compatibility: "openai",
+      modelId: "gpt-5.4",
     });
 
     expect(CreateModelProviderInputSchema.parse({
-      agent: "cursor",
-      name: "Cursor Account",
-      modelId: "default[]",
+      compatibility: "anthropic",
+      name: "Anthropic",
+      modelId: "claude-sonnet-4-6",
+      baseUrl: "https://api.anthropic.com/v1",
+      apiKey: "sk-ant-test",
     })).toMatchObject({
-      agent: "cursor",
-      modelId: "default[]",
+      compatibility: "anthropic",
+      modelId: "claude-sonnet-4-6",
     });
 
     expect(UpdateModelProviderInputSchema.parse({
-      agent: "cursor",
-      modelId: "default[]",
+      compatibility: "openai",
+      modelId: "gpt-5.5",
     })).toMatchObject({
-      agent: "cursor",
-      modelId: "default[]",
+      compatibility: "openai",
+      modelId: "gpt-5.5",
     });
 
     expect(TestModelProviderInputSchema.parse({
-      agent: "cursor",
+      compatibility: "openai",
       baseUrl: "http://localhost:9999",
       apiKey: "key",
-      modelId: "default[]",
+      modelId: "gpt-5.4",
     })).toMatchObject({
-      agent: "cursor",
-      modelId: "default[]",
+      compatibility: "openai",
+      modelId: "gpt-5.4",
     });
   });
 

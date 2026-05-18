@@ -77,6 +77,11 @@ enum CliAgent {
   opencode
 }
 
+enum ModelProviderCompatibility {
+  anthropic
+  openai
+}
+
 enum AutomationRunStatus {
   queued
   dispatching
@@ -255,20 +260,20 @@ model ChatEvent {
 }
 
 model ModelProvider {
-  id        String   @id @default(cuid())
-  agent     CliAgent @default(claude)
-  name      String
-  modelId   String   @default("")
-  baseUrl   String?
-  apiKey    String?
-  isActive  Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String                     @id @default(cuid())
+  compatibility ModelProviderCompatibility
+  name          String
+  modelId       String                     @default("")
+  baseUrl       String?
+  apiKey        String?
+  isActive      Boolean                    @default(false)
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
 
   threads ChatThread[]
   automations Automation[]
 
-  @@index([agent, isActive])
+  @@index([compatibility, isActive])
 }
 
 model AppSettings {

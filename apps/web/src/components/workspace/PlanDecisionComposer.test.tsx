@@ -21,7 +21,7 @@ afterEach(() => {
 describe("PlanDecisionComposer", () => {
   const providers: ModelProvider[] = [{
     id: "provider-codex-1",
-    agent: "codex",
+    compatibility: "openai",
     name: "Team Codex",
     modelId: "gpt-5-custom",
     baseUrl: "https://example.invalid/v1",

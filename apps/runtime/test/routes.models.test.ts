@@ -137,7 +137,13 @@ describe("model provider routes", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/model-providers",
-      payload: { name: "New", modelId: "m1", baseUrl: "http://localhost", apiKey: "key" },
+      payload: {
+        compatibility: "openai",
+        name: "New",
+        modelId: "m1",
+        baseUrl: "http://localhost",
+        apiKey: "key",
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.name).toBe("New");
@@ -177,7 +183,12 @@ describe("model provider routes", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/model-providers/test",
-      payload: { baseUrl: "http://localhost:9999", apiKey: "key", modelId: "model" },
+      payload: {
+        compatibility: "anthropic",
+        baseUrl: "http://localhost:9999",
+        apiKey: "key",
+        modelId: "model",
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.success).toBe(false);
@@ -190,20 +201,30 @@ describe("model provider routes", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/model-providers/test",
-      payload: { baseUrl: "http://localhost:9999/", apiKey: "key", modelId: "model" },
+      payload: {
+        compatibility: "anthropic",
+        baseUrl: "http://localhost:9999/",
+        apiKey: "key",
+        modelId: "model",
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.success).toBe(true);
     vi.unstubAllGlobals();
   });
 
-  it("POST /api/model-providers/test uses the responses API contract for Codex", async () => {
+  it("POST /api/model-providers/test uses the responses API contract for OpenAI-compatible providers", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     vi.stubGlobal("fetch", fetchMock);
     const res = await app.inject({
       method: "POST",
       url: "/api/model-providers/test",
-      payload: { agent: "codex", baseUrl: "http://localhost:9999/v1", apiKey: "key", modelId: "gpt-5.4" },
+      payload: {
+        compatibility: "openai",
+        baseUrl: "http://localhost:9999/v1",
+        apiKey: "key",
+        modelId: "gpt-5.4",
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.success).toBe(true);
@@ -225,13 +246,18 @@ describe("model provider routes", () => {
     vi.unstubAllGlobals();
   });
 
-  it("POST /api/model-providers/test uses the responses API contract for OpenCode", async () => {
+  it("POST /api/model-providers/test uses the responses API contract for custom OpenAI-compatible model ids", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     vi.stubGlobal("fetch", fetchMock);
     const res = await app.inject({
       method: "POST",
       url: "/api/model-providers/test",
-      payload: { agent: "opencode", baseUrl: "http://localhost:9999/v1", apiKey: "key", modelId: "gpt-5-custom" },
+      payload: {
+        compatibility: "openai",
+        baseUrl: "http://localhost:9999/v1",
+        apiKey: "key",
+        modelId: "gpt-5-custom",
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.success).toBe(true);
@@ -253,14 +279,89 @@ describe("model provider routes", () => {
     vi.unstubAllGlobals();
   });
 
-  it("POST /api/model-providers/test rejects Cursor custom provider tests", async () => {
+  it("POST /api/model-providers/test explains when an OpenAI-compatible endpoint only supports chat completions", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        text: vi.fn().mockResolvedValue("{\"error\":\"not found\"}"),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+      });
+    vi.stubGlobal("fetch", fetchMock);
     const res = await app.inject({
       method: "POST",
       url: "/api/model-providers/test",
-      payload: { agent: "cursor", baseUrl: "http://localhost:9999", apiKey: "key", modelId: "default[]" },
+      payload: {
+        compatibility: "openai",
+        baseUrl: "https://api.z.ai/api/paas/v4",
+        apiKey: "key",
+        modelId: "GLM-4.7",
+      },
     });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe("Cursor does not support custom model providers");
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toEqual({
+      success: false,
+      error: "This endpoint supports OpenAI Chat Completions, but Codex requires the OpenAI Responses API. It can work in OpenCode, but not in Codex.",
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.z.ai/api/paas/v4/responses",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          model: "GLM-4.7",
+          input: "Hi",
+          max_output_tokens: 1,
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.z.ai/api/paas/v4/chat/completions",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          model: "GLM-4.7",
+          messages: [{ role: "user", content: "Hi" }],
+          max_tokens: 1,
+        }),
+      }),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("POST /api/model-providers/test explains when chat completions exists but is currently rate limited", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        text: vi.fn().mockResolvedValue("{\"error\":\"not found\"}"),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        text: vi.fn().mockResolvedValue("{\"error\":{\"message\":\"Insufficient balance\"}}"),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/model-providers/test",
+      payload: {
+        compatibility: "openai",
+        baseUrl: "https://api.z.ai/api/paas/v4",
+        apiKey: "key",
+        modelId: "GLM-4.7",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toEqual({
+      success: false,
+      error: "This endpoint appears to support OpenAI Chat Completions but not the Responses API. Chat Completions returned 429: {\"error\":{\"message\":\"Insufficient balance\"}}. It can work in OpenCode, but not in Codex.",
+    });
+    vi.unstubAllGlobals();
   });
 
   it("POST /api/model-providers/test handles non-ok response", async () => {
@@ -272,7 +373,12 @@ describe("model provider routes", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/model-providers/test",
-      payload: { baseUrl: "http://localhost:9999", apiKey: "bad", modelId: "model" },
+      payload: {
+        compatibility: "anthropic",
+        baseUrl: "http://localhost:9999",
+        apiKey: "bad",
+        modelId: "model",
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.success).toBe(false);

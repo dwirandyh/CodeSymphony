@@ -276,6 +276,8 @@ describe("codex session runner skill integration", () => {
       "-c",
       'model_provider="codesymphony_custom"',
       "-c",
+      'model_providers.codesymphony_custom.name="CodeSymphony OpenAI-compatible"',
+      "-c",
       'model_providers.codesymphony_custom.base_url="http://127.0.0.1:8317/v1"',
       "-c",
       'model_providers.codesymphony_custom.wire_api="responses"',
@@ -284,6 +286,85 @@ describe("codex session runner skill integration", () => {
     ]);
     expect(spawnOptions.env?.CODESYMPHONY_CODEX_API_KEY).toBe("sk-test");
     expect(spawnOptions.env?.CODEX_HOME).toBe(process.env.CODEX_HOME);
+  });
+
+  it("rejects cleanly when codex exits before turn/start responds", async () => {
+    const child = new MockCodexChildProcess();
+
+    let buffer = "";
+    child.stdin.on("data", (chunk: Buffer | string) => {
+      buffer += chunk.toString();
+
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n");
+        if (newlineIndex === -1) {
+          break;
+        }
+
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (!line) {
+          continue;
+        }
+
+        const message = JSON.parse(line) as { id?: string; method?: string };
+        if (message.method === "initialize") {
+          child.stdout.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
+          continue;
+        }
+
+        if (message.method === "skills/list") {
+          child.stdout.write(`${JSON.stringify({ id: message.id, result: { data: [] } })}\n`);
+          continue;
+        }
+
+        if (message.method === "thread/start") {
+          child.stdout.write(`${JSON.stringify({
+            id: message.id,
+            result: {
+              thread: {
+                id: "codex-thread-1",
+              },
+            },
+          })}\n`);
+          continue;
+        }
+
+        if (message.method === "turn/start") {
+          child.stderr.write("provider name must not be empty\n");
+          child.stderr.write("in `model_providers`\n");
+          queueMicrotask(() => {
+            child.emit("exit", 1, null);
+          });
+        }
+      }
+    });
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCodexWithStreaming } = await import("../src/codex/sessionRunner");
+    await expect(runCodexWithStreaming({
+      prompt: "Say hello.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      model: "gpt-5.5",
+      providerBaseUrl: "https://lb.jatevo.ai/v1",
+      providerApiKey: "sk-test",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    })).rejects.toThrow("provider name must not be empty");
   });
 
   it("keeps default Codex streaming final-answer only", async () => {

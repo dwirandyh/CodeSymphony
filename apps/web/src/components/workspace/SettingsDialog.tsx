@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Loader2, Pencil, Play, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, Loader2, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
@@ -18,17 +18,17 @@ import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
 import { cn } from "../../lib/utils";
 import {
-  BUILTIN_CHAT_MODELS_BY_AGENT,
+  MODEL_PROVIDER_AGENTS_BY_COMPATIBILITY,
   type CliAgent,
   type CodexModelCatalogEntry,
+  type CursorModelCatalogEntry,
   type ModelProvider,
+  type ModelProviderCompatibility,
+  type OpencodeModelCatalogEntry,
   type Repository,
   type SaveAutomationConfig,
 } from "@codesymphony/shared-types";
-import {
-  FALLBACK_CODEX_MODELS,
-  resolveAgentDefaultModel,
-} from "../../lib/agentModelDefaults";
+import { resolveAgentDefaultModel } from "../../lib/agentModelDefaults";
 import { useModelProviders } from "../../pages/workspace/hooks/useModelProviders";
 import {
   loadAgentDefaults,
@@ -45,6 +45,10 @@ import {
   type GeneralSettings,
 } from "../../lib/generalSettings";
 import { COMPLETION_SOUND_OPTIONS, playCompletionSound } from "../../lib/completionSounds";
+import {
+  buildAgentSelectionOptions,
+  type AgentSelectionOption,
+} from "./composer/AgentModelSelector";
 
 type SettingsTab = "general" | "workspace" | "models" | "licenses";
 type SaveAutomationTemplate = "custom_generic" | "flutter_hot_reload";
@@ -64,21 +68,38 @@ type RepositoryFormState = {
   saveAutomationPayload: string;
 };
 
-type ProviderProtocol = "anthropic" | "responses";
+type ProviderProtocol = "anthropic" | "openai";
 
-const PROVIDER_PROTOCOL_BY_AGENT: Record<CliAgent, ProviderProtocol> = {
-  claude: "anthropic",
-  codex: "responses",
-  cursor: "responses",
-  opencode: "responses",
+const PROVIDER_COMPATIBILITY_LABELS: Record<ModelProviderCompatibility, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
 };
 
-const PROVIDER_AGENT_LABELS: Record<CliAgent, string> = {
-  claude: "Claude",
+const PROVIDER_VISIBLE_AGENT_LABELS: Record<CliAgent, string> = {
+  claude: "Claude Code",
   codex: "Codex",
   cursor: "Cursor",
   opencode: "OpenCode",
 };
+
+function getProviderBaseUrlError(baseUrl: string): string | null {
+  if (baseUrl.length === 0) {
+    return null;
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(baseUrl);
+  } catch {
+    return "Enter a valid http:// or https:// URL.";
+  }
+
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    return "Enter a valid http:// or https:// URL.";
+  }
+
+  return null;
+}
 
 type AgentDefaultsKey = keyof AgentDefaults;
 
@@ -87,6 +108,8 @@ type AgentModelOption = {
   model: string;
   modelProviderId: string | null;
   label: string;
+  detail: string;
+  source: "builtin" | "custom";
 };
 
 type PreferenceToggleProps = {
@@ -117,6 +140,8 @@ type SettingsSectionProps = {
 type SettingsSelectOption = {
   value: string;
   label: string;
+  detail?: string;
+  source?: "builtin" | "custom";
   disabled?: boolean;
 };
 
@@ -130,6 +155,7 @@ type SettingsSelectProps = {
   itemClassName?: string;
   disabled?: boolean;
   placeholder?: string;
+  visualVariant?: "default" | "model-detail";
 };
 
 function PreferenceToggle({
@@ -232,6 +258,48 @@ function SettingsDesktopAppBar() {
   );
 }
 
+function renderSettingsSelectOptionContent(
+  option: SettingsSelectOption,
+  visualVariant: SettingsSelectProps["visualVariant"],
+) {
+  if (visualVariant !== "model-detail" || !option.detail) {
+    return option.label;
+  }
+
+  return (
+    <div className="flex w-full min-w-0 items-center justify-between gap-2 text-left">
+      <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
+      <span className="sr-only"> · </span>
+      <span className="max-w-[7rem] shrink-0 truncate text-right text-[10px] text-muted-foreground">
+        {option.detail}
+      </span>
+    </div>
+  );
+}
+
+function renderSettingsSelectTriggerContent(
+  option: SettingsSelectOption,
+  visualVariant: SettingsSelectProps["visualVariant"],
+) {
+  if (visualVariant !== "model-detail") {
+    return option.label;
+  }
+
+  return (
+    <span className="min-w-0 flex-1 truncate text-left font-medium">
+      {option.label}
+    </span>
+  );
+}
+
+function isFirstCustomSettingsSelectOption(
+  options: readonly SettingsSelectOption[],
+  index: number,
+): boolean {
+  return options[index]?.source === "custom"
+    && (index === 0 || options[index - 1]?.source !== "custom");
+}
+
 function SettingsSelect({
   ariaLabel,
   value,
@@ -242,7 +310,10 @@ function SettingsSelect({
   itemClassName,
   disabled = false,
   placeholder,
+  visualVariant = "default",
 }: SettingsSelectProps) {
+  const selectedOption = options.find((option) => option.value === value);
+
   return (
     <Select value={value} onValueChange={onValueChange} disabled={disabled}>
       <SelectTrigger
@@ -253,92 +324,61 @@ function SettingsSelect({
           className,
         )}
       >
-        <SelectValue placeholder={placeholder} />
+        {visualVariant === "model-detail" && selectedOption ? (
+          <div className="min-w-0 flex flex-1 items-center gap-2">
+            {renderSettingsSelectTriggerContent(selectedOption, visualVariant)}
+          </div>
+        ) : (
+          <SelectValue placeholder={placeholder} />
+        )}
       </SelectTrigger>
       <SelectContent>
-        {options.map((option) => (
-          <SelectItem
-            key={option.value}
-            value={option.value}
-            disabled={option.disabled}
-            className={cn("text-xs", itemClassName)}
-          >
-            {option.label}
-          </SelectItem>
+        {options.map((option, index) => (
+          <div key={option.value}>
+            {visualVariant === "model-detail" && isFirstCustomSettingsSelectOption(options, index) ? (
+              <div
+                data-model-separator="custom"
+                className="mx-2.5 my-1 border-t border-border/60"
+              />
+            ) : null}
+            <SelectItem
+              value={option.value}
+              disabled={option.disabled}
+              className={cn("text-xs", itemClassName)}
+            >
+              {renderSettingsSelectOptionContent(option, visualVariant)}
+            </SelectItem>
+          </div>
         ))}
       </SelectContent>
     </Select>
   );
 }
 
-function getProviderProtocol(agent: CliAgent | undefined | null): ProviderProtocol {
-  return PROVIDER_PROTOCOL_BY_AGENT[agent ?? "claude"];
+function getProviderProtocol(compatibility: ModelProviderCompatibility | undefined | null): ProviderProtocol {
+  return compatibility ?? "anthropic";
 }
 
-function getProviderAgentLabel(agent: CliAgent | undefined | null): string {
-  return PROVIDER_AGENT_LABELS[agent ?? "claude"];
+function getProviderCompatibilityLabel(compatibility: ModelProviderCompatibility | undefined | null): string {
+  return PROVIDER_COMPATIBILITY_LABELS[compatibility ?? "anthropic"];
 }
 
-function formatAgentModelLabel(agent: CliAgent, model: string): string {
-  if (agent === "cursor" && model === "default[]") {
-    return "Auto";
-  }
-
-  if (agent === "opencode") {
-    return model;
-  }
-
-  return model.replace(/\[[^\]]*]$/, "");
+function formatSupportedAgentsForCompatibility(compatibility: ModelProviderCompatibility): string {
+  const supportedAgents = MODEL_PROVIDER_AGENTS_BY_COMPATIBILITY[compatibility] ?? [];
+  return supportedAgents
+    .map((agent) => PROVIDER_VISIBLE_AGENT_LABELS[agent])
+    .join(" and ");
 }
 
-function buildAgentModelOptions(agent: CliAgent, providers: ModelProvider[]): AgentModelOption[] {
-  const builtins = agent === "codex"
-    ? []
-    : BUILTIN_CHAT_MODELS_BY_AGENT[agent].map((model) => ({
-      key: `${agent}:${model}:builtin`,
-      model,
-      modelProviderId: null,
-      label: formatAgentModelLabel(agent, model),
-    }));
-  const custom = providers
-    .filter((provider) => provider.agent === agent)
-    .map((provider) => ({
-      key: provider.id,
-      model: provider.modelId,
-      modelProviderId: provider.id,
-      label: `${provider.modelId} · ${provider.name}`,
-    }));
-
-  return [...builtins, ...custom];
-}
-
-function buildCodexAgentModelOptions(
-  providers: ModelProvider[],
-  codexModels: readonly CodexModelCatalogEntry[],
-): AgentModelOption[] {
-  const builtins = (codexModels.length > 0
-    ? codexModels.map((entry) => ({
-      key: `codex:${entry.id}:builtin`,
-      model: entry.id,
-      modelProviderId: null,
-      label: entry.name.trim() || formatAgentModelLabel("codex", entry.id),
-    }))
-    : FALLBACK_CODEX_MODELS.map((entry) => ({
-      key: `codex:${entry.id}:builtin`,
-      model: entry.id,
-      modelProviderId: null,
-      label: entry.name.trim() || formatAgentModelLabel("codex", entry.id),
-    })));
-  const custom = providers
-    .filter((provider) => provider.agent === "codex")
-    .map((provider) => ({
-      key: provider.id,
-      model: provider.modelId,
-      modelProviderId: provider.id,
-      label: `${provider.modelId} · ${provider.name}`,
-    }));
-
-  return [...builtins, ...custom];
+function mapAgentSelectionOptionsToAgentModelOptions(options: AgentSelectionOption[]): AgentModelOption[] {
+  return options.map((option) => ({
+    key: option.id,
+    model: option.model,
+    modelProviderId: option.modelProviderId,
+    label: option.label,
+    detail: option.detail,
+    source: option.source,
+  }));
 }
 
 function normalizeAgentDefaultSelection(
@@ -376,10 +416,6 @@ function normalizeAgentDefaultSelection(
     model: resolveAgentDefaultModel(selection.agent),
     modelProviderId: null,
   };
-}
-
-function isOpencodeBuiltinAlias(modelId: string): boolean {
-  return /^[^/\s]+\/[^/\s].+$/.test(modelId.trim());
 }
 
 function buildRepositoryFormState(
@@ -464,7 +500,9 @@ interface SettingsDialogProps {
   onClose: () => void;
   repositories: Repository[];
   selectedRepositoryId?: string | null;
-  codexModels: readonly CodexModelCatalogEntry[];
+  codexModels?: readonly CodexModelCatalogEntry[];
+  cursorModels?: readonly CursorModelCatalogEntry[];
+  opencodeModels?: readonly OpencodeModelCatalogEntry[];
   generalSettings: GeneralSettings;
   runtimeLabel?: string | null;
   runtimeTitle?: string | null;
@@ -496,7 +534,9 @@ export function SettingsDialog({
   onClose,
   repositories,
   selectedRepositoryId,
-  codexModels,
+  codexModels = [],
+  cursorModels = [],
+  opencodeModels = [],
   generalSettings,
   runtimeLabel,
   runtimeTitle,
@@ -537,9 +577,9 @@ export function SettingsDialog({
   } = useModelProviders();
 
   // Provider form state
-  const [showProviderForm, setShowProviderForm] = useState(false);
+  const [showProviderDialog, setShowProviderDialog] = useState(false);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
-  const [providerAgent, setProviderAgent] = useState<CliAgent>("claude");
+  const [providerCompatibility, setProviderCompatibility] = useState<ModelProviderCompatibility>("anthropic");
   const [providerName, setProviderName] = useState("");
   const [providerModelId, setProviderModelId] = useState("");
   const [providerBaseUrl, setProviderBaseUrl] = useState("");
@@ -548,78 +588,55 @@ export function SettingsDialog({
   const [testingProvider, setTestingProvider] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
   const [agentDefaults, setAgentDefaults] = useState<AgentDefaults>(() => loadAgentDefaults());
-  const providerProtocol = getProviderProtocol(providerAgent);
+  const providerProtocol = getProviderProtocol(providerCompatibility);
   const trimmedProviderName = providerName.trim();
   const trimmedProviderModelId = providerModelId.trim();
   const trimmedProviderBaseUrl = providerBaseUrl.trim();
   const trimmedProviderApiKey = providerApiKey.trim();
-  const providerUsesCustomEndpoint = trimmedProviderBaseUrl.length > 0 || trimmedProviderApiKey.length > 0;
-  const opencodeUsesBuiltinAlias = providerAgent === "opencode"
-    && trimmedProviderBaseUrl.length === 0
-    && trimmedProviderApiKey.length === 0
-    && isOpencodeBuiltinAlias(trimmedProviderModelId);
+  const providerBaseUrlError = getProviderBaseUrlError(trimmedProviderBaseUrl);
+  const hasValidProviderBaseUrl = trimmedProviderBaseUrl.length > 0 && providerBaseUrlError === null;
   const canSaveProvider = trimmedProviderName.length > 0
     && trimmedProviderModelId.length > 0
-    && providerAgent !== "cursor"
+    && hasValidProviderBaseUrl
     && (
-      providerAgent === "codex"
-      || (providerAgent === "opencode"
-        ? trimmedProviderBaseUrl.length > 0 || opencodeUsesBuiltinAlias
-        : !providerUsesCustomEndpoint
-          || (trimmedProviderBaseUrl.length > 0 && (editingProviderId !== null || trimmedProviderApiKey.length > 0)))
+      editingProviderId !== null
+        ? true
+        : trimmedProviderApiKey.length > 0
     );
-  const canTestProvider = providerAgent !== "cursor"
-    && trimmedProviderBaseUrl.length > 0
+  const canTestProvider = hasValidProviderBaseUrl
     && trimmedProviderApiKey.length > 0
     && trimmedProviderModelId.length > 0;
-  const providerModelPlaceholder = providerAgent === "claude"
+  const providerModelPlaceholder = providerCompatibility === "anthropic"
     ? 'e.g. "claude-sonnet-4-6", "glm-4.7"'
-    : providerAgent === "codex"
-      ? 'e.g. "gpt-5.4", "gpt-5.3-codex"'
-      : providerAgent === "cursor"
-        ? "Cursor built-in models are managed via Cursor account settings"
-      : 'e.g. "openai/gpt-5" or "gpt-5-custom"';
-  const providerBaseUrlPlaceholder = providerAgent === "claude"
-    ? "e.g. https://api.z.ai/v1"
-    : providerAgent === "codex"
-      ? "Leave empty to use Codex CLI defaults"
-      : providerAgent === "cursor"
-        ? "Cursor custom endpoints are not supported"
-      : "Leave empty when Model ID already uses provider/model";
+    : 'e.g. "gpt-5.4", "gpt-5.3-codex"';
+  const providerBaseUrlPlaceholder = providerCompatibility === "anthropic"
+    ? "e.g. https://api.anthropic.com/v1"
+    : "e.g. https://api.openai.com/v1 or https://lb.jatevo.ai/v1";
   const providerApiKeyPlaceholder = editingProviderId
     ? "Leave empty to keep current"
-    : providerAgent === "claude"
-      ? "API Key"
-      : providerAgent === "codex"
-        ? "Only if your Codex setup needs it"
-        : providerAgent === "cursor"
-          ? "Cursor custom endpoints are not supported"
-        : "Only for custom OpenCode endpoints";
-  const providerInlineHelp = providerAgent === "claude"
-    ? "Use an empty Base URL and API key to register a Claude-side model alias that relies on local CLI auth. Provide both when targeting an Anthropic-compatible remote endpoint."
-    : providerAgent === "codex"
-      ? "Responses-compatible entries can be simple model aliases like gpt-5.4 or point to a custom endpoint if your Codex CLI setup needs it."
-      : providerAgent === "cursor"
-        ? "Cursor models come from the authenticated Cursor account over ACP. CodeSymphony does not register custom Cursor providers or custom endpoints."
-      : "For built-in OpenCode providers, enter Model ID as provider/model, for example openai/gpt-5. If you provide a Base URL, the runtime registers a custom Responses-compatible provider for the OpenCode SDK.";
-  const providerFootnote = providerAgent === "claude"
-    ? "Add Anthropic-compatible model entries here, then choose them per thread under Claude in the composer. Endpoint tests validate Anthropic Messages API compatible backends."
-    : providerAgent === "codex"
-      ? "Add Responses-compatible model entries here, then choose them per thread under Codex in the composer. Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts."
-      : providerAgent === "cursor"
-        ? "Cursor uses built-in models discovered from the authenticated Cursor CLI. No custom provider rows or endpoint tests are available for Cursor."
-      : "Add OpenCode aliases or custom Responses-compatible providers here, then choose them per thread under OpenCode in the composer. Built-in OpenCode auth and /connect flows still work even if you never add an entry here.";
+    : "API Key";
+  const providerInlineHelp = providerCompatibility === "anthropic"
+    ? "Anthropic-compatible providers are available in Claude Code and OpenCode. Base URL and API key are required so the saved entry is runnable in both agents."
+    : "OpenAI-compatible providers are available in Codex and OpenCode. For Codex, the endpoint must implement the OpenAI Responses API. Chat-completions-only endpoints can still work in OpenCode.";
+  const providerFootnote = "Add compatibility-based provider entries here, then choose them per thread anywhere the matching agents are available.";
   const providerTestSuccessMessage = providerProtocol === "anthropic"
     ? "Connection successful — provider is Anthropic-compatible."
-    : providerAgent === "opencode"
-      ? "Connection successful — provider is Responses API compatible for OpenCode."
-      : "Connection successful — provider is Responses API compatible.";
+    : "Connection successful — provider supports the OpenAI Responses API.";
+  const agentSelectionOptions = useMemo(
+    () => buildAgentSelectionOptions({
+      providers,
+      codexModels,
+      cursorModels,
+      opencodeModels,
+    }),
+    [codexModels, cursorModels, opencodeModels, providers],
+  );
   const agentModelOptions = useMemo<Record<CliAgent, AgentModelOption[]>>(() => ({
-    claude: buildAgentModelOptions("claude", providers),
-    codex: buildCodexAgentModelOptions(providers, codexModels),
-    cursor: buildAgentModelOptions("cursor", providers),
-    opencode: buildAgentModelOptions("opencode", providers),
-  }), [codexModels, providers]);
+    claude: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.claude),
+    codex: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.codex),
+    cursor: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.cursor),
+    opencode: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.opencode),
+  }), [agentSelectionOptions]);
 
   const resolvedAgentDefaults = useMemo<AgentDefaults>(() => ({
     newChat: normalizeAgentDefaultSelection(agentDefaults.newChat, agentModelOptions[agentDefaults.newChat.agent]),
@@ -791,14 +808,14 @@ export function SettingsDialog({
     });
   }, [agentModelOptions]);
 
-  const resetProviderForm = useCallback((nextAgent: CliAgent = "claude") => {
+  const resetProviderForm = useCallback((nextCompatibility: ModelProviderCompatibility = "anthropic") => {
     setEditingProviderId(null);
-    setProviderAgent(nextAgent);
+    setProviderCompatibility(nextCompatibility);
     setProviderName("");
     setProviderModelId("");
     setProviderBaseUrl("");
     setProviderApiKey("");
-    setShowProviderForm(false);
+    setShowProviderDialog(false);
     setTestResult(null);
   }, []);
 
@@ -891,22 +908,22 @@ export function SettingsDialog({
       let nextProvider: ModelProvider;
       if (editingProviderId) {
         nextProvider = await api.updateModelProvider(editingProviderId, {
-          agent: providerAgent,
+          compatibility: providerCompatibility,
           name: trimmedProviderName,
           modelId: trimmedProviderModelId,
-          baseUrl: trimmedProviderBaseUrl || null,
-          ...(trimmedProviderApiKey ? { apiKey: trimmedProviderApiKey } : trimmedProviderBaseUrl.length === 0 ? { apiKey: null } : {}),
+          baseUrl: trimmedProviderBaseUrl,
+          ...(trimmedProviderApiKey ? { apiKey: trimmedProviderApiKey } : {}),
         });
       } else {
         nextProvider = await api.createModelProvider({
-          agent: providerAgent,
+          compatibility: providerCompatibility,
           name: trimmedProviderName,
           modelId: trimmedProviderModelId,
-          ...(trimmedProviderBaseUrl ? { baseUrl: trimmedProviderBaseUrl } : {}),
-          ...(trimmedProviderApiKey ? { apiKey: trimmedProviderApiKey } : {}),
+          baseUrl: trimmedProviderBaseUrl,
+          apiKey: trimmedProviderApiKey,
         });
       }
-      resetProviderForm(providerAgent);
+      resetProviderForm(providerCompatibility);
       replaceProviders([
         ...providers.filter((provider) => provider.id !== nextProvider.id),
         nextProvider,
@@ -919,7 +936,7 @@ export function SettingsDialog({
   }, [
     canSaveProvider,
     editingProviderId,
-    providerAgent,
+    providerCompatibility,
     providers,
     replaceProviders,
     resetProviderForm,
@@ -938,12 +955,12 @@ export function SettingsDialog({
 
   const handleEditProvider = useCallback((provider: ModelProvider) => {
     setEditingProviderId(provider.id);
-    setProviderAgent(provider.agent ?? "claude");
+    setProviderCompatibility(provider.compatibility);
     setProviderName(provider.name);
     setProviderModelId(provider.modelId);
     setProviderBaseUrl(provider.baseUrl ?? "");
     setProviderApiKey("");
-    setShowProviderForm(true);
+    setShowProviderDialog(true);
     setTestResult(null);
   }, []);
 
@@ -953,7 +970,7 @@ export function SettingsDialog({
     setTestResult(null);
     try {
       const result = await api.testModelProvider({
-        agent: providerAgent,
+        compatibility: providerCompatibility,
         baseUrl: trimmedProviderBaseUrl,
         apiKey: trimmedProviderApiKey,
         modelId: trimmedProviderModelId,
@@ -964,7 +981,7 @@ export function SettingsDialog({
     } finally {
       setTestingProvider(false);
     }
-  }, [canTestProvider, providerAgent, trimmedProviderApiKey, trimmedProviderBaseUrl, trimmedProviderModelId]);
+  }, [canTestProvider, providerCompatibility, trimmedProviderApiKey, trimmedProviderBaseUrl, trimmedProviderModelId]);
 
   const updateAgentDefault = useCallback((
     key: AgentDefaultsKey,
@@ -1632,11 +1649,14 @@ export function SettingsDialog({
                                         modelProviderId: nextOption.modelProviderId,
                                       }));
                                     }}
+                                    visualVariant="model-detail"
                                     className="rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
                                     itemClassName="text-[13px]"
                                     options={options.map((option) => ({
                                       value: `${option.modelProviderId ?? "builtin"}::${option.model}`,
                                       label: option.label,
+                                      detail: option.detail,
+                                      source: option.source,
                                     }))}
                                   />
                                 </div>
@@ -1649,7 +1669,7 @@ export function SettingsDialog({
 
                     <SettingsSection
                       title="Model Providers"
-                      description="Add custom Claude, Codex, or OpenCode model endpoints and keep them available across the app."
+                      description="Add compatibility-based model providers and keep them available everywhere the matching agents are supported."
                       descriptionId="models-providers-description"
                       action={(
                         <Button
@@ -1657,8 +1677,8 @@ export function SettingsDialog({
                           variant="ghost"
                           className="h-8 gap-1.5 px-3 text-[13px]"
                           onClick={() => {
-                            resetProviderForm("claude");
-                            setShowProviderForm(true);
+                            resetProviderForm("anthropic");
+                            setShowProviderDialog(true);
                           }}
                         >
                           <Plus className="h-3.5 w-3.5" />
@@ -1667,10 +1687,9 @@ export function SettingsDialog({
                       )}
                       actionClassName="md:w-auto md:max-w-none"
                     >
-                      {providers.length === 0 && !showProviderForm ? (
+                      {providers.length === 0 ? (
                         <p className="text-[11px] leading-5 text-muted-foreground">
-                          No custom models configured yet. Add Claude, Codex, or OpenCode entries here.
-                          Claude uses Anthropic-compatible backends; Codex and OpenCode custom endpoints use the Responses API.
+                          No compatibility-based providers configured yet. Add OpenAI or Anthropic entries here.
                         </p>
                       ) : null}
 
@@ -1685,19 +1704,20 @@ export function SettingsDialog({
                                 <div className="min-w-0">
                                   <div className="flex flex-wrap items-center gap-2">
                                     <span className="rounded-full border border-border/50 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                                      {getProviderAgentLabel(provider.agent)}
+                                      {getProviderCompatibilityLabel(provider.compatibility)}
                                     </span>
                                     <span className="text-[13px] font-medium text-foreground">{provider.name}</span>
                                     <span className="text-muted-foreground/50">·</span>
                                     <span className="font-mono text-[11px] text-muted-foreground">{provider.modelId}</span>
                                   </div>
                                   <div className="mt-2 space-y-1 text-[11px] leading-5 text-muted-foreground">
+                                    <div>Works with: {formatSupportedAgentsForCompatibility(provider.compatibility)}</div>
                                     <div>
                                       Endpoint:{" "}
                                       {provider.baseUrl ? (
                                         <span className="break-all">{provider.baseUrl}</span>
                                       ) : (
-                                        <span>No endpoint override</span>
+                                        <span>Not stored</span>
                                       )}
                                     </div>
                                     <div>
@@ -1714,7 +1734,7 @@ export function SettingsDialog({
                                   <button
                                     type="button"
                                     className="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                                    aria-label={`Edit ${getProviderAgentLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
+                                    aria-label={`Edit ${getProviderCompatibilityLabel(provider.compatibility)} provider ${provider.name} (${provider.modelId})`}
                                     title={`Edit ${provider.name}`}
                                     onClick={() => handleEditProvider(provider)}
                                   >
@@ -1723,7 +1743,7 @@ export function SettingsDialog({
                                   <button
                                     type="button"
                                     className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                                    aria-label={`Delete ${getProviderAgentLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
+                                    aria-label={`Delete ${getProviderCompatibilityLabel(provider.compatibility)} provider ${provider.name} (${provider.modelId})`}
                                     title={`Delete ${provider.name}`}
                                     onClick={() => void handleDeleteProvider(provider.id)}
                                   >
@@ -1736,42 +1756,44 @@ export function SettingsDialog({
                         </div>
                       ) : null}
 
-                      {showProviderForm ? (
-                        <div className="mt-3 border-t border-border/30 pt-4">
-                          <div className="mb-3 flex items-center justify-between gap-3">
-                            <div>
-                              <h3 className="text-sm font-semibold text-foreground">
-                                {editingProviderId ? "Edit Provider" : "Add Provider"}
-                              </h3>
-                              <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
-                                Configure a model alias, endpoint override, and optional API key for this CLI agent.
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              className="rounded-md p-1 text-muted-foreground hover:text-foreground"
-                              onClick={() => resetProviderForm(providerAgent)}
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
+                      <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
+                        {providerFootnote}
+                      </p>
+
+                      <Dialog
+                        open={showProviderDialog}
+                        onOpenChange={(nextOpen) => {
+                          if (!nextOpen) {
+                            resetProviderForm(providerCompatibility);
+                            return;
+                          }
+
+                          setShowProviderDialog(true);
+                        }}
+                      >
+                        <DialogContent className="sm:max-w-[560px]">
+                          <DialogHeader>
+                            <DialogTitle>{editingProviderId ? "Edit Provider" : "Add Provider"}</DialogTitle>
+                            <DialogDescription>
+                              Configure a compatibility-based model provider with a stored endpoint and credentials.
+                            </DialogDescription>
+                          </DialogHeader>
 
                           <div className="grid gap-3 md:grid-cols-2">
                             <div className="space-y-1.5">
-                              <label className="block text-[11px] font-medium text-foreground">Agent</label>
+                              <label className="block text-[11px] font-medium text-foreground">API Compatibility</label>
                               <SettingsSelect
-                                ariaLabel="Provider CLI Agent"
-                                value={providerAgent}
+                                ariaLabel="Provider API Compatibility"
+                                value={providerCompatibility}
                                 onValueChange={(value) => {
-                                  setProviderAgent(value as CliAgent);
+                                  setProviderCompatibility(value as ModelProviderCompatibility);
                                   setTestResult(null);
                                 }}
                                 className="rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
                                 itemClassName="text-[13px]"
                                 options={[
-                                  { value: "claude", label: "Claude" },
-                                  { value: "codex", label: "Codex" },
-                                  { value: "opencode", label: "OpenCode" },
+                                  { value: "openai", label: "OpenAI" },
+                                  { value: "anthropic", label: "Anthropic" },
                                 ]}
                               />
                             </div>
@@ -1781,9 +1803,12 @@ export function SettingsDialog({
                                 aria-label="Provider Name"
                                 type="text"
                                 className={SETTINGS_INPUT_CLASS_NAME}
-                                placeholder='e.g. "z.ai", "OpenRouter"'
+                                placeholder='e.g. "OpenAI", "OpenRouter", "Anthropic Proxy"'
                                 value={providerName}
-                                onChange={(e) => setProviderName(e.target.value)}
+                                onChange={(e) => {
+                                  setProviderName(e.target.value);
+                                  setTestResult(null);
+                                }}
                               />
                             </div>
                             <div className="space-y-1.5">
@@ -1794,49 +1819,65 @@ export function SettingsDialog({
                                 className={SETTINGS_INPUT_CLASS_NAME}
                                 placeholder={providerModelPlaceholder}
                                 value={providerModelId}
-                                onChange={(e) => setProviderModelId(e.target.value)}
+                                onChange={(e) => {
+                                  setProviderModelId(e.target.value);
+                                  setTestResult(null);
+                                }}
                               />
                             </div>
                             <div className="space-y-1.5">
-                              <label className="block text-[11px] font-medium text-foreground">Base URL (optional)</label>
+                              <label className="block text-[11px] font-medium text-foreground">Base URL</label>
                               <input
                                 aria-label="Provider Base URL"
-                                type="text"
+                                type="url"
+                                aria-invalid={providerBaseUrlError ? "true" : "false"}
                                 className={SETTINGS_INPUT_CLASS_NAME}
                                 placeholder={providerBaseUrlPlaceholder}
                                 value={providerBaseUrl}
-                                onChange={(e) => setProviderBaseUrl(e.target.value)}
+                                onChange={(e) => {
+                                  setProviderBaseUrl(e.target.value);
+                                  setTestResult(null);
+                                }}
                               />
+                              {providerBaseUrlError ? (
+                                <p className="text-[11px] leading-5 text-destructive">{providerBaseUrlError}</p>
+                              ) : null}
                             </div>
                             <div className="space-y-1.5 md:col-span-2">
-                              <label className="block text-[11px] font-medium text-foreground">API Key (optional)</label>
+                              <label className="block text-[11px] font-medium text-foreground">API Key</label>
                               <input
                                 aria-label="Provider API Key"
                                 type="password"
                                 className={SETTINGS_INPUT_CLASS_NAME}
                                 placeholder={providerApiKeyPlaceholder}
                                 value={providerApiKey}
-                                onChange={(e) => setProviderApiKey(e.target.value)}
+                                onChange={(e) => {
+                                  setProviderApiKey(e.target.value);
+                                  setTestResult(null);
+                                }}
                               />
                             </div>
                           </div>
 
-                          <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
+                          <p className="text-[11px] leading-5 text-muted-foreground">
                             {providerInlineHelp}
+                          </p>
+                          <p className="text-[11px] leading-5 text-muted-foreground">
+                            Works with {formatSupportedAgentsForCompatibility(providerCompatibility)}.
                           </p>
 
                           {testResult ? (
-                            <div className={`mt-3 rounded-lg px-3 py-2 text-[13px] ${testResult.success ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
+                            <div className={`rounded-lg px-3 py-2 text-[13px] ${testResult.success ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
                               {testResult.success ? providerTestSuccessMessage : testResult.error}
                             </div>
                           ) : null}
 
-                          <div className="mt-4 flex justify-end gap-2">
+                          <div className="flex justify-end gap-2">
                             <Button
                               size="sm"
                               variant="ghost"
                               className="h-8 text-[13px]"
-                              onClick={() => resetProviderForm(providerAgent)}
+                              onClick={() => resetProviderForm(providerCompatibility)}
                             >
                               Cancel
                             </Button>
@@ -1858,12 +1899,8 @@ export function SettingsDialog({
                               {savingProvider ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
                             </Button>
                           </div>
-                        </div>
-                      ) : null}
-
-                      <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
-                        {providerFootnote}
-                      </p>
+                        </DialogContent>
+                      </Dialog>
                     </SettingsSection>
                   </div>
                 )}

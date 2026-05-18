@@ -728,7 +728,13 @@ describe("api", () => {
 
     it("creates provider", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "p1" }));
-      await api.createModelProvider({ name: "test", modelId: "m1", baseUrl: "http://localhost", apiKey: "key" });
+      await api.createModelProvider({
+        compatibility: "openai",
+        name: "test",
+        modelId: "m1",
+        baseUrl: "http://localhost",
+        apiKey: "key",
+      });
     });
 
     it("updates provider", async () => {
@@ -763,7 +769,12 @@ describe("api", () => {
 
     it("tests provider", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ success: true }));
-      const result = await api.testModelProvider({ agent: "codex", baseUrl: "http://localhost", apiKey: "key", modelId: "m1" });
+      const result = await api.testModelProvider({
+        compatibility: "openai",
+        baseUrl: "http://localhost",
+        apiKey: "key",
+        modelId: "m1",
+      });
       expect(result.success).toBe(true);
     });
   });
