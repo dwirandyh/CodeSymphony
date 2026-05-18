@@ -68,7 +68,7 @@ import {
   derivePendingQuestionRequests,
   deriveThreadUiStatusFromEvents,
   hasRunningAssistantActivity,
-  isPlanReviewReady,
+  isPendingPlanAwaitingDecision,
   type WorktreeThreadUiStatus,
 } from "../worktreeThreadStatus";
 import type {
@@ -1359,45 +1359,10 @@ export function useChatSession(
     () => hasRunningAssistantActivity(events),
     [events],
   );
-  const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
-  const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
-  const hasPendingPlan = pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan);
-  const hasPendingUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan;
-  const selectedThreadUiStatus = useMemo<WorktreeThreadUiStatus>(() => {
-    const optimisticThreadRunning =
-      selectedThreadId != null
-      && (sendingMessage || waitingAssistant?.threadId === selectedThreadId);
-
-    if (hasPendingPermissionRequests || hasPendingQuestionRequests) {
-      return "waiting_approval";
-    }
-
-    if (pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan)) {
-      return "review_plan";
-    }
-
-    if (Boolean(selectedThread?.active) || optimisticThreadRunning || eventDerivedThreadRunning) {
-      return "running";
-    }
-
-    return "idle";
-  }, [
-    eventDerivedThreadRunning,
-    events,
-    hasPendingPermissionRequests,
-    hasPendingQuestionRequests,
-    pendingPlan,
-    selectedThread?.active,
-    selectedThreadId,
-    sendingMessage,
-    waitingAssistant,
-  ]);
-  const composerDisabled =
-    !selectedThreadId
-    || !selectedWorktreeOperational
-    || sendingMessage
-    || (selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running");
-  const selectedThreadIsRunning = selectedThreadUiStatus === "running";
+  const localPendingPlanAwaitingDecision = useMemo(
+    () => isPendingPlanAwaitingDecision(events, pendingPlan),
+    [events, pendingPlan],
+  );
   const selectedThreadCreatedLocally =
     selectedThreadId != null
     && optimisticCreatedThreadIdsRef.current.has(selectedThreadId)
@@ -1456,14 +1421,7 @@ export function useChatSession(
   const composerAgent: CliAgent = selectedThread?.agent ?? fallbackThreadSelection?.agent ?? "claude";
   const composerModel = selectedThread?.model ?? fallbackThreadSelection?.model ?? resolveAgentDefaultModel(composerAgent);
   const composerModelProviderId = selectedThread?.modelProviderId ?? fallbackThreadSelection?.modelProviderId ?? null;
-  const composerMode = selectedThreadUiStatus === "review_plan"
-    ? "plan"
-    : selectedThread?.mode ?? "default";
   const composerPermissionMode = selectedThread?.permissionMode ?? pendingComposerPermissionMode;
-  const composerModeLocked = selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running";
-  const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
-    (thread) => thread.id === selectedThreadId && thread.kind === "review",
-  );
   const {
     data: queuedMessages = [],
   } = useQuery({
@@ -1502,26 +1460,6 @@ export function useChatSession(
       source: "defaults_hydration",
     });
   }, [events, messages, selectedThread, selectedThreadId]);
-
-  useEffect(() => {
-    if (!selectedThreadId || waitingAssistant?.threadId !== selectedThreadId) {
-      return;
-    }
-
-    if (selectedThread?.active) {
-      return;
-    }
-
-    if (hasPendingUserGate || hasRunningAssistantActivity(events)) {
-      return;
-    }
-
-    if (!restoredWaitingThreadIdsRef.current.has(selectedThreadId)) {
-      return;
-    }
-
-    clearWaitingAssistantForThread(selectedThreadId);
-  }, [events, hasPendingUserGate, selectedThread?.active, selectedThreadId, waitingAssistant]);
 
   const {
     data: queriedThreadSnapshot,
@@ -1569,6 +1507,78 @@ export function useChatSession(
     [events, queriedThreadStatusSnapshot],
   );
   const authoritativeStatusSnapshotUiStatus = queriedThreadStatusSnapshot?.status ?? null;
+  const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
+  const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
+  const hasPendingPlan = localPendingPlanAwaitingDecision && authoritativeStatusSnapshotUiStatus !== "running";
+  const hasPendingUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan;
+  const selectedThreadUiStatus = useMemo<WorktreeThreadUiStatus>(() => {
+    const optimisticThreadRunning =
+      selectedThreadId != null
+      && (sendingMessage || waitingAssistant?.threadId === selectedThreadId);
+    const shouldPreferAuthoritativeRunningStatus =
+      localPendingPlanAwaitingDecision
+      && authoritativeStatusSnapshotUiStatus === "running";
+
+    if (hasPendingPermissionRequests || hasPendingQuestionRequests) {
+      return "waiting_approval";
+    }
+
+    if (shouldPreferAuthoritativeRunningStatus) {
+      return "running";
+    }
+
+    if (localPendingPlanAwaitingDecision) {
+      return "review_plan";
+    }
+
+    if (Boolean(selectedThread?.active) || optimisticThreadRunning || eventDerivedThreadRunning) {
+      return "running";
+    }
+
+    return "idle";
+  }, [
+    authoritativeStatusSnapshotUiStatus,
+    eventDerivedThreadRunning,
+    hasPendingPermissionRequests,
+    hasPendingQuestionRequests,
+    localPendingPlanAwaitingDecision,
+    selectedThread?.active,
+    selectedThreadId,
+    sendingMessage,
+    waitingAssistant,
+  ]);
+  const composerDisabled =
+    !selectedThreadId
+    || !selectedWorktreeOperational
+    || sendingMessage
+    || (selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running");
+  const selectedThreadIsRunning = selectedThreadUiStatus === "running";
+  const composerMode = selectedThreadUiStatus === "review_plan"
+    ? "plan"
+    : selectedThread?.mode ?? "default";
+  const composerModeLocked = selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running";
+  const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
+    (thread) => thread.id === selectedThreadId && thread.kind === "review",
+  );
+  useEffect(() => {
+    if (!selectedThreadId || waitingAssistant?.threadId !== selectedThreadId) {
+      return;
+    }
+
+    if (selectedThread?.active) {
+      return;
+    }
+
+    if (hasPendingUserGate || hasRunningAssistantActivity(events)) {
+      return;
+    }
+
+    if (!restoredWaitingThreadIdsRef.current.has(selectedThreadId)) {
+      return;
+    }
+
+    clearWaitingAssistantForThread(selectedThreadId);
+  }, [events, hasPendingUserGate, selectedThread?.active, selectedThreadId, waitingAssistant]);
   const threadNavigationPerfEnabled = isThreadNavigationPerfEnabled();
 
   useEffect(() => {
@@ -3759,6 +3769,7 @@ export function useChatSession(
     composerDisabled,
     showStopAction,
     stoppingRun,
+    authoritativeThreadStatus: authoritativeStatusSnapshotUiStatus,
     isThreadHistoryLocallyComplete,
     semanticHydrationInProgress: false,
 

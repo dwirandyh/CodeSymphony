@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "files": [
+    "android-helpers",
+    "dist",
+    "prisma/migrations",
+    "prisma/schema.prisma"
+  ],
   "scripts": {
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true",
     "predev": "pnpm exec prisma migrate deploy && pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",

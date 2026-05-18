@@ -1,7 +1,7 @@
 import type { ChatEvent, ChatThread, ChatThreadSnapshot, ChatThreadStatus } from "@codesymphony/shared-types";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
 import { shortenReadTargetForDisplay } from "../exploreUtils";
-import { isMetadataToolEvent, normalizePlanCreatedEvent } from "../eventUtils";
+import { isMetadataToolEvent, normalizePlanCreatedEvent, payloadStringOrNull } from "../eventUtils";
 
 export type WorktreeThreadUiStatus = ChatThreadStatus;
 
@@ -296,7 +296,7 @@ function getFinishedToolNames(
     .filter((toolName) => toolName.length > 0);
 }
 
-function findPlanReviewReadyIdx(events: ChatEvent[], pendingPlan: PendingPlan | null): number | null {
+export function findPlanReviewReadyIdx(events: ChatEvent[], pendingPlan: PendingPlan | null): number | null {
   if (!pendingPlan || pendingPlan.status !== "pending") {
     return null;
   }
@@ -346,6 +346,43 @@ export function isPlanReviewReady(events: ChatEvent[], pendingPlan: PendingPlan 
   return findPlanReviewReadyIdx(events, pendingPlan) != null;
 }
 
+function isPostPlanReviewExecutionEvent(event: ChatEvent): boolean {
+  if (event.type === "message.delta") {
+    return event.payload.role === "assistant";
+  }
+
+  if (event.type === "tool.started" || event.type === "tool.output" || event.type === "tool.finished") {
+    if (isMetadataToolEvent(event)) {
+      return false;
+    }
+
+    const toolName = payloadStringOrNull(event.payload.toolName)?.trim().toLowerCase() ?? "";
+    return toolName !== "exitplanmode";
+  }
+
+  return (
+    event.type === "todo.updated"
+    || event.type === "subagent.started"
+    || event.type === "subagent.finished"
+  );
+}
+
+export function hasAssistantExecutionAfterPlanReview(events: ChatEvent[], pendingPlan: PendingPlan | null): boolean {
+  const reviewReadyIdx = findPlanReviewReadyIdx(events, pendingPlan);
+  if (reviewReadyIdx == null) {
+    return false;
+  }
+
+  const orderedEvents = toOrderedEvents(events);
+  return orderedEvents.some((event) => event.idx > reviewReadyIdx && isPostPlanReviewExecutionEvent(event));
+}
+
+export function isPendingPlanAwaitingDecision(events: ChatEvent[], pendingPlan: PendingPlan | null): boolean {
+  return pendingPlan?.status === "pending"
+    && isPlanReviewReady(events, pendingPlan)
+    && !hasAssistantExecutionAfterPlanReview(events, pendingPlan);
+}
+
 export function deriveThreadUiStatusFromEvents(
   events: ChatEvent[],
   isActive: boolean,
@@ -358,7 +395,7 @@ export function deriveThreadUiStatusFromEvents(
   }
 
   const pendingPlan = derivePendingPlan(events);
-  if (pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan)) {
+  if (isPendingPlanAwaitingDecision(events, pendingPlan)) {
     return "review_plan";
   }
 

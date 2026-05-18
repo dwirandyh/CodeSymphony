@@ -1,5 +1,6 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { copyFile, mkdir } from "node:fs/promises";
 import Fastify, { type FastifyError } from "fastify";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
@@ -288,12 +289,53 @@ async function runPostListenStartupTasks(app: ReturnType<typeof createApp>) {
   }
 }
 
+function resolveFileDatabasePath(databaseUrl: string | undefined): string | null {
+  if (!databaseUrl?.startsWith("file:")) {
+    return null;
+  }
+
+  const rawPath = databaseUrl.slice("file:".length);
+  if (rawPath.length === 0) {
+    return null;
+  }
+
+  if (rawPath.startsWith("//")) {
+    try {
+      return new URL(databaseUrl).pathname;
+    } catch {
+      return null;
+    }
+  }
+
+  return path.resolve(process.cwd(), rawPath);
+}
+
+async function restoreBundledDatabaseFromTemplate(
+  templateDatabasePath: string,
+  databaseUrl: string | undefined,
+): Promise<string> {
+  const databasePath = resolveFileDatabasePath(databaseUrl);
+  if (!databasePath) {
+    throw new Error("DATABASE_URL must be a file: URL when restoring the bundled template database");
+  }
+
+  const resolvedTemplatePath = path.resolve(templateDatabasePath);
+  if (!existsSync(resolvedTemplatePath)) {
+    throw new Error(`Bundled template database not found at ${resolvedTemplatePath}`);
+  }
+
+  await mkdir(path.dirname(databasePath), { recursive: true });
+  await copyFile(resolvedTemplatePath, databasePath);
+  return databasePath;
+}
+
 async function main() {
   try {
     // Run Prisma migrations in production before starting the server
     let startupMigrationPlan: PrismaMigrationExecutionPlan | null = null;
     let startupMigrationResult: { executed: boolean } = { executed: false };
-    if (process.env.NODE_ENV === "production") {
+    const templateDatabasePath = process.env.PRISMA_TEMPLATE_DB_PATH;
+    if (process.env.NODE_ENV === "production" && !templateDatabasePath) {
       const { createPrismaMigrationExecutionPlan, runPrismaMigrations } = await import("./migrate.js");
       startupMigrationPlan = createPrismaMigrationExecutionPlan();
       startupMigrationResult = await runPrismaMigrations({ plan: startupMigrationPlan });
@@ -302,7 +344,15 @@ async function main() {
     try {
       await assertDatabaseReady(prisma);
     } catch (error) {
-      if (
+      if (error instanceof DatabaseNotReadyError && process.env.NODE_ENV === "production" && templateDatabasePath) {
+        await prisma.$disconnect();
+        const restoredDatabasePath = await restoreBundledDatabaseFromTemplate(
+          templateDatabasePath,
+          process.env.DATABASE_URL,
+        );
+        console.log(`Restored runtime database from bundled template: ${restoredDatabasePath}`);
+        await assertDatabaseReady(prisma);
+      } else if (
         error instanceof DatabaseNotReadyError &&
         process.env.NODE_ENV === "production" &&
         !startupMigrationResult.executed

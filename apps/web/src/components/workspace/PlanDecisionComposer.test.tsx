@@ -135,6 +135,35 @@ describe("PlanDecisionComposer", () => {
     });
   });
 
+  it("renders the desktop agent-model popover in the plan decision host outside the action row", () => {
+    renderComposer({
+      opencodeModels: [
+        { id: "gpt-5.5", name: "GPT-5.5", providerId: "openai" },
+        { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", providerId: "anthropic" },
+      ],
+    });
+
+    const selectorButton = container.querySelector('button[aria-label="Select plan execution target"]') as HTMLButtonElement | null;
+    if (!(selectorButton instanceof HTMLButtonElement)) {
+      throw new Error("Plan execution target selector not found");
+    }
+
+    const actionRow = selectorButton.closest("div");
+    if (!(actionRow instanceof HTMLDivElement)) {
+      throw new Error("Plan decision action row not found");
+    }
+
+    act(() => selectorButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    const popoverHost = container.querySelector<HTMLDivElement>('[data-plan-decision-popover-host="true"]');
+    expect(popoverHost).not.toBeNull();
+    expect(popoverHost?.querySelector('[data-agent-model-panel="agent"]')).not.toBeNull();
+
+    const overlayPanel = popoverHost?.querySelector<HTMLElement>('[data-agent-model-panel="overlay"]') ?? null;
+    expect(overlayPanel).not.toBeNull();
+    expect(actionRow.contains(overlayPanel)).toBe(false);
+  });
+
   it("clicks Handover plan in the handoff-required flow and requests handoff execution", () => {
     const onApprove = vi.fn();
     renderComposer({

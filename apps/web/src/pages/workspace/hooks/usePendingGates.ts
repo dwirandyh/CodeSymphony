@@ -8,7 +8,8 @@ import {
   derivePendingPermissionRequests,
   derivePendingPlan,
   derivePendingQuestionRequests,
-  isPlanReviewReady,
+  isPendingPlanAwaitingDecision,
+  type WorktreeThreadUiStatus,
 } from "./worktreeThreadStatus";
 
 const EMPTY_EVENTS: ChatEvent[] = [];
@@ -28,6 +29,7 @@ export interface PendingGatesDeps {
   startWaitingAssistant: (threadId: string) => void;
   clearWaitingAssistantForThread: (threadId: string) => void;
   onPlanApproved?: (result: ApprovePlanResult) => void;
+  authoritativeThreadStatus?: WorktreeThreadUiStatus | null;
 }
 
 export function usePendingGates(
@@ -187,25 +189,36 @@ export function usePendingGates(
 
   const pendingPlan = useMemo<PendingPlan | null>(() => derivePendingPlan(events), [events]);
 
-  // Only show the plan decision composer after Claude has fully exited
-  // plan mode. Older histories may only have chat completion, so keep a
-  // completion fallback for those snapshots.
-  const isPlanReadyForReview = useMemo(() => isPlanReviewReady(events, pendingPlan), [events, pendingPlan]);
+  const pendingPlanAwaitingDecision = useMemo(
+    () => isPendingPlanAwaitingDecision(events, pendingPlan),
+    [events, pendingPlan],
+  );
 
   async function handleApprovePlan(input: ApprovePlanInput) {
     if (!selectedThreadId) return;
 
+    const nextClosedPlanDecision = pendingPlan
+      ? { threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx }
+      : null;
+
     startWaitingAssistant(selectedThreadId);
     setPlanActionBusy(true);
+    if (nextClosedPlanDecision) {
+      setClosedPlanDecision(nextClosedPlanDecision);
+    }
     onError(null);
 
     try {
       const result = await api.approvePlan(selectedThreadId, input);
-      if (pendingPlan) {
-        setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
-      }
       deps.onPlanApproved?.(result);
     } catch (e) {
+      setClosedPlanDecision((current) => (
+        nextClosedPlanDecision
+        && current?.threadId === nextClosedPlanDecision.threadId
+        && current.createdIdx === nextClosedPlanDecision.createdIdx
+          ? null
+          : current
+      ));
       clearWaitingAssistantForThread(selectedThreadId);
       onError(e instanceof Error ? e.message : "Failed to approve plan");
     } finally {
@@ -216,16 +229,27 @@ export function usePendingGates(
   async function handleRevisePlan(feedback: string) {
     if (!selectedThreadId) return;
 
+    const nextClosedPlanDecision = pendingPlan
+      ? { threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx }
+      : null;
+
     startWaitingAssistant(selectedThreadId);
     setPlanActionBusy(true);
+    if (nextClosedPlanDecision) {
+      setClosedPlanDecision(nextClosedPlanDecision);
+    }
     onError(null);
 
     try {
       await api.revisePlan(selectedThreadId, { feedback });
-      if (pendingPlan) {
-        setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
-      }
     } catch (e) {
+      setClosedPlanDecision((current) => (
+        nextClosedPlanDecision
+        && current?.threadId === nextClosedPlanDecision.threadId
+        && current.createdIdx === nextClosedPlanDecision.createdIdx
+          ? null
+          : current
+      ));
       clearWaitingAssistantForThread(selectedThreadId);
       onError(e instanceof Error ? e.message : "Failed to revise plan");
     } finally {
@@ -260,19 +284,21 @@ export function usePendingGates(
 
   const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
   const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
-  const hasPendingPlan = pendingPlan !== null && pendingPlan.status === "pending";
+  const hasPendingPlan = pendingPlanAwaitingDecision;
 
   const hidePlanDecisionByOptimisticClose =
     hasPendingPlan &&
     selectedThreadId != null &&
     closedPlanDecision?.threadId === selectedThreadId &&
     closedPlanDecision.createdIdx === pendingPlan!.createdIdx;
+  const hidePlanDecisionByAuthoritativeExecution =
+    hasPendingPlan && deps.authoritativeThreadStatus === "running";
 
   const showPlanDecisionComposer = hasPendingPlan
     && !hidePlanDecisionByOptimisticClose
+    && !hidePlanDecisionByAuthoritativeExecution
     && !hasPendingQuestionRequests
-    && !hasPendingPermissionRequests
-    && isPlanReadyForReview;
+    && !hasPendingPermissionRequests;
 
   const isWaitingForUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || showPlanDecisionComposer;
 

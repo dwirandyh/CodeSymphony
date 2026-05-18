@@ -85,6 +85,7 @@ beforeEach(() => {
     startWaitingAssistant: vi.fn(),
     clearWaitingAssistantForThread: vi.fn(),
     onPlanApproved: vi.fn(),
+    authoritativeThreadStatus: null,
   } as PendingGatesDeps & { onPlanApproved: ReturnType<typeof vi.fn> };
   vi.clearAllMocks();
 });
@@ -599,6 +600,18 @@ describe("usePendingGates", () => {
         sourceThreadId: "t1",
         executionThreadId: "t-exec",
       });
+    });
+
+    it("suppresses the stale plan decision once authoritative execution is already running", () => {
+      mockDeps.authoritativeThreadStatus = "running";
+      const events = [
+        makeEvent(0, "plan.created", { content: "Plan content", filePath: ".claude/plans/plan.md" }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+
+      expect(hookResult.showPlanDecisionComposer).toBe(false);
+      expect(hookResult.isWaitingForUserGate).toBe(false);
     });
   });
 
