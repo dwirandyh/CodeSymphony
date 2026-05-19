@@ -7,6 +7,7 @@ import { queryKeys } from "../../../lib/queryKeys";
 import { useBackgroundWorktreeStatusStream } from "./useBackgroundWorktreeStatusStream";
 
 const invalidateQueriesMock = vi.fn();
+const requestRepositoryReviewsLiveRefreshMock = vi.fn();
 
 
 class MockEventSource {
@@ -72,6 +73,10 @@ vi.mock("../../../lib/api", () => ({
       return runtimeBaseUrlMock;
     },
   },
+}));
+
+vi.mock("../../../hooks/queries/useRepositoryReviews", () => ({
+  requestRepositoryReviewsLiveRefresh: (...args: unknown[]) => requestRepositoryReviewsLiveRefreshMock(...args),
 }));
 
 let originalEventSource: typeof EventSource | undefined;
@@ -170,6 +175,7 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false } },
   });
   invalidateQueriesMock.mockReset();
+  requestRepositoryReviewsLiveRefreshMock.mockReset();
   originalEventSource = globalThis.EventSource;
   vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
   MockEventSource.instances = [];
@@ -331,7 +337,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
   });
 
   it.each(["chat.completed", "chat.failed"] as const)(
-    "invalidates repository reviews when a background PR/MR thread receives %s",
+    "requests repository reviews live refresh when a background PR/MR thread receives %s",
     async (type) => {
       const thread = makeThread({
         id: "background-prmr-thread",
@@ -354,7 +360,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
         stream.emit(type, makeEvent({ id: `event-${type}`, threadId: thread.id, idx: 2, type }));
       });
 
-      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("r1") });
+      expect(requestRepositoryReviewsLiveRefreshMock).toHaveBeenCalledWith(queryClient, "r1");
     },
   );
 

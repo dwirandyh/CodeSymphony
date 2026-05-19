@@ -27,6 +27,7 @@ import { WorkspaceHeader, type WorkspaceTerminalTab } from "../components/worksp
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
 import { QuickFilePicker } from "../components/workspace/QuickFilePicker";
+import { LiveStatusErrorToast } from "../components/workspace/LiveStatusErrorToast";
 import { ResourceMonitor } from "../components/workspace/ResourceMonitor";
 const MobileActionBar = lazy(() =>
   import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileActionBar }))
@@ -80,6 +81,14 @@ import { api, type RuntimeInfo } from "../lib/api";
 import { FALLBACK_CODEX_MODELS } from "../lib/agentModelDefaults";
 import { debugLog } from "../lib/debugLog";
 import { loadGeneralSettings, saveGeneralSettings, type GeneralSettings } from "../lib/generalSettings";
+import { resolveWorkspaceLiveErrorSummary, type WorkspaceLiveStatusItem } from "../lib/workspaceLiveErrorState";
+import {
+  createWorkspaceLiveScopeSwitch,
+  shouldKeepWorkspaceLiveScopeSwitch,
+  WORKSPACE_LIVE_SCOPE_SWITCH_MAX_MS,
+  type WorkspaceLiveScopeSelection,
+  type WorkspaceLiveScopeSwitch,
+} from "../lib/workspaceLiveBadgeState";
 import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
 import {
@@ -283,6 +292,22 @@ function createWorkspaceTerminalTab(worktreeId: string, ordinal: number): Worksp
     sessionId: `${worktreeId}:terminal:${id}`,
     title: ordinal === 1 ? "Terminal" : `Terminal ${ordinal}`,
   };
+}
+
+function toDebugErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error == null) {
+    return null;
+  }
+
+  return String(error);
 }
 
 function resolvePreferredThreadIdFromThreads(
@@ -928,6 +953,28 @@ export function WorkspacePage() {
       [desiredChatThreadId, desiredChatWorktreeId, repos.selectedWorktreeId, updateSearch],
     ),
   });
+  const selectedThreadIdForLiveStatus = chat.selectedThreadIdForData ?? chat.selectedThreadId;
+  const previousLiveScopeSelectionRef = useRef<WorkspaceLiveScopeSelection | null>(null);
+  const [liveScopeSwitch, setLiveScopeSwitch] = useState<WorkspaceLiveScopeSwitch | null>(null);
+
+  useEffect(() => {
+    const nextSelection: WorkspaceLiveScopeSelection = {
+      repositoryId: repos.selectedRepositoryId,
+      threadId: selectedThreadIdForLiveStatus,
+      worktreeId: repos.selectedWorktreeId,
+    };
+    const previousSelection = previousLiveScopeSelectionRef.current;
+    previousLiveScopeSelectionRef.current = nextSelection;
+
+    if (!previousSelection) {
+      return;
+    }
+
+    const nextTransition = createWorkspaceLiveScopeSwitch(previousSelection, nextSelection, Date.now());
+    if (nextTransition) {
+      setLiveScopeSwitch(nextTransition);
+    }
+  }, [repos.selectedRepositoryId, repos.selectedWorktreeId, selectedThreadIdForLiveStatus]);
 
   useEffect(() => {
     if (!repos.selectedWorktreeId || chat.selectedThreadId == null || !selectedWorktreeLandingHold) {
@@ -1091,6 +1138,190 @@ export function WorkspacePage() {
     return prefetchTask;
   }, [prefetchDisplayThreadSnapshot, queryClient]);
   const repositoryBranches = useRepositoryBranches(nonCriticalRepositoryId);
+
+  useEffect(() => {
+    if (!liveScopeSwitch) {
+      return;
+    }
+
+    const keepSwitching = shouldKeepWorkspaceLiveScopeSwitch({
+      transition: liveScopeSwitch,
+      nowMs: Date.now(),
+      hasChatThreadSelection: selectedThreadIdForLiveStatus != null,
+      hasRepositorySelection: nonCriticalRepositoryId != null,
+      hasWorktreeSelection: nonCriticalWorktreeId != null,
+      chatThreadState: chat.selectedThreadConnectionState,
+      gitStatusState: gitChanges.connectionState,
+      repositoryBranchesState: repositoryBranches.connectionState,
+      repositoryReviewsState: repositoryReviews.connectionState,
+    });
+
+    if (!keepSwitching) {
+      setLiveScopeSwitch((current) => current === liveScopeSwitch ? null : current);
+      return;
+    }
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const remainingMs = Math.max(
+      0,
+      WORKSPACE_LIVE_SCOPE_SWITCH_MAX_MS - (Date.now() - liveScopeSwitch.startedAtMs),
+    );
+    const timeoutId = window.setTimeout(() => {
+      setLiveScopeSwitch((current) => current === liveScopeSwitch ? null : current);
+    }, remainingMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    chat.selectedThreadConnectionState,
+    gitChanges.connectionState,
+    liveScopeSwitch,
+    nonCriticalRepositoryId,
+    nonCriticalWorktreeId,
+    repositoryBranches.connectionState,
+    repositoryReviews.connectionState,
+    selectedThreadIdForLiveStatus,
+  ]);
+
+  const chatDisplayStateOverride = liveScopeSwitch && (liveScopeSwitch.threadChanged || liveScopeSwitch.worktreeChanged)
+    ? "switching"
+    : null;
+  const gitStatusDisplayStateOverride = liveScopeSwitch?.worktreeChanged
+    ? "switching"
+    : null;
+  const repositoryLiveDisplayStateOverride = liveScopeSwitch?.repositoryChanged
+    ? "switching"
+    : null;
+  const liveStatusItems = useMemo<WorkspaceLiveStatusItem[]>(() => [
+    {
+      domain: "chat_thread",
+      connectionState: chat.selectedThreadConnectionState,
+      displayStateOverride: chatDisplayStateOverride,
+      errorMessage: chat.selectedThreadConnectionErrorMessage,
+    },
+    {
+      domain: "git_status",
+      connectionState: nonCriticalWorktreeId ? gitChanges.connectionState : null,
+      displayStateOverride: nonCriticalWorktreeId ? gitStatusDisplayStateOverride : null,
+      errorMessage: nonCriticalWorktreeId ? gitChanges.error : null,
+    },
+    {
+      domain: "repository_reviews",
+      connectionState: nonCriticalRepositoryId ? repositoryReviews.connectionState : null,
+      displayStateOverride: nonCriticalRepositoryId ? repositoryLiveDisplayStateOverride : null,
+      errorMessage: nonCriticalRepositoryId
+        ? (repositoryReviews.error instanceof Error ? repositoryReviews.error.message : null)
+        : null,
+    },
+    {
+      domain: "repository_branches",
+      connectionState: nonCriticalRepositoryId ? repositoryBranches.connectionState : null,
+      displayStateOverride: nonCriticalRepositoryId ? repositoryLiveDisplayStateOverride : null,
+      errorMessage: nonCriticalRepositoryId
+        ? (repositoryBranches.error instanceof Error ? repositoryBranches.error.message : null)
+        : null,
+    },
+  ], [
+    chat.selectedThreadConnectionErrorMessage,
+    chat.selectedThreadConnectionState,
+    chatDisplayStateOverride,
+    gitChanges.connectionState,
+    gitChanges.error,
+    gitStatusDisplayStateOverride,
+    nonCriticalRepositoryId,
+    nonCriticalWorktreeId,
+    repositoryBranches.connectionState,
+    repositoryBranches.error,
+    repositoryLiveDisplayStateOverride,
+    repositoryReviews.connectionState,
+    repositoryReviews.error,
+  ]);
+  const liveError = useMemo(
+    () => resolveWorkspaceLiveErrorSummary(liveStatusItems),
+    [liveStatusItems],
+  );
+  const lastLiveBadgeDebugRef = useRef<string | null>(null);
+  const [dismissedLiveErrorSignature, setDismissedLiveErrorSignature] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!liveError) {
+      setDismissedLiveErrorSignature(null);
+      return;
+    }
+
+    setDismissedLiveErrorSignature((current) => (
+      current != null && current !== liveError.signature ? null : current
+    ));
+  }, [liveError]);
+
+  useEffect(() => {
+    const payload = {
+      repositoryId: repos.selectedRepositoryId,
+      worktreeId: repos.selectedWorktreeId,
+      threadId: selectedThreadIdForLiveStatus,
+      liveScopeSwitch: liveScopeSwitch ? {
+        repositoryChanged: liveScopeSwitch.repositoryChanged,
+        worktreeChanged: liveScopeSwitch.worktreeChanged,
+        threadChanged: liveScopeSwitch.threadChanged,
+      } : null,
+      chatThread: {
+        state: chat.selectedThreadConnectionState,
+        override: chatDisplayStateOverride,
+        error: chat.selectedThreadConnectionErrorMessage,
+      },
+      gitStatus: {
+        state: gitChanges.connectionState,
+        override: gitStatusDisplayStateOverride,
+        error: toDebugErrorMessage(gitChanges.error),
+      },
+      repositoryReviews: {
+        state: repositoryReviews.connectionState,
+        override: repositoryLiveDisplayStateOverride,
+        error: toDebugErrorMessage(repositoryReviews.error),
+      },
+      repositoryBranches: {
+        state: repositoryBranches.connectionState,
+        override: repositoryLiveDisplayStateOverride,
+        error: toDebugErrorMessage(repositoryBranches.error),
+      },
+      liveError: liveError ? {
+        title: liveError.title,
+        description: liveError.description,
+        signature: liveError.signature,
+      } : null,
+    };
+    const serialized = JSON.stringify(payload);
+    if (lastLiveBadgeDebugRef.current === serialized) {
+      return;
+    }
+    lastLiveBadgeDebugRef.current = serialized;
+    debugLog("workspace.live.badge", "state.changed", payload, {
+      threadId: selectedThreadIdForLiveStatus,
+      worktreeId: repos.selectedWorktreeId,
+      force: true,
+    });
+  }, [
+    chat.selectedThreadConnectionErrorMessage,
+    chat.selectedThreadConnectionState,
+    chatDisplayStateOverride,
+    gitChanges.connectionState,
+    gitChanges.error,
+    gitStatusDisplayStateOverride,
+    liveError,
+    liveScopeSwitch,
+    repositoryBranches.connectionState,
+    repositoryBranches.error,
+    repositoryLiveDisplayStateOverride,
+    repositoryReviews.connectionState,
+    repositoryReviews.error,
+    repos.selectedRepositoryId,
+    repos.selectedWorktreeId,
+    selectedThreadIdForLiveStatus,
+  ]);
 
   const gates = usePendingGates(chat.selectedThreadIdForData ?? chat.selectedThreadId, {
     onError: setError,
@@ -2255,6 +2486,10 @@ export function WorkspacePage() {
       onSelectSession={handleResourceMonitorSelectSession}
     />
   ) : null;
+  const workspaceHeaderControls = resourceMonitorControl;
+  const visibleLiveError = liveError && dismissedLiveErrorSignature !== liveError.signature
+    ? liveError
+    : null;
 
   return (
     <div
@@ -2267,7 +2502,7 @@ export function WorkspacePage() {
         {showMacDesktopTitleBar ? (
           <MacDesktopTitleBar
             desktopApp={desktopApp}
-            resourceMonitor={resourceMonitorControl}
+            resourceMonitor={workspaceHeaderControls}
             canGoBack={workspaceNavigation.canGoBack}
             canGoForward={workspaceNavigation.canGoForward}
             leftPanelVisible={leftSidebarVisible}
@@ -2438,7 +2673,7 @@ export function WorkspacePage() {
                   leftPanelVisible={leftSidebarVisible}
                   onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
                   mergeWithContent={activeView === "file"}
-                  resourceMonitor={!showMacDesktopTitleBar ? resourceMonitorControl : null}
+                  resourceMonitor={!showMacDesktopTitleBar ? workspaceHeaderControls : null}
                 />
 
                 {uiError ? (
@@ -3061,6 +3296,13 @@ export function WorkspacePage() {
       ) : null}
 
       <WorkspaceSyncStreamBridge />
+      {visibleLiveError ? (
+        <LiveStatusErrorToast
+          description={visibleLiveError.description}
+          title={visibleLiveError.title}
+          onDismiss={() => setDismissedLiveErrorSignature(visibleLiveError.signature)}
+        />
+      ) : null}
 
       <Dialog
         open={confirmCloseThreadId !== null}

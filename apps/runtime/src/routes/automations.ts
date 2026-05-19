@@ -35,6 +35,7 @@ function respondForAutomationRouteError(
   if (
     message === "Repository not found"
     || message === "Target worktree not found"
+    || message === "Repository root worktree is not available"
     || message === "Invalid IANA timezone"
     || message === "Invalid RRULE"
     || message === "Unsupported RRULE frequency"

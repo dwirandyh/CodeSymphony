@@ -29,6 +29,11 @@ const useModelProvidersMock = vi.hoisted(() => ({
   useModelProviders: vi.fn(),
 }));
 
+const automationRunsHooksMock = vi.hoisted(() => ({
+  useAutomationRuns: vi.fn(),
+  requestAutomationRunsLiveRefresh: vi.fn(),
+}));
+
 vi.mock("@tanstack/react-router", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-router")>("@tanstack/react-router");
   return {
@@ -64,6 +69,11 @@ vi.mock("../workspace/hooks/useModelProviders", () => ({
 
 vi.mock("../workspace/hooks/useWorkspaceSyncStream", () => ({
   useWorkspaceSyncStream: () => undefined,
+}));
+
+vi.mock("../../hooks/queries/useAutomationRuns", () => ({
+  useAutomationRuns: automationRunsHooksMock.useAutomationRuns,
+  requestAutomationRunsLiveRefresh: automationRunsHooksMock.requestAutomationRunsLiveRefresh,
 }));
 
 vi.mock("../../components/ui/dialog", () => ({
@@ -358,6 +368,15 @@ beforeEach(() => {
     updatedAt: "2026-05-10T10:00:00.000Z",
   });
   apiMocks.listAutomationRuns.mockResolvedValue([makeRun()]);
+  automationRunsHooksMock.useAutomationRuns.mockReturnValue({
+    data: [makeRun()],
+    isLoading: false,
+    isFetching: false,
+    connectionState: "healthy",
+    error: null,
+    refetch: vi.fn(),
+  });
+  automationRunsHooksMock.requestAutomationRunsLiveRefresh.mockReset();
   apiMocks.listAutomationPromptVersions.mockResolvedValue([makeVersion()]);
   apiMocks.restoreAutomationPromptVersion.mockResolvedValue(makeAutomation());
   apiMocks.updateAutomation.mockResolvedValue(makeAutomation());
@@ -569,6 +588,79 @@ describe("AutomationsListPage", () => {
     expect(document.body.textContent).toContain("Add a prompt so the automation knows what to do.");
   });
 
+  it("uses the repository root worktree when creating a root automation from a feature-worktree context", async () => {
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [
+        makeRepository({
+          worktrees: [
+            {
+              id: "wt-1",
+              repositoryId: "repo-1",
+              branch: "main",
+              path: "/tmp/codesymphony",
+              status: "active",
+              baseBranch: "main",
+              branchRenamed: false,
+              lastCreateError: null,
+              lastDeleteError: null,
+              createdAt: "2026-05-10T10:00:00.000Z",
+              updatedAt: "2026-05-10T10:00:00.000Z",
+            },
+            {
+              id: "wt-2",
+              repositoryId: "repo-1",
+              branch: "feature/live-updates",
+              path: "/tmp/codesymphony-feature",
+              status: "active",
+              baseBranch: "main",
+              branchRenamed: false,
+              lastCreateError: null,
+              lastDeleteError: null,
+              createdAt: "2026-05-10T10:00:00.000Z",
+              updatedAt: "2026-05-10T10:00:00.000Z",
+            },
+          ],
+        }),
+      ],
+      isLoading: false,
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage
+            prefills={{ create: true, repositoryId: "repo-1", worktreeId: "wt-2", agent: "codex", model: "gpt-5.4" }}
+            layout="panel"
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+
+    const textboxes = Array.from(document.body.querySelectorAll("input"));
+    const prompt = document.body.querySelector('[data-testid="automation-create-prompt-editor"]');
+    if (!(textboxes[0] instanceof HTMLInputElement) || !(prompt instanceof HTMLElement)) {
+      throw new Error("Create form inputs not found");
+    }
+
+    await setInputValue(textboxes[0], "Root automation");
+    await setEditorValue(prompt, "Summarize root repo changes.");
+
+    await act(async () => {
+      findButton("Create").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(apiMocks.createAutomation).toHaveBeenCalledOnce();
+    expect(apiMocks.createAutomation.mock.calls[0]?.[0]).toMatchObject({
+      repositoryId: "repo-1",
+      targetMode: "repo_root",
+      targetWorktreeId: "wt-1",
+    });
+  });
+
   it("clears transient list search params when create succeeds and opens the detail route", async () => {
     act(() => {
       root.render(
@@ -667,6 +759,49 @@ describe("AutomationsListPage", () => {
     expect(findButtonByAriaLabel("Run now Nightly audit").disabled).toBe(true);
   });
 
+  it("disables Run now in the list when a root automation has no active root worktree", async () => {
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [makeRepository({
+        worktrees: [
+          {
+            id: "wt-feature",
+            repositoryId: "repo-1",
+            branch: "feat/runtime-live",
+            path: "/tmp/codesymphony-worktrees/feat-runtime-live",
+            status: "active",
+            baseBranch: "main",
+            branchRenamed: false,
+            lastCreateError: null,
+            lastDeleteError: null,
+            createdAt: "2026-05-10T10:00:00.000Z",
+            updatedAt: "2026-05-10T10:00:00.000Z",
+          },
+        ],
+      })],
+      isLoading: false,
+    });
+    apiMocks.listAutomations.mockResolvedValue([
+      makeAutomation({
+        latestRun: null,
+        targetMode: "repo_root",
+        targetWorktreeId: "wt-feature",
+      }),
+    ]);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    expect(findButtonByAriaLabel("Run now Nightly audit").disabled).toBe(true);
+  });
+
   it("updates the list row immediately after a manual run starts", async () => {
     apiMocks.listAutomations.mockResolvedValue([makeAutomation()]);
     apiMocks.runAutomationNow.mockResolvedValue(
@@ -699,6 +834,41 @@ describe("AutomationsListPage", () => {
     expect(apiMocks.runAutomationNow.mock.calls[0]?.[0]).toBe("automation-1");
     expect(document.body.textContent).toContain("Running");
     expect(findButtonByAriaLabel("Run now Nightly audit").disabled).toBe(true);
+  });
+
+  it("does not invalidate automation runs directly after a list manual run succeeds", async () => {
+    apiMocks.listAutomations.mockResolvedValue([makeAutomation()]);
+    apiMocks.runAutomationNow.mockResolvedValue(
+      makeRun({
+        status: "running",
+        scheduledFor: "2026-05-10T02:00:00.000Z",
+        startedAt: "2026-05-10T02:00:10.000Z",
+        finishedAt: null,
+      }),
+    );
+
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    await act(async () => {
+      findButtonByAriaLabel("Run now Nightly audit").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({ queryKey: queryKeys.automations.detail("automation-1") });
+    expect(automationRunsHooksMock.requestAutomationRunsLiveRefresh).toHaveBeenCalledWith(queryClient, "automation-1");
+    expect(invalidateQueriesSpy).not.toHaveBeenCalledWith({ queryKey: queryKeys.automations.runs("automation-1") });
   });
 
   it("preserves the selected project filter after the list refreshes from an external create", async () => {
@@ -818,6 +988,128 @@ describe("AutomationDetailPage", () => {
     expect(findButtonByAriaLabel("Select schedule").textContent).toContain("Daily at 9:00 AM");
     expect(findButtonByAriaLabel("Select automation session").textContent).toContain("Codex");
     expect(document.body.textContent).not.toContain("Access");
+    expect(document.body.querySelector('[data-testid="automation-runs-live-status"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="workspace-live-error-toast"]')).toBeNull();
+  });
+
+  it("shows a global live update toast only when automation runs live updates fail", async () => {
+    automationRunsHooksMock.useAutomationRuns.mockReturnValue({
+      data: [makeRun()],
+      isLoading: false,
+      isFetching: false,
+      connectionState: "exhausted",
+      error: new Error("Automation runs live stream exhausted"),
+      refetch: vi.fn(),
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    const liveErrorToast = document.body.querySelector<HTMLElement>('[data-testid="workspace-live-error-toast"]');
+    if (!liveErrorToast) {
+      throw new Error("Expected live update error toast");
+    }
+
+    expect(liveErrorToast.textContent).toContain("Live updates unavailable");
+    expect(liveErrorToast.textContent).toContain("Automation runs");
+    expect(liveErrorToast.textContent).toContain("Automation runs live stream exhausted");
+  });
+
+  it("disables Run now and explains the problem when a root automation has no active root worktree", async () => {
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [makeRepository({
+        worktrees: [
+          {
+            id: "wt-feature",
+            repositoryId: "repo-1",
+            branch: "feat/runtime-live",
+            path: "/tmp/codesymphony-worktrees/feat-runtime-live",
+            status: "active",
+            baseBranch: "main",
+            branchRenamed: false,
+            lastCreateError: null,
+            lastDeleteError: null,
+            createdAt: "2026-05-10T10:00:00.000Z",
+            updatedAt: "2026-05-10T10:00:00.000Z",
+          },
+        ],
+      })],
+      isLoading: false,
+    });
+    apiMocks.getAutomation.mockResolvedValue(makeAutomation({
+      latestRun: null,
+      targetMode: "repo_root",
+      targetWorktreeId: "wt-feature",
+    }));
+    automationRunsHooksMock.useAutomationRuns.mockReturnValue({
+      data: [],
+      isLoading: false,
+      isFetching: false,
+      connectionState: "healthy",
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    expect(findButton("Run now").disabled).toBe(true);
+    expect(document.body.textContent).toContain("Repository root worktree is not available");
+  });
+
+  it("disables Run now after the latest root run fails because the worktree path is gone", async () => {
+    const failedRun = makeRun({
+      status: "failed",
+      error: "Worktree path not found: /tmp/codesymphony. Create a new worktree from Repository panel.",
+      summary: null,
+      finishedAt: "2026-05-10T02:00:20.000Z",
+    });
+
+    apiMocks.getAutomation.mockResolvedValue(makeAutomation({
+      latestRun: failedRun,
+      targetMode: "repo_root",
+    }));
+    automationRunsHooksMock.useAutomationRuns.mockReturnValue({
+      data: [failedRun],
+      isLoading: false,
+      isFetching: false,
+      connectionState: "healthy",
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    expect(findButton("Run now").disabled).toBe(true);
+    expect(document.body.textContent).toContain("Repository root worktree is not available");
   });
 
   it("saves the latest prompt text from the detail editor", async () => {

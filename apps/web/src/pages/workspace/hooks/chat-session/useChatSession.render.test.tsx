@@ -18,6 +18,8 @@ import { buildSnapshotKey } from "./hydrationUtils";
 import { resetPendingAutoCreateWorktreesForTest, useChatSession } from "./useChatSession";
 import { useThreadEventStream } from "./useThreadEventStream";
 
+const requestRepositoryReviewsLiveRefreshMock = vi.fn();
+
 const { threadsState, snapshotState, statusSnapshotState } = vi.hoisted(() => ({
   threadsState: {
     data: undefined as ChatThread[] | undefined,
@@ -66,6 +68,10 @@ vi.mock("../../../../hooks/queries/useThreadStatusSnapshot", () => ({
     isLoading: statusSnapshotState.isLoading,
     isFetching: statusSnapshotState.isFetching,
   })),
+}));
+
+vi.mock("../../../../hooks/queries/useRepositoryReviews", () => ({
+  requestRepositoryReviewsLiveRefresh: (...args: unknown[]) => requestRepositoryReviewsLiveRefreshMock(...args),
 }));
 
 const { scheduleWindowIdleTaskMock } = vi.hoisted(() => ({
@@ -369,6 +375,7 @@ beforeEach(() => {
   scheduleWindowIdleTaskMock.mockReset();
   scheduleWindowIdleTaskMock.mockReturnValue(() => undefined);
   onErrorMock.mockReset();
+  requestRepositoryReviewsLiveRefreshMock.mockReset();
 });
 
 afterEach(() => {
@@ -573,7 +580,7 @@ describe("useChatSession", () => {
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.list("wt-1") });
   });
 
-  it("creates or reuses dedicated PR/MR thread, sends message, and invalidates repository reviews", async () => {
+  it("creates or reuses dedicated PR/MR thread, sends message, and requests repository reviews live refresh", async () => {
     vi.mocked(api.updateThreadMode).mockResolvedValue({ ...makeThread("thread-a"), mode: "plan" });
     const prMrThread = {
       ...makeThread("pr-mr-thread"),
@@ -622,12 +629,13 @@ describe("useChatSession", () => {
         createdAt: "2026-01-01T00:00:00Z",
       },
     ]);
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
+    expect(requestRepositoryReviewsLiveRefreshMock).toHaveBeenCalledWith(queryClient, "repo-1");
+    expect(requestRepositoryReviewsLiveRefreshMock).toHaveBeenCalledTimes(2);
     expect(
       invalidateQueriesMock.mock.calls.filter(
         (call) => JSON.stringify(call[0]) === JSON.stringify({ queryKey: queryKeys.repositories.reviews("repo-1") }),
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(0);
   });
 
   it("waits for a pending agent selection update before sending a message", async () => {
@@ -750,7 +758,7 @@ describe("useChatSession", () => {
     expect(hookResult.composerModel).toBe("default[]");
   });
 
-  it("invalidates repository reviews when closing a PR/MR thread", async () => {
+  it("requests repository reviews live refresh when closing a PR/MR thread", async () => {
     const reviewThread = {
       ...makeThread("pr-mr-thread"),
       title: "Create Pull Request",
@@ -768,7 +776,12 @@ describe("useChatSession", () => {
 
     expect(api.deleteThread).toHaveBeenCalledWith("pr-mr-thread");
     expect(hookResult.selectedThreadId).toBe("thread-b");
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
+    expect(requestRepositoryReviewsLiveRefreshMock).toHaveBeenCalledWith(queryClient, "repo-1");
+    expect(
+      invalidateQueriesMock.mock.calls.filter(
+        (call) => JSON.stringify(call[0]) === JSON.stringify({ queryKey: queryKeys.repositories.reviews("repo-1") }),
+      ),
+    ).toHaveLength(0);
   });
 
   it("cancels thread timeline queries before deleting the thread", async () => {

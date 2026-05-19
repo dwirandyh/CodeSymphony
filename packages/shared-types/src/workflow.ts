@@ -389,6 +389,88 @@ export const WorkspaceSyncEventSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
+export type WorkspaceLiveConnectionState = "connecting" | "healthy" | "reconnecting" | "stale" | "exhausted";
+
+export type WorkspaceLiveResourceKind =
+  | "git_status"
+  | "repository_branches"
+  | "repository_reviews"
+  | "automation_runs";
+
+export type GitStatusLiveEvent = {
+  resource: "git_status";
+  scopeId: string;
+  seq: number;
+  snapshot: GitStatus;
+  emittedAt: string;
+};
+
+export type RepositoryBranchesLiveEvent = {
+  resource: "repository_branches";
+  scopeId: string;
+  seq: number;
+  snapshot: string[];
+  emittedAt: string;
+};
+
+export type RepositoryReviewsLiveEvent = {
+  resource: "repository_reviews";
+  scopeId: string;
+  seq: number;
+  snapshot: RepositoryReviewState;
+  emittedAt: string;
+};
+
+export type AutomationRunsLiveEvent = {
+  resource: "automation_runs";
+  scopeId: string;
+  seq: number;
+  snapshot: AutomationRun[];
+  emittedAt: string;
+};
+
+export type WorkspaceLiveResourceEvent =
+  | GitStatusLiveEvent
+  | RepositoryBranchesLiveEvent
+  | RepositoryReviewsLiveEvent
+  | AutomationRunsLiveEvent;
+
+export type WorkspaceLiveSocketSubscription =
+  | {
+    type: "workspace_sync";
+  }
+  | {
+    type: "live_resource";
+    resource: WorkspaceLiveResourceKind;
+    scopeId: string;
+    afterSeq?: number;
+  };
+
+export type WorkspaceLiveSocketClientMessage = {
+  type: "subscribe" | "unsubscribe";
+  subscriptions: WorkspaceLiveSocketSubscription[];
+};
+
+export type WorkspaceLiveSocketServerMessage =
+  | {
+    type: "workspace_sync";
+    event: WorkspaceSyncEvent;
+  }
+  | {
+    type: "live_resource";
+    event: WorkspaceLiveResourceEvent;
+  }
+  | {
+    type: "live_resource_error";
+    resource: WorkspaceLiveResourceKind;
+    scopeId: string;
+    message: string;
+  }
+  | {
+    type: "heartbeat";
+    ts: string;
+  };
+
 export const DevicePlatformSchema = z.enum(["android", "ios-simulator"]);
 export type DevicePlatform = z.infer<typeof DevicePlatformSchema>;
 

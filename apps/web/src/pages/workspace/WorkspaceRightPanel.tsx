@@ -109,6 +109,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
               )}
               {rightPanelId === "git" && (
                 <GitChangesPanel
+                  key={worktreeId ?? "no-worktree"}
                   entries={gitChanges.entries}
                   branch={gitChanges.branch}
                   loading={gitChanges.loading}

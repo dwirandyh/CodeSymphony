@@ -658,6 +658,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       reply.raw.setHeader("Cache-Control", "no-cache");
       reply.raw.setHeader("Connection", "keep-alive");
       reply.raw.setHeader("X-Accel-Buffering", "no");
+      reply.raw.write(": connected\n\n");
 
       let closed = false;
       let historyFlushed = false;

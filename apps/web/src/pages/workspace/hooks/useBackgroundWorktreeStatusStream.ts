@@ -11,9 +11,10 @@ import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "./snapshotInvalidationEventTy
 import { reduceStatusSnapshotWithEvent } from "./threadStatusSnapshotCache";
 import { buildRepositoryWorktreeIndex } from "../../../collections/worktrees";
 import { patchThreadInCollection, refetchThreadsCollection } from "../../../collections/threads";
-import { refetchGitStatusCollection } from "../../../collections/gitStatus";
 import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../../../hooks/queries/useThreads";
 import type { ThreadCompletionAttentionEvent } from "./useCompletionAttention";
+import { requestGitStatusLiveRefresh } from "../../../hooks/queries/useGitStatus";
+import { requestRepositoryReviewsLiveRefresh } from "../../../hooks/queries/useRepositoryReviews";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
@@ -241,7 +242,7 @@ export function useBackgroundWorktreeStatusStream(
           }
 
           if (GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {
-            void refetchGitStatusCollection(queryClient, worktreeId);
+            requestGitStatusLiveRefresh(queryClient, worktreeId);
             void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitDiffScope(worktreeId) });
           }
 
@@ -264,7 +265,7 @@ export function useBackgroundWorktreeStatusStream(
             if (thread.kind === "review") {
               const repositoryId = repositoryWorktreeIndex.repositoryIdByWorktreeId.get(worktreeId);
               if (repositoryId) {
-                void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
+                requestRepositoryReviewsLiveRefresh(queryClient, repositoryId);
               }
             }
             recentlyRelevantThreadIdsRef.current.delete(thread.id);

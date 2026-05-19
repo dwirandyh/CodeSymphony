@@ -44,6 +44,7 @@ import { api } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { queryKeys } from "../../lib/queryKeys";
 import { useRepositories } from "../../hooks/queries/useRepositories";
+import { LiveStatusErrorToast } from "../../components/workspace/LiveStatusErrorToast";
 import {
   AgentModelSelector,
   type AgentModelSelection,
@@ -52,6 +53,8 @@ import { useCodexModels } from "../../hooks/queries/useCodexModels";
 import { useCursorModels } from "../../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../../hooks/queries/useOpencodeModels";
 import { useRuntimeInfo } from "../../hooks/queries/useRuntimeInfo";
+import { requestAutomationRunsLiveRefresh, useAutomationRuns } from "../../hooks/queries/useAutomationRuns";
+import { resolveWorkspaceLiveErrorSummary } from "../../lib/workspaceLiveErrorState";
 import { useModelProviders } from "../workspace/hooks/useModelProviders";
 import { useWorkspaceSyncStream } from "../workspace/hooks/useWorkspaceSyncStream";
 import { AutomationPromptEditor } from "./AutomationPromptEditor";
@@ -130,7 +133,6 @@ const AUTOMATION_STATUS_FILTER_OPTIONS: Array<{
 const ALL_PROJECTS_FILTER_VALUE = "__all_projects__";
 const AUTOMATION_LIST_FALLBACK_REFETCH_MS = 60_000;
 const AUTOMATION_DETAIL_FALLBACK_REFETCH_MS = 60_000;
-const AUTOMATION_RUNS_FALLBACK_REFETCH_MS = 30_000;
 const AUTOMATION_VERSIONS_FALLBACK_REFETCH_MS = 5 * 60_000;
 
 const rememberedAutomationListState: {
@@ -215,25 +217,74 @@ function normalizeTimezone(timezone: string | null | undefined): string {
   return value && value.length > 0 ? value : getCurrentTimezone();
 }
 
-function findRootWorktree(repository: Repository | undefined) {
+function findActiveRootWorktree(repository: Repository | undefined) {
   if (!repository) {
     return null;
   }
 
-  const rootMatch = repository.worktrees.find((worktree) => worktree.path === repository.rootPath && worktree.status === "active");
-  if (rootMatch) {
-    return rootMatch;
-  }
-
-  return repository.worktrees.find((worktree) => worktree.status === "active") ?? null;
+  return repository.worktrees.find((worktree) => worktree.path === repository.rootPath && worktree.status === "active") ?? null;
 }
 
 function findRepositoryById(repositories: Repository[], repositoryId: string) {
   return repositories.find((repository) => repository.id === repositoryId);
 }
 
-function getAutomationContextWorktreeId(repository: Repository | undefined) {
-  return findRootWorktree(repository)?.id ?? "";
+function getAutomationContextWorktreeId(params: {
+  repository: Repository | undefined;
+  targetMode: AutomationTargetMode;
+  preferredWorktreeId?: string | null;
+}) {
+  const { repository, targetMode, preferredWorktreeId } = params;
+  if (!repository) {
+    return "";
+  }
+
+  const rootWorktree = findActiveRootWorktree(repository);
+  if (targetMode === "repo_root") {
+    return rootWorktree?.id ?? "";
+  }
+
+  if (preferredWorktreeId) {
+    const preferredWorktree = repository.worktrees.find((worktree) => (
+      worktree.id === preferredWorktreeId && worktree.status === "active"
+    )) ?? null;
+    if (preferredWorktree) {
+      return preferredWorktree.id;
+    }
+  }
+
+  return rootWorktree?.id ?? repository.worktrees.find((worktree) => worktree.status === "active")?.id ?? "";
+}
+
+function getAutomationRunUnavailableReason(
+  automation: Pick<Automation, "repositoryId" | "targetMode">,
+  repositories: Repository[],
+  options?: {
+    latestRunError?: string | null;
+  },
+) {
+  const latestRunError = options?.latestRunError ?? null;
+  if (automation.targetMode !== "repo_root") {
+    return null;
+  }
+
+  const repository = findRepositoryById(repositories, automation.repositoryId);
+  if (!repository) {
+    return null;
+  }
+
+  if (
+    latestRunError
+    && (
+      latestRunError.includes("Worktree path not found:")
+      || latestRunError.includes("Worktree path is not a directory:")
+      || latestRunError === "Repository root worktree is not available"
+    )
+  ) {
+    return "Repository root worktree is not available";
+  }
+
+  return findActiveRootWorktree(repository) ? null : "Repository root worktree is not available";
 }
 
 function defaultModelForAgent(agent: CliAgent): string {
@@ -379,7 +430,7 @@ function toFormState(
   const repository = automation
     ? findRepositoryById(repositories, automation.repositoryId)
     : findRepositoryById(repositories, prefills?.repositoryId ?? repositories[0]?.id ?? "") ?? repositories[0];
-  const rootWorktree = findRootWorktree(repository);
+  const targetMode = automation?.targetMode ?? "repo_root";
   const schedule = automation ? parseAutomationRrule(automation.rrule) : {
     frequency: "daily" as const,
     hour: 9,
@@ -390,8 +441,14 @@ function toFormState(
 
   return {
     repositoryId: automation?.repositoryId ?? repository?.id ?? "",
-    targetWorktreeId: getAutomationContextWorktreeId(repository) || automation?.targetWorktreeId || prefills?.worktreeId || "",
-    targetMode: automation?.targetMode ?? "repo_root",
+    targetWorktreeId: getAutomationContextWorktreeId({
+      repository,
+      targetMode,
+      preferredWorktreeId: targetMode === "worktree"
+        ? automation?.targetWorktreeId ?? prefills?.worktreeId
+        : undefined,
+    }),
+    targetMode,
     name: automation?.name ?? "",
     prompt: automation?.prompt ?? "",
     agent: automation?.agent ?? prefills?.agent ?? "claude",
@@ -1208,7 +1265,8 @@ function AutomationListItem({
   const repository = findRepositoryById(repositories, automation.repositoryId);
   const scheduleSummary = summarizeScheduleCompact(automation);
   const activeRun = isAutomationRunActive(automation.latestRun) ? automation.latestRun : null;
-  const runActionDisabled = runPending || activeRun !== null;
+  const runUnavailableReason = getAutomationRunUnavailableReason(automation, repositories);
+  const runActionDisabled = runPending || activeRun !== null || runUnavailableReason !== null;
 
   const stopEvent = (event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();
@@ -1271,6 +1329,7 @@ function AutomationListItem({
           <AutomationRowActionButton
             aria-label={`Run now ${automation.name}`}
             disabled={runActionDisabled}
+            title={runUnavailableReason ?? undefined}
             onClick={(event) => {
               stopEvent(event);
               setMoreOpen(false);
@@ -1507,7 +1566,7 @@ export function AutomationsListPage({
     onSuccess: (_run, automationId) => {
       applyAutomationLatestRunToCache(queryClient, automationId, _run);
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(automationId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.automations.runs(automationId) });
+      requestAutomationRunsLiveRefresh(queryClient, automationId);
     },
     onError: (error, automationId) => {
       setActionError(error instanceof Error ? error.message : "Unable to run automation");
@@ -1768,9 +1827,14 @@ export function AutomationsListPage({
                       className="min-w-0 justify-between"
                       onSelect={(nextRepositoryId) => {
                         const nextRepository = findRepositoryById(repositories, nextRepositoryId);
+                        const nextTargetWorktreeId = getAutomationContextWorktreeId({
+                          repository: nextRepository,
+                          targetMode: createForm.targetMode,
+                          preferredWorktreeId: createForm.targetMode === "worktree" ? createForm.targetWorktreeId : undefined,
+                        });
                         updateCreateForm({
                           repositoryId: nextRepositoryId,
-                          targetWorktreeId: getAutomationContextWorktreeId(nextRepository),
+                          targetWorktreeId: nextTargetWorktreeId,
                         }, ["repositoryId", "targetWorktreeId"]);
                       }}
                       testId="automation-create-project-trigger"
@@ -1785,8 +1849,14 @@ export function AutomationsListPage({
                       options={createTargetOptions}
                       className="min-w-0 justify-between"
                       onSelect={(nextTargetMode) => {
+                        const resolvedTargetMode = nextTargetMode as AutomationTargetMode;
                         updateCreateForm({
-                          targetMode: nextTargetMode as AutomationTargetMode,
+                          targetMode: resolvedTargetMode,
+                          targetWorktreeId: getAutomationContextWorktreeId({
+                            repository: createRepository,
+                            targetMode: resolvedTargetMode,
+                            preferredWorktreeId: resolvedTargetMode === "worktree" ? createForm.targetWorktreeId : undefined,
+                          }),
                         }, ["targetWorktreeId"]);
                       }}
                       testId="automation-create-target-trigger"
@@ -1899,13 +1969,7 @@ export function AutomationDetailPage({
     staleTime: AUTOMATION_DETAIL_FALLBACK_REFETCH_MS - 1_000,
     retry: false,
   });
-  const runsQuery = useQuery({
-    queryKey: queryKeys.automations.runs(automationId),
-    queryFn: () => api.listAutomationRuns(automationId),
-    refetchInterval: AUTOMATION_RUNS_FALLBACK_REFETCH_MS,
-    staleTime: AUTOMATION_RUNS_FALLBACK_REFETCH_MS - 1_000,
-    retry: false,
-  });
+  const runsQuery = useAutomationRuns(automationId);
   const versionsQuery = useQuery({
     queryKey: queryKeys.automations.versions(automationId),
     queryFn: () => api.listAutomationPromptVersions(automationId),
@@ -1917,6 +1981,33 @@ export function AutomationDetailPage({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [form, setForm] = useState<AutomationFormState | null>(null);
+  const [dismissedLiveErrorSignature, setDismissedLiveErrorSignature] = useState<string | null>(null);
+  const runsLiveErrorMessage = runsQuery.error instanceof Error
+    ? runsQuery.error.message
+    : runsQuery.error
+      ? String(runsQuery.error)
+      : null;
+  const runsLiveError = resolveWorkspaceLiveErrorSummary([
+    {
+      domain: "automation_runs",
+      connectionState: runsQuery.connectionState,
+      errorMessage: runsLiveErrorMessage,
+    },
+  ]);
+  const visibleRunsLiveError = runsLiveError && dismissedLiveErrorSignature !== runsLiveError.signature
+    ? runsLiveError
+    : null;
+
+  useEffect(() => {
+    if (!runsLiveError) {
+      setDismissedLiveErrorSignature(null);
+      return;
+    }
+
+    setDismissedLiveErrorSignature((current) => (
+      current != null && current !== runsLiveError.signature ? null : current
+    ));
+  }, [runsLiveError]);
 
   useEffect(() => {
     if (!automationQuery.data) {
@@ -2017,7 +2108,7 @@ export function AutomationDetailPage({
     onSuccess: (run) => {
       applyAutomationLatestRunToCache(queryClient, automationId, run);
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(automationId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.automations.runs(automationId) });
+      requestAutomationRunsLiveRefresh(queryClient, automationId);
     },
     onError: (error) => {
       setActionError(error instanceof Error ? error.message : "Unable to run automation");
@@ -2091,6 +2182,12 @@ export function AutomationDetailPage({
   const codexBuiltinModelOverride = runtimeInfo.data?.codexCliProviderOverride?.model ?? null;
   const activeRun = (runsQuery.data ?? []).find((run) => isAutomationRunActive(run))
     ?? (isAutomationRunActive(automation.latestRun) ? automation.latestRun : null);
+  const latestKnownRun = runsQuery.data?.[0] ?? automation.latestRun ?? null;
+  const runUnavailableReason = getAutomationRunUnavailableReason(automation, repositories, {
+    latestRunError: latestKnownRun?.error ?? null,
+  });
+  const runActionDisabled = runMutation.isPending || activeRun !== null || runUnavailableReason !== null;
+  const actionMessage = actionError ?? runUnavailableReason;
 
   return (
     <AutomationPageShell layout={layout}>
@@ -2142,7 +2239,8 @@ export function AutomationDetailPage({
             <Button
               type="button"
               className="px-5"
-              disabled={runMutation.isPending || activeRun !== null}
+              disabled={runActionDisabled}
+              title={runUnavailableReason ?? undefined}
               onClick={() => runMutation.mutate()}
             >
               <Play className="mr-2 h-4 w-4" />
@@ -2151,9 +2249,16 @@ export function AutomationDetailPage({
           </div>
         </div>
 
-        {actionError ? (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground">
-            {actionError}
+        {actionMessage ? (
+          <div
+            className={cn(
+              "rounded-lg px-3 py-2 text-sm",
+              actionError
+                ? "border border-destructive/30 bg-destructive/10 text-destructive-foreground"
+                : "border border-amber-500/25 bg-amber-500/10 text-amber-200",
+            )}
+          >
+            {actionMessage}
           </div>
         ) : null}
 
@@ -2246,10 +2351,15 @@ export function AutomationDetailPage({
                     options={detailTargetOptions}
                     className="justify-between"
                     onSelect={(nextTargetMode) => {
+                      const resolvedTargetMode = nextTargetMode as AutomationTargetMode;
                       setForm((current) => current ? {
                         ...current,
-                        targetMode: nextTargetMode as AutomationTargetMode,
-                        targetWorktreeId: getAutomationContextWorktreeId(repository),
+                        targetMode: resolvedTargetMode,
+                        targetWorktreeId: getAutomationContextWorktreeId({
+                          repository,
+                          targetMode: resolvedTargetMode,
+                          preferredWorktreeId: resolvedTargetMode === "worktree" ? current.targetWorktreeId : undefined,
+                        }),
                       } : current);
                     }}
                     testId="automation-detail-target-trigger"
@@ -2306,7 +2416,9 @@ export function AutomationDetailPage({
             </section>
 
             <section className="space-y-4 border-t border-border/40 py-5 xl:px-5">
-              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-foreground">Runs</h2>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-foreground">Runs</h2>
+              </div>
               <AutomationRunList
                 automation={automation}
                 runs={runsQuery.data ?? []}
@@ -2325,6 +2437,13 @@ export function AutomationDetailPage({
           </aside>
         </div>
       </div>
+      {visibleRunsLiveError ? (
+        <LiveStatusErrorToast
+          description={visibleRunsLiveError.description}
+          title={visibleRunsLiveError.title}
+          onDismiss={() => setDismissedLiveErrorSignature(visibleRunsLiveError.signature)}
+        />
+      ) : null}
     </AutomationPageShell>
   );
 }

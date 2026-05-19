@@ -50,10 +50,13 @@ import {
   setThreadLastAppliedSnapshotKey,
   setThreadLastEventIdx,
   setThreadLastMessageSeq,
+  useThreadStreamConnectionErrorMessage,
+  useThreadStreamConnectionState,
 } from "../../../../collections/threadStreamState";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { isThreadNavigationPerfEnabled, pushThreadNavigationPerf } from "../../../../lib/threadNavigationPerf";
 import { queryKeys } from "../../../../lib/queryKeys";
+import { requestRepositoryReviewsLiveRefresh } from "../../../../hooks/queries/useRepositoryReviews";
 import { useThreads } from "../../../../hooks/queries/useThreads";
 import { useThreadSnapshot } from "../../../../hooks/queries/useThreadSnapshot";
 import { useThreadStatusSnapshot } from "../../../../hooks/queries/useThreadStatusSnapshot";
@@ -1399,6 +1402,8 @@ export function useChatSession(
     shouldDelaySelectedThreadRemoteBootstrap || shouldUseLocalCompleteThreadCache
       ? null
       : selectedThreadIdForData;
+  const selectedThreadConnectionState = useThreadStreamConnectionState(remoteBootstrapThreadId);
+  const selectedThreadConnectionErrorMessage = useThreadStreamConnectionErrorMessage(remoteBootstrapThreadId);
   const shouldFetchThreadSnapshot = !shouldUseLocalCompleteThreadCache;
   const isThreadHistoryLocallyComplete = useCallback((threadId: string) => {
     const counts = getThreadCollectionCounts(threadId);
@@ -2019,7 +2024,7 @@ export function useChatSession(
       return;
     }
 
-    void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
+    requestRepositoryReviewsLiveRefresh(queryClient, repositoryId);
   }
 
   function replaceThreadInCache(worktreeId: string, previousThreadId: string, nextThread: ChatThread) {
@@ -3770,6 +3775,8 @@ export function useChatSession(
     showStopAction,
     stoppingRun,
     authoritativeThreadStatus: authoritativeStatusSnapshotUiStatus,
+    selectedThreadConnectionState,
+    selectedThreadConnectionErrorMessage,
     isThreadHistoryLocallyComplete,
     semanticHydrationInProgress: false,
 

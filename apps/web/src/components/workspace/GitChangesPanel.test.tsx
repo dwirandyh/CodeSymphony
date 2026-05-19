@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +21,24 @@ vi.mock("../../hooks/queries/useGitStatus", () => ({
   useGitStatus: vi.fn(),
 }));
 
+const { latestVListPropsRef } = vi.hoisted(() => ({
+  latestVListPropsRef: { current: null as Record<string, unknown> | null },
+}));
+
+vi.mock("virtua", () => ({
+  VList: ({ children, data, ...props }: {
+    children?: ((entry: unknown, index: number) => ReactNode) | ReactNode;
+    data?: unknown[];
+    [key: string]: unknown;
+  }) => {
+    latestVListPropsRef.current = props;
+    const renderedChildren: ReactNode = typeof children === "function"
+      ? Array.from(data ?? []).map((entry, index) => children(entry, index))
+      : children;
+    return <div data-testid="git-changes-vlist">{renderedChildren}</div>;
+  },
+}));
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -28,6 +46,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  latestVListPropsRef.current = null;
 });
 
 afterEach(() => {
@@ -125,6 +144,21 @@ describe("GitChangesPanel", () => {
     });
     expect(container.textContent).toContain("app.ts");
     expect(container.textContent).toContain("new.ts");
+  });
+
+  it("renders changed files through a virtualized list", () => {
+    const entries = Array.from({ length: 500 }, (_, index) => makeEntry({
+      path: `src/file-${index}.ts`,
+    }));
+
+    act(() => {
+      root.render(<GitChangesPanel {...baseProps} entries={entries} />);
+    });
+
+    expect(container.querySelector('[data-testid="git-changes-vlist"]')).toBeTruthy();
+    expect(latestVListPropsRef.current?.role).toBe("listbox");
+    expect(latestVListPropsRef.current?.["aria-label"]).toBe("Changed files");
+    expect(latestVListPropsRef.current?.bufferSize).toBeTruthy();
   });
 
   it("renders commit input", () => {

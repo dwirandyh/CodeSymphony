@@ -5,8 +5,6 @@ import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { api } from "../lib/api";
 import { queryKeys } from "../lib/queryKeys";
 
-const GIT_STATUS_FALLBACK_REFETCH_MS = 60_000;
-
 export type GitStatusRow = GitStatus & {
   worktreeId: string;
 };
@@ -34,9 +32,8 @@ function createGitStatusCollection(queryClient: QueryClient, worktreeId: string)
       queryFn: async () => [{ worktreeId, ...(await api.getGitStatus(worktreeId)) }],
       queryClient,
       getKey: (row) => row.worktreeId,
-      refetchInterval: (query) => query.state.fetchStatus === "fetching" ? false : GIT_STATUS_FALLBACK_REFETCH_MS,
-      staleTime: GIT_STATUS_FALLBACK_REFETCH_MS - 1_000,
       retry: false,
+      staleTime: 60_000,
     }),
   );
 }
@@ -82,6 +79,17 @@ export function getCachedGitStatus(queryClient: QueryClient, worktreeId: string)
 
 export function refetchGitStatusCollection(queryClient: QueryClient, worktreeId: string) {
   return getGitStatusCollection(queryClient, worktreeId).utils.refetch();
+}
+
+export function replaceGitStatusCollection(queryClient: QueryClient, worktreeId: string, status: GitStatus) {
+  const collection = getGitStatusCollection(queryClient, worktreeId);
+  const nextRow: GitStatusRow = {
+    worktreeId,
+    ...status,
+  };
+
+  collection.utils.writeUpsert(nextRow);
+  queryClient.setQueryData(queryKeys.worktrees.gitStatus(worktreeId), [nextRow]);
 }
 
 export async function resetGitStatusCollectionRegistryForTest() {

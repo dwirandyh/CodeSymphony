@@ -6,6 +6,7 @@ import type { Repository } from "@codesymphony/shared-types";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useRepositoryManager } from "./useRepositoryManager";
 
+const mockRequestGitStatusLiveRefresh = vi.fn();
 const mockCreateRepoMutateAsync = vi.fn();
 const mockCreateWorktreeMutateAsync = vi.fn().mockResolvedValue({
   worktree: {
@@ -94,6 +95,10 @@ vi.mock("../../../hooks/mutations/useRenameWorktreeBranch", () => ({
 }));
 vi.mock("../../../hooks/mutations/useUpdateWorktreeBaseBranch", () => ({
   useUpdateWorktreeBaseBranch: () => ({ mutateAsync: mockUpdateWorktreeBaseBranchMutateAsync, isPending: false }),
+}));
+
+vi.mock("../../../hooks/queries/useGitStatus", () => ({
+  requestGitStatusLiveRefresh: (...args: unknown[]) => mockRequestGitStatusLiveRefresh(...args),
 }));
 
 const mockRunSetupStream = vi.fn().mockReturnValue({
@@ -580,6 +585,7 @@ describe("useRepositoryManager", () => {
   describe("stopSetup", () => {
     it("stops the active setup stream", async () => {
       const { api } = await import("../../../lib/api");
+      const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
       render();
       // First start a setup to have an active stream
       await act(async () => {
@@ -590,6 +596,10 @@ describe("useRepositoryManager", () => {
         await hookResult.stopSetup();
       });
       expect(api.stopSetupScript).toHaveBeenCalledWith("wt-feat");
+      expect(mockRequestGitStatusLiveRefresh).toHaveBeenCalledWith(queryClient, "wt-feat");
+      expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
+        { queryKey: ["worktrees", "wt-feat", "gitStatus"] },
+      ]);
     });
   });
 
@@ -628,6 +638,7 @@ describe("useRepositoryManager", () => {
     it("handles done events from setup stream", () => {
       const listeners: Record<string, (e: { data: string }) => void> = {};
       const mockClose = vi.fn();
+      const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
       mockRunSetupStream.mockReturnValue({
         addEventListener: (type: string, cb: (e: { data: string }) => void) => { listeners[type] = cb; },
         close: mockClose,
@@ -648,11 +659,16 @@ describe("useRepositoryManager", () => {
       expect(mockOptions.onScriptUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ worktreeId: "wt-feat", type: "setup", status: "completed" })
       );
+      expect(mockRequestGitStatusLiveRefresh).toHaveBeenCalledWith(queryClient, "wt-feat");
+      expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
+        { queryKey: ["worktrees", "wt-feat", "gitStatus"] },
+      ]);
     });
 
     it("handles error events from setup stream", () => {
       let onerrorHandler: (() => void) | null = null;
       const mockClose = vi.fn();
+      const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
       mockRunSetupStream.mockReturnValue({
         addEventListener: vi.fn(),
         close: mockClose,
@@ -671,6 +687,10 @@ describe("useRepositoryManager", () => {
       });
       expect(mockClose).toHaveBeenCalled();
       expect(hookResult.setupRunning).toBe(false);
+      expect(mockRequestGitStatusLiveRefresh).toHaveBeenCalledWith(queryClient, "wt-feat");
+      expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
+        { queryKey: ["worktrees", "wt-feat", "gitStatus"] },
+      ]);
     });
   });
 });

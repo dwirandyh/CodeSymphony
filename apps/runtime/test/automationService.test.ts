@@ -1,3 +1,6 @@
+import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { WorkspaceSyncEvent } from "@codesymphony/shared-types";
@@ -17,6 +20,7 @@ const prisma = new PrismaClient({
     },
   },
 });
+const cleanupPaths = new Set<string>();
 
 async function resetDatabase(): Promise<void> {
   await prisma.chatEvent.deleteMany();
@@ -54,10 +58,12 @@ async function waitForRunStatus(
 
 async function createRepositoryFixture() {
   const suffix = uniqueSuffix();
+  const rootPath = await mkdtemp(path.join(tmpdir(), `codesymphony-automation-${suffix}-`));
+  cleanupPaths.add(rootPath);
   const repository = await prisma.repository.create({
     data: {
       name: `repo-${suffix}`,
-      rootPath: `/tmp/repo-${suffix}`,
+      rootPath,
       defaultBranch: "main",
     },
   });
@@ -65,7 +71,7 @@ async function createRepositoryFixture() {
     data: {
       repositoryId: repository.id,
       branch: "main",
-      path: `/tmp/repo-${suffix}`,
+      path: rootPath,
       baseBranch: "main",
       status: "active",
     },
@@ -171,6 +177,14 @@ describe("automationService", () => {
     }
   });
 
+  afterEach(async () => {
+    const paths = Array.from(cleanupPaths);
+    cleanupPaths.clear();
+    await Promise.all(paths.map(async (targetPath) => {
+      await rm(targetPath, { recursive: true, force: true });
+    }));
+  });
+
   afterAll(async () => {
     await prisma.$disconnect();
   });
@@ -206,6 +220,110 @@ describe("automationService", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.threadId).toBe(dispatched.threadId);
     expect(runs[0]?.triggerKind).toBe("manual");
+  });
+
+  it("normalizes repo-root automations back to the repository root worktree", async () => {
+    const { repository, worktree: rootWorktree } = await createRepositoryFixture();
+    const { automationService } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const featureWorktree = await prisma.worktree.create({
+      data: {
+        repositoryId: repository.id,
+        branch: "feature/live-updates",
+        path: `${rootWorktree.path}-feature`,
+        baseBranch: repository.defaultBranch,
+        status: "active",
+      },
+    });
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: featureWorktree.id,
+      targetMode: "repo_root",
+      name: "Daily audit",
+      prompt: "Check the repo and summarize issues.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    expect(created.targetWorktreeId).toBe(rootWorktree.id);
+
+    const dispatched = await automationService.runAutomationNow(created.id);
+    const thread = await prisma.chatThread.findUnique({
+      where: { id: dispatched.threadId },
+    });
+
+    expect(dispatched.worktreeId).toBe(rootWorktree.id);
+    expect(thread?.worktreeId).toBe(rootWorktree.id);
+  });
+
+  it("rejects repo-root manual runs when the root worktree path is missing", async () => {
+    const { repository, worktree } = await createRepositoryFixture();
+    const { automationService } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+      targetMode: "repo_root",
+      name: "Daily audit",
+      prompt: "Check the repo and summarize issues.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    await rm(worktree.path, { recursive: true, force: true });
+
+    await expect(automationService.runAutomationNow(created.id)).rejects.toThrow("Repository root worktree is not available");
+    await expect(automationService.listRuns(created.id)).resolves.toHaveLength(0);
+  });
+
+  it("marks scheduled repo-root runs as failed with a root-worktree error when the path is missing", async () => {
+    const { repository, worktree } = await createRepositoryFixture();
+    const { automationService } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+      targetMode: "repo_root",
+      name: "Daily audit",
+      prompt: "Check the repo and summarize issues.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    await prisma.automation.update({
+      where: { id: created.id },
+      data: {
+        nextRunAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    await rm(worktree.path, { recursive: true, force: true });
+
+    await expect(automationService.dispatchDueAutomations(new Date())).resolves.toBe(1);
+
+    const runs = await automationService.listRuns(created.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.error).toBe("Repository root worktree is not available");
   });
 
   it("runs a worktree automation now by creating a fresh worktree from the repository default branch", async () => {

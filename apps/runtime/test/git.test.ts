@@ -172,6 +172,12 @@ describe("git utilities", () => {
         await rm(remoteRepo, { recursive: true, force: true });
       }
     });
+
+    it("throws when the worktree path does not exist instead of fabricating HEAD", async () => {
+      await expect(getGitStatus("/nonexistent-dir-12345")).rejects.toThrow(
+        "Worktree path not found: /nonexistent-dir-12345. Create a new worktree from Repository panel.",
+      );
+    });
   });
 
   describe("getGitBranchDiffSummary", () => {

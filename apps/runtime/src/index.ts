@@ -32,6 +32,7 @@ import { createResourceMonitorService } from "./services/resourceMonitorService.
 import { createResourceMonitorSessionTracker } from "./services/resourceMonitorSessionTracker.js";
 import { invalidateCachedWorktreeGitData } from "./services/worktreeGitQueryCache.js";
 import { createWorktreeWatchService } from "./services/worktreeWatchService.js";
+import { createWorkspaceLiveUpdateService } from "./services/workspaceLiveUpdateService.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -41,9 +42,11 @@ import { registerFilesystemRoutes } from "./routes/filesystem.js";
 import { registerDebugRoutes, resolveDatabaseInfo } from "./routes/debug.js";
 import { registerModelRoutes } from "./routes/models.js";
 import { registerWorkspaceEventRoutes } from "./routes/workspaceEvents.js";
+import { registerWorkspaceLiveSocketRoutes } from "./routes/workspaceLiveSocket.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
 import { registerAutomationRoutes } from "./routes/automations.js";
 import { registerResourceMonitorRoutes } from "./routes/resourceMonitor.js";
+import { registerWorkspaceLiveResourceRoutes } from "./routes/workspaceLiveResources.js";
 import type { PrismaMigrationExecutionPlan } from "./migrate.js";
 
 declare module "fastify" {
@@ -66,6 +69,7 @@ declare module "fastify" {
     worktreeDeletionService: ReturnType<typeof createWorktreeDeletionService>;
     automationService: ReturnType<typeof createAutomationService>;
     resourceMonitorService: ReturnType<typeof createResourceMonitorService>;
+    workspaceLiveUpdateService: ReturnType<typeof createWorkspaceLiveUpdateService>;
   }
 }
 
@@ -115,6 +119,13 @@ function createApp() {
     worktreeService,
     chatService,
   });
+  const workspaceLiveUpdateService = createWorkspaceLiveUpdateService({
+    prisma,
+    workspaceEventHub,
+    repositoryService,
+    reviewService,
+    automationService,
+  });
   const worktreeWatchService = createWorktreeWatchService({
     workspaceEventHub,
     listWorktrees: async () => prisma.worktree.findMany({
@@ -152,6 +163,7 @@ function createApp() {
   app.decorate("worktreeDeletionService", worktreeDeletionService);
   app.decorate("automationService", automationService);
   app.decorate("resourceMonitorService", resourceMonitorService);
+  app.decorate("workspaceLiveUpdateService", workspaceLiveUpdateService);
 
   app.register(cors, {
     origin: true,
@@ -193,13 +205,16 @@ function createApp() {
   app.register(registerDebugRoutes, { prefix: "/api" });
   app.register(registerModelRoutes, { prefix: "/api" });
   app.register(registerWorkspaceEventRoutes, { prefix: "/api" });
+  app.register(registerWorkspaceLiveSocketRoutes, { prefix: "/api" });
   app.register(registerDeviceRoutes, { prefix: "/api" });
   app.register(registerAutomationRoutes, { prefix: "/api" });
   app.register(registerResourceMonitorRoutes, { prefix: "/api" });
+  app.register(registerWorkspaceLiveResourceRoutes, { prefix: "/api" });
 
   app.addHook("onClose", async () => {
     worktreeWatchService.dispose();
     automationService.dispose();
+    workspaceLiveUpdateService.dispose();
     await deviceService.stopAll();
   });
 

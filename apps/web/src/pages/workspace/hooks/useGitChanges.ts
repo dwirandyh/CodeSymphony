@@ -20,7 +20,7 @@ const STATUS_PRIORITY: Record<GitChangeStatus, number> = {
 
 export function useGitChanges(worktreeId: string | null, enabled: boolean) {
   const queryClient = useQueryClient();
-  const { data, isLoading, refetch } = useGitStatus(enabled ? worktreeId : null);
+  const { data, isLoading, refetch, connectionState, error: gitStatusError } = useGitStatus(enabled ? worktreeId : null);
   const commitMutation = useGitCommit(worktreeId);
   const discardMutation = useDiscardGitChange(worktreeId);
   const syncMutation = useGitSync(worktreeId);
@@ -57,7 +57,7 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     }
 
     const nextBranch = stableData?.branch?.trim();
-    if (!nextBranch) {
+    if (!nextBranch || nextBranch === "HEAD") {
       return;
     }
 
@@ -148,10 +148,14 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     ahead,
     behind,
     canSync,
+    connectionState,
     loading: enabled ? isLoading && stableData == null : false,
     committing: commitMutation.isPending,
     syncing: syncMutation.isPending,
-    error: commitMutation.error?.message ?? syncMutation.error?.message ?? discardMutation.error?.message ?? null,
+    error: commitMutation.error?.message
+      ?? syncMutation.error?.message
+      ?? discardMutation.error?.message
+      ?? (gitStatusError instanceof Error ? gitStatusError.message : gitStatusError ? String(gitStatusError) : null),
     commit,
     sync,
     discardChange,

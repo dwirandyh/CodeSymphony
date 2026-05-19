@@ -287,4 +287,80 @@ describe("useGitChanges", () => {
     expect(repositories?.[0]?.worktrees[0]?.branch).toBe("feature/from-terminal");
     expect(container.textContent).toContain("branch:feature/from-terminal");
   });
+
+  it("does not overwrite the repositories cache branch label with HEAD", () => {
+    vi.mocked(useGitStatus).mockReturnValue({
+      data: {
+        branch: "HEAD",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        entries: [],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useGitStatus>);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData<Repository[]>(queryKeys.repositories.all, [{
+      id: "repo-1",
+      name: "Repo",
+      rootPath: "/repo",
+      defaultBranch: "main",
+      setupScript: null,
+      teardownScript: null,
+      runScript: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      worktrees: [{
+        id: "w1",
+        repositoryId: "repo-1",
+        branch: "main",
+        path: "/repo",
+        baseBranch: "main",
+        status: "active",
+        branchRenamed: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }],
+    }]);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <TestComponent worktreeId="w1" enabled={true} />
+        </QueryClientProvider>
+      );
+    });
+
+    const repositories = qc.getQueryData<Repository[]>(queryKeys.repositories.all);
+    expect(repositories?.[0]?.worktrees[0]?.branch).toBe("main");
+    expect(container.textContent).toContain("branch:HEAD");
+  });
+
+  it("surfaces live git status errors so unavailable worktrees are visible in the UI", () => {
+    vi.mocked(useGitStatus).mockReturnValue({
+      data: {
+        branch: "main",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        entries: [],
+      },
+      error: new Error("Worktree path not found: /tmp/codesymphony. Create a new worktree from Repository panel."),
+      isLoading: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useGitStatus>);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    act(() => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <TestComponent worktreeId="w1" enabled={true} />
+        </QueryClientProvider>
+      );
+    });
+
+    expect(hookResult.error).toContain("Worktree path not found");
+  });
 });
