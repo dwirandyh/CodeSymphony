@@ -91,7 +91,7 @@ describe("WorkspaceEmptyState", () => {
     return props;
   }
 
-  it("renders the compact Superset-style action list", () => {
+  it("renders the compact quick action list", () => {
     renderState();
 
     expect(container.querySelector("[data-testid='workspace-empty-state']")).not.toBeNull();
