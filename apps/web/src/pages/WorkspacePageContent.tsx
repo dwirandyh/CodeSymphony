@@ -184,10 +184,6 @@ import {
   shouldReleaseStartupSelectionFallback,
   shouldPreserveStartupThreadFallback,
 } from "./workspace/startupShellPersistence";
-import {
-  preloadRequestedWorkspaceStartupView,
-  resolveRequestedWorkspaceStartupView,
-} from "./workspace/startupSurfacePreload";
 import { shouldLoadWorkspaceAgentCatalog } from "./workspace/workspaceAgentCatalog";
 import { isBaseBranchSelected, resolveReviewBaseBranch, resolveReviewBranch } from "./workspace/reviewBranch";
 import {
@@ -195,17 +191,6 @@ import {
   clearLifecycleScriptOutputs,
   upsertScriptOutputEntry,
 } from "./workspace/scriptOutputState";
-
-if (typeof window !== "undefined") {
-  preloadRequestedWorkspaceStartupView(
-    resolveRequestedWorkspaceStartupView(window.location.search),
-    {
-      loadCodeEditorPanel: preloadCodeEditorPanel,
-      loadDiffReviewPanel: preloadDiffReviewPanel,
-      loadWorkspaceAutomationsPanel,
-    },
-  );
-}
 
 function createFallbackOpencodeEntry(modelId: string): OpencodeModelCatalogEntry {
   const [providerId] = modelId.split("/", 1);

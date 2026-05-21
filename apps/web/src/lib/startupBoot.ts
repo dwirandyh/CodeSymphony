@@ -18,10 +18,41 @@ const DEFAULT_STARTUP_BOOT_DEPENDENCIES: StartupBootDependencies = {
   startWorkspaceStartupBootstrap,
 };
 
+let startupBootReady = false;
+const startupBootReadyListeners = new Set<() => void>();
+
+function notifyStartupBootReadyListeners() {
+  startupBootReadyListeners.forEach((listener) => {
+    listener();
+  });
+}
+
+function setStartupBootReady(nextReady: boolean) {
+  if (startupBootReady === nextReady) {
+    return;
+  }
+
+  startupBootReady = nextReady;
+  notifyStartupBootReadyListeners();
+}
+
+export function getStartupBootReadySnapshot() {
+  return startupBootReady;
+}
+
+export function subscribeStartupBootReady(listener: () => void) {
+  startupBootReadyListeners.add(listener);
+
+  return () => {
+    startupBootReadyListeners.delete(listener);
+  };
+}
+
 export async function bootstrapWorkspaceStartup(
   queryClient: QueryClient,
   dependencies: StartupBootDependencies = DEFAULT_STARTUP_BOOT_DEPENDENCIES,
 ) {
+  setStartupBootReady(false);
   dependencies.primeStartupShellSnapshot();
 
   try {
@@ -35,4 +66,5 @@ export async function bootstrapWorkspaceStartup(
   });
 
   void dependencies.startWorkspaceStartupBootstrap(queryClient).catch(() => {});
+  setStartupBootReady(true);
 }

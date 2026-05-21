@@ -59,17 +59,14 @@ class RootErrorBoundary extends React.Component<React.PropsWithChildren, RootErr
 
 const RootMode = import.meta.env.DEV ? React.Fragment : React.StrictMode;
 
-async function bootstrapApp() {
-  await bootstrapWorkspaceStartup(queryClient);
-  ReactDOM.createRoot(document.getElementById("root")!).render(
-    <RootMode>
-      <RootErrorBoundary>
-        <QueryClientProvider client={queryClient}>
-          <RouterProvider router={router} />
-        </QueryClientProvider>
-      </RootErrorBoundary>
-    </RootMode>,
-  );
-}
+void bootstrapWorkspaceStartup(queryClient);
 
-void bootstrapApp();
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <RootMode>
+    <RootErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </RootErrorBoundary>
+  </RootMode>,
+);
