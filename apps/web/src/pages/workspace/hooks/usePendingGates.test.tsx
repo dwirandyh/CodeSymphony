@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { getThreadEventsCollection, resetThreadCollectionsForTest } from "../../../collections/threadCollections";
+import { queryKeys } from "../../../lib/queryKeys";
 import { usePendingGates, type PendingGatesDeps } from "./usePendingGates";
 
 const {
@@ -663,6 +664,10 @@ describe("usePendingGates", () => {
         makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
         makeEvent(1, "chat.completed", {}),
       ];
+      queryClient.setQueryData(queryKeys.threads.statusSnapshot("t1"), {
+        status: "review_plan",
+        newestIdx: 1,
+      });
       render(events);
       expect(hookResult.showPlanDecisionComposer).toBe(true);
 
@@ -672,6 +677,12 @@ describe("usePendingGates", () => {
 
       expect(mockDismissPlan).toHaveBeenCalledWith("t1");
       expect(hookResult.showPlanDecisionComposer).toBe(false);
+      expect(hookResult.pendingPlan).toBeNull();
+      expect(hookResult.isWaitingForUserGate).toBe(false);
+      expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot("t1"))).toEqual({
+        status: "idle",
+        newestIdx: 2,
+      });
     });
 
     it("does nothing when no thread or plan", () => {

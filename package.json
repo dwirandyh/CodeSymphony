@@ -17,7 +17,10 @@
     "db:seed": "DATABASE_URL=\"file:./dev.db\" pnpm --filter @codesymphony/runtime prisma:seed",
     "run": "turbo run build --filter=@codesymphony/runtime --filter=@codesymphony/web && WEB_DIST_PATH=../web/dist NODE_ENV=production PRISMA_SCHEMA_PATH=./prisma/schema.prisma pnpm --filter @codesymphony/runtime start",
     "run:web": "pnpm --filter @codesymphony/web preview",
-    "run:runtime": "pnpm --filter @codesymphony/runtime start"
+    "run:runtime": "pnpm --filter @codesymphony/runtime start",
+    "instant-open:metrics:collect": "pnpm --filter @codesymphony/runtime startup:metrics:collect",
+    "instant-open:metrics:reset": "pnpm --filter @codesymphony/runtime startup:metrics:reset",
+    "instant-open:bundle:measure": "pnpm --filter @codesymphony/web measure:workspace-bundle"
   },
   "devDependencies": {
     "knip": "^6.3.1",

@@ -13,7 +13,7 @@ function createFallbackCursorEntry(modelId: string): CursorModelCatalogEntry {
   };
 }
 
-export function useCursorModels() {
+export function useCursorModels(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.models.cursorCatalog,
     queryFn: async () => {
@@ -26,6 +26,7 @@ export function useCursorModels() {
         };
       }
     },
+    enabled: options?.enabled ?? true,
     staleTime: 5 * 60_000,
     refetchInterval: 10 * 60_000,
   });

@@ -5,7 +5,11 @@ import { queryKeys } from "../../lib/queryKeys";
 
 const SLASH_COMMANDS_FALLBACK_REFETCH_MS = 5 * 60_000;
 
-export function useSlashCommandsQuery(worktreeId: string | null, agent: CliAgent) {
+export function useSlashCommandsQuery(
+  worktreeId: string | null,
+  agent: CliAgent,
+  options?: { enabled?: boolean; refetchInterval?: number | false },
+) {
   return useQuery({
     queryKey: queryKeys.worktrees.slashCommands(worktreeId!, agent),
     queryFn: async () => {
@@ -18,8 +22,8 @@ export function useSlashCommandsQuery(worktreeId: string | null, agent: CliAgent
         };
       }
     },
-    enabled: !!worktreeId,
-    refetchInterval: SLASH_COMMANDS_FALLBACK_REFETCH_MS,
+    enabled: (options?.enabled ?? true) && !!worktreeId,
+    refetchInterval: options?.refetchInterval ?? SLASH_COMMANDS_FALLBACK_REFETCH_MS,
     staleTime: SLASH_COMMANDS_FALLBACK_REFETCH_MS - 5_000,
   });
 }

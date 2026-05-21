@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { requestGitStatusLiveRefresh } from "../../../hooks/queries/useGitStatus";
 import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
+import { measureStartupMetricSinceBoot } from "../../../lib/startupPerf";
 import { useRepositories } from "../../../hooks/queries/useRepositories";
 import { useCreateRepository } from "../../../hooks/mutations/useCreateRepository";
 import { useCreateWorktree } from "../../../hooks/mutations/useCreateWorktree";
@@ -29,6 +30,7 @@ export interface ScriptUpdateEvent {
 interface UseRepositoryManagerOptions {
   desiredRepoId?: string;
   desiredWorktreeId?: string;
+  repositoriesEnabled?: boolean;
   onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
   onScriptUpdate?: (event: ScriptUpdateEvent) => void;
   onScriptOutputChunk?: (event: { worktreeId: string; chunk: string }) => void;
@@ -100,7 +102,9 @@ export function useRepositoryManager(
     data: repositories = [],
     isLoading: loadingRepos,
     error: repositoriesError,
-  } = useRepositories();
+  } = useRepositories({
+    enabled: options?.repositoriesEnabled ?? true,
+  });
   const repositoryWorktreeIndex = useMemo(
     () => buildRepositoryWorktreeIndex(repositories),
     [repositories],
@@ -157,8 +161,8 @@ export function useRepositoryManager(
     }
   }
 
-  const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
-  const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
+  const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(() => options?.desiredRepoId ?? null);
+  const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(() => options?.desiredWorktreeId ?? null);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
   const [updatingTargetBranchWorktreeId, setUpdatingTargetBranchWorktreeId] = useState<string | null>(null);
 
@@ -293,6 +297,9 @@ export function useRepositoryManager(
   }
 
   useEffect(() => {
+    const requestedRepoId = options?.desiredRepoId ?? null;
+    const requestedWorktreeId = options?.desiredWorktreeId ?? null;
+
     if (repositories.length === 0) {
       const hadRepositories = previousRepositoryCountRef.current > 0;
       previousRepositoryCountRef.current = 0;
@@ -301,6 +308,18 @@ export function useRepositoryManager(
         queryClient.removeQueries({ queryKey: ["worktrees"] });
         onError(null);
       }
+
+      const keepRequestedSelection = !hadRepositories && (requestedRepoId != null || requestedWorktreeId != null);
+      if (keepRequestedSelection) {
+        if (selectedRepositoryId !== requestedRepoId) {
+          setSelectedRepositoryId(requestedRepoId);
+        }
+        if (selectedWorktreeId !== requestedWorktreeId) {
+          setSelectedWorktreeId(requestedWorktreeId);
+        }
+        return;
+      }
+
       if (selectedRepositoryId !== null) {
         setSelectedRepositoryId(null);
       }
@@ -314,8 +333,6 @@ export function useRepositoryManager(
     previousRepositoryCountRef.current = repositories.length;
     previousRepositoriesRef.current = repositories;
 
-    const requestedRepoId = options?.desiredRepoId ?? null;
-    const requestedWorktreeId = options?.desiredWorktreeId ?? null;
     const requestedSelectionChanged =
       prevRequestedSelectionRef.current.repoId !== requestedRepoId
       || prevRequestedSelectionRef.current.worktreeId !== requestedWorktreeId;
@@ -403,6 +420,29 @@ export function useRepositoryManager(
       options?.onSelectionChange?.({ repoId: selectedRepositoryId, worktreeId: selectedWorktreeId });
     }
   }, [selectedRepositoryId, selectedWorktreeId]);
+
+  useEffect(() => {
+    if (
+      loadingRepos
+      || !selectedRepositoryId
+      || !selectedWorktreeId
+      || !repositoryWorktreeIndex.repositoryById.has(selectedRepositoryId)
+      || !repositoryWorktreeIndex.worktreeById.has(selectedWorktreeId)
+    ) {
+      return;
+    }
+
+    measureStartupMetricSinceBoot("startup.selected_workspace_ready_ms", {
+      source: "useRepositoryManager",
+      repositoryId: selectedRepositoryId,
+      worktreeId: selectedWorktreeId,
+    });
+  }, [
+    loadingRepos,
+    repositoryWorktreeIndex,
+    selectedRepositoryId,
+    selectedWorktreeId,
+  ]);
 
   async function attachRepository() {
     onError(null);

@@ -80,6 +80,7 @@ function attachJsonRpcServer(
 
 describe("runCodexWithStreaming abort handling", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     vi.restoreAllMocks();
   });
@@ -123,6 +124,50 @@ describe("runCodexWithStreaming abort handling", () => {
       message: "Aborted",
     });
 
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(child.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails when codex app-server never emits a first turn signal", async () => {
+    vi.useFakeTimers();
+
+    const child = new MockCodexChildProcess();
+    attachJsonRpcServer(child);
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const {
+      CODEX_FIRST_TURN_SIGNAL_TIMEOUT_MS,
+      runCodexWithStreaming,
+    } = await import("../src/codex/sessionRunner");
+
+    const runPromise = runCodexWithStreaming({
+      prompt: "Inspect the repo and explain the result.",
+      sessionId: null,
+      cwd: process.cwd(),
+      abortController: new AbortController(),
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+    });
+    void runPromise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(CODEX_FIRST_TURN_SIGNAL_TIMEOUT_MS + 1);
+
+    await expect(runPromise).rejects.toThrow(
+      "codex app-server did not send any turn activity",
+    );
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(child.kill).toHaveBeenCalledTimes(1);
   });

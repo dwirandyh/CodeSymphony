@@ -18,16 +18,17 @@ export function repositoryReviewsQueryOptions(repositoryId: string) {
   });
 }
 
-export function useRepositoryReviews(repositoryId: string | null) {
+export function useRepositoryReviews(repositoryId: string | null, options?: { enabled?: boolean }) {
   const queryClient = useQueryClient();
+  const enabled = (options?.enabled ?? true) && !!repositoryId;
   const query = useQuery({
     ...repositoryReviewsQueryOptions(repositoryId ?? ""),
-    enabled: !!repositoryId,
+    enabled,
   });
   const liveState = useWorkspaceLiveResource({
     queryClient,
     key: repositoryId ? repositoryReviewsLiveResourceKey(repositoryId) : "repository_reviews:__disabled__",
-    enabled: !!repositoryId,
+    enabled,
     options: {
       transport: {
         kind: "workspace_socket",

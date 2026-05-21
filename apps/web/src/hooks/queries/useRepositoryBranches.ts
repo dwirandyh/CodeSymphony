@@ -18,16 +18,17 @@ export function repositoryBranchesQueryOptions(repositoryId: string) {
   });
 }
 
-export function useRepositoryBranches(repositoryId: string | null) {
+export function useRepositoryBranches(repositoryId: string | null, options?: { enabled?: boolean }) {
   const queryClient = useQueryClient();
+  const enabled = (options?.enabled ?? true) && !!repositoryId;
   const query = useQuery({
     ...repositoryBranchesQueryOptions(repositoryId ?? ""),
-    enabled: !!repositoryId,
+    enabled,
   });
   const liveState = useWorkspaceLiveResource<string[]>({
     queryClient,
     key: repositoryId ? repositoryBranchesLiveResourceKey(repositoryId) : "repository_branches:__disabled__",
-    enabled: !!repositoryId,
+    enabled,
     options: {
       transport: {
         kind: "workspace_socket",

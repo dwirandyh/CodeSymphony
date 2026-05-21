@@ -4,6 +4,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../../lib/api";
 import { debugLog } from "../../../lib/debugLog";
 import { queryKeys } from "../../../lib/queryKeys";
+import { measureStartupMetricSinceBoot } from "../../../lib/startupPerf";
+import { startWorkspaceStartupBootstrap } from "../../../lib/workspaceStartupBootstrap";
 import { subscribeToWorkspaceSyncSocket } from "../../../lib/workspaceLiveSocket";
 import { refetchRepositoriesCollection } from "../../../collections/repositories";
 import {
@@ -80,7 +82,11 @@ async function refreshKnownThreadCaches(
   });
 }
 
-function revalidateWorkspaceState(queryClient: ReturnType<typeof useQueryClient>) {
+async function revalidateWorkspaceState(queryClient: ReturnType<typeof useQueryClient>) {
+  void startWorkspaceStartupBootstrap(queryClient).catch(() => {
+    // Recovery revalidation should still continue even when startup bootstrap cannot be refreshed.
+  });
+
   void refetchRepositoriesCollection(queryClient);
   void refetchAllThreadsCollections(queryClient);
   void queryClient.invalidateQueries({ queryKey: ["automations"] });
@@ -228,8 +234,11 @@ export function useWorkspaceSyncStream() {
   useEffect(() => {
     const unsubscribe = subscribeToWorkspaceSyncSocket({
       onOpen() {
+        measureStartupMetricSinceBoot("startup.live_connected_ms", {
+          source: "workspace-sync-socket",
+        });
         logWorkspaceSync("stream.open", {});
-        revalidateWorkspaceState(queryClient);
+        void revalidateWorkspaceState(queryClient);
       },
       onEvent(payload) {
         handleWorkspaceEvent(queryClient, payload);
@@ -247,12 +256,12 @@ export function useWorkspaceSyncStream() {
           ? null
           : document.hasFocus(),
       });
-      revalidateWorkspaceState(queryClient);
+      void revalidateWorkspaceState(queryClient);
     };
 
     const handleFocus = () => {
       logWorkspaceSync("foreground.revalidate.focus", {});
-      revalidateWorkspaceState(queryClient);
+      void revalidateWorkspaceState(queryClient);
     };
 
     if (typeof document !== "undefined") {

@@ -55,6 +55,7 @@ export type PendingPermissionEntry = {
   assistantMessageId: string | null;
   toolName: string;
   command: string | null;
+  permissionSignatures: string[];
   subagentOwnerToolUseId: string | null;
   launcherToolUseId: string | null;
   ownershipReason: ClaudeOwnershipReason | null;

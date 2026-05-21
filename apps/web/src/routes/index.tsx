@@ -1,7 +1,6 @@
-import { Suspense, lazy } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { StartupSplash } from "../components/startup/StartupSplash";
 import { WorkspaceStartupGate } from "../components/startup/WorkspaceStartupGate";
+import { WorkspacePage } from "../pages/WorkspacePage";
 
 export type WorkspaceSearch = {
   repoId?: string;
@@ -51,23 +50,10 @@ export function validateWorkspaceSearch(search: Record<string, unknown>): Worksp
   };
 }
 
-const LazyWorkspacePage = lazy(() =>
-  import("../pages/WorkspacePage").then((module) => ({ default: module.WorkspacePage }))
-);
-
 function WorkspaceRouteComponent() {
   return (
     <WorkspaceStartupGate>
-      <Suspense
-        fallback={(
-          <StartupSplash
-            headline="Loading Workspace"
-            detail="Preparing the editor, repositories, and terminal surfaces."
-          />
-        )}
-      >
-        <LazyWorkspacePage />
-      </Suspense>
+      <WorkspacePage />
     </WorkspaceStartupGate>
   );
 }

@@ -16,7 +16,7 @@ function createFallbackOpencodeEntry(modelId: string): OpencodeModelCatalogEntry
   };
 }
 
-export function useOpencodeModels() {
+export function useOpencodeModels(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.models.opencodeCatalog,
     queryFn: async () => {
@@ -29,6 +29,7 @@ export function useOpencodeModels() {
         };
       }
     },
+    enabled: options?.enabled ?? true,
     staleTime: 5 * 60_000,
     refetchInterval: 10 * 60_000,
   });

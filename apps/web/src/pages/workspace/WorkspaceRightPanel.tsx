@@ -1,14 +1,38 @@
-import { memo } from "react";
+import { lazy, memo, Suspense } from "react";
 import { FolderTree, GitBranch, Smartphone } from "lucide-react";
 import type { ReviewKind, ReviewRef } from "@codesymphony/shared-types";
-import { DevicePanel } from "../../components/workspace/DevicePanel";
-import { GitChangesPanel } from "../../components/workspace/GitChangesPanel";
-import { WorkspaceExplorerPanel } from "../../components/workspace/WorkspaceExplorerPanel";
 import { cn } from "../../lib/utils";
 import { useSidebarResize } from "./hooks/useSidebarResize";
 import type { useGitChanges } from "./hooks/useGitChanges";
 
 type GitChangesData = ReturnType<typeof useGitChanges>;
+
+const DevicePanel = lazy(() =>
+  import("../../components/workspace/DevicePanel").then((module) => ({
+    default: module.DevicePanel,
+  }))
+);
+const GitChangesPanel = lazy(() =>
+  import("../../components/workspace/GitChangesPanel").then((module) => ({
+    default: module.GitChangesPanel,
+  }))
+);
+const WorkspaceExplorerPanel = lazy(() =>
+  import("../../components/workspace/WorkspaceExplorerPanel").then((module) => ({
+    default: module.WorkspaceExplorerPanel,
+  }))
+);
+
+export function WorkspaceRightPanelContentFallback() {
+  return (
+    <div
+      className="flex min-h-0 flex-1 items-center justify-center px-4 text-center text-xs text-muted-foreground"
+      data-testid="workspace-right-panel-fallback"
+    >
+      Loading panel...
+    </div>
+  );
+}
 
 export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   desktopApp = false,
@@ -97,50 +121,52 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
               />
             ) : null}
             <div className={cn("flex min-h-0 flex-1 flex-col", rightDragging && "pointer-events-none select-none")}>
-              {rightPanelId === "explorer" && (
-                <WorkspaceExplorerPanel
-                  worktreeId={worktreeId}
-                  gitEntries={gitChanges.entries}
-                  pending={worktreePending}
-                  activeFilePath={activeFilePath}
-                  onOpenFile={(path) => void onOpenReadFile(path)}
-                  onClose={() => onUpdatePanel(undefined)}
-                />
-              )}
-              {rightPanelId === "git" && (
-                <GitChangesPanel
-                  key={worktreeId ?? "no-worktree"}
-                  entries={gitChanges.entries}
-                  branch={gitChanges.branch}
-                  loading={gitChanges.loading}
-                  committing={gitChanges.committing}
-                  syncing={gitChanges.syncing}
-                  canSync={gitChanges.canSync}
-                  ahead={gitChanges.ahead}
-                  behind={gitChanges.behind}
-                  error={gitChanges.error}
-                  selectedFilePath={selectedDiffFilePath}
-                  onCommit={(msg) => void gitChanges.commit(msg)}
-                  onSync={() => void gitChanges.sync()}
-                  onReview={onOpenReview}
-                  onRefresh={() => void gitChanges.refresh()}
-                  onClose={() => onUpdatePanel(undefined)}
-                  onSelectFile={onSelectDiffFile}
-                  onDiscardChange={(path) => void gitChanges.discardChange(path)}
-                  onOpenFile={(path) => void onOpenReadFile(path)}
-                  reviewKind={reviewKind}
-                  reviewRef={reviewRef}
-                  prMrActionDisabled={prMrActionDisabled}
-                  prMrActionTitle={prMrActionTitle}
-                  prMrActionBusy={prMrActionBusy}
-                  onPrMrAction={onPrMrAction}
-                />
-              )}
-              {rightPanelId === "device" && (
-                <DevicePanel
-                  onClose={() => onUpdatePanel(undefined)}
-                />
-              )}
+              <Suspense fallback={<WorkspaceRightPanelContentFallback />}>
+                {rightPanelId === "explorer" && (
+                  <WorkspaceExplorerPanel
+                    worktreeId={worktreeId}
+                    gitEntries={gitChanges.entries}
+                    pending={worktreePending}
+                    activeFilePath={activeFilePath}
+                    onOpenFile={(path) => void onOpenReadFile(path)}
+                    onClose={() => onUpdatePanel(undefined)}
+                  />
+                )}
+                {rightPanelId === "git" && (
+                  <GitChangesPanel
+                    key={worktreeId ?? "no-worktree"}
+                    entries={gitChanges.entries}
+                    branch={gitChanges.branch}
+                    loading={gitChanges.loading}
+                    committing={gitChanges.committing}
+                    syncing={gitChanges.syncing}
+                    canSync={gitChanges.canSync}
+                    ahead={gitChanges.ahead}
+                    behind={gitChanges.behind}
+                    error={gitChanges.error}
+                    selectedFilePath={selectedDiffFilePath}
+                    onCommit={(msg) => void gitChanges.commit(msg)}
+                    onSync={() => void gitChanges.sync()}
+                    onReview={onOpenReview}
+                    onRefresh={() => void gitChanges.refresh()}
+                    onClose={() => onUpdatePanel(undefined)}
+                    onSelectFile={onSelectDiffFile}
+                    onDiscardChange={(path) => void gitChanges.discardChange(path)}
+                    onOpenFile={(path) => void onOpenReadFile(path)}
+                    reviewKind={reviewKind}
+                    reviewRef={reviewRef}
+                    prMrActionDisabled={prMrActionDisabled}
+                    prMrActionTitle={prMrActionTitle}
+                    prMrActionBusy={prMrActionBusy}
+                    onPrMrAction={onPrMrAction}
+                  />
+                )}
+                {rightPanelId === "device" && (
+                  <DevicePanel
+                    onClose={() => onUpdatePanel(undefined)}
+                  />
+                )}
+              </Suspense>
             </div>
           </aside>
         )}

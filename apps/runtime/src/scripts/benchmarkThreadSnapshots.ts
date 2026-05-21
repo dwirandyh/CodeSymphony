@@ -4,6 +4,7 @@ import {
   mapEvents,
   mapMessages,
 } from "../services/chat/chatPaginationUtils.js";
+import { listPersistedChatEventRows } from "../services/chat/chatEventQuery.js";
 
 type BenchmarkThread = {
   threadId: string;
@@ -171,10 +172,7 @@ async function runThreadSnapshot(prisma: PrismaClient, threadId: string): Promis
       orderBy: { seq: "asc" },
       include: { attachments: true },
     }),
-    prisma.chatEvent.findMany({
-      where: { threadId },
-      orderBy: { idx: "asc" },
-    }),
+    listPersistedChatEventRows(prisma, threadId),
   ]);
 
   const snapshot = buildTimelineSnapshot({

@@ -19,6 +19,9 @@ const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
 const slashCommandQuery = z.object({
   agent: CliAgentSchema.optional(),
 }).strict();
+const timelineSnapshotQuery = z.object({
+  mode: z.enum(["full", "compact"]).optional(),
+}).strict();
 const inFlightSnapshotRequests = new Map<string, Promise<ChatThreadSnapshot>>();
 const inFlightStatusSnapshotRequests = new Map<string, Promise<ChatThreadStatusSnapshot>>();
 const inFlightTimelineSnapshotRequests = new Map<string, Promise<ChatTimelineSnapshot>>();
@@ -365,7 +368,9 @@ export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/threads/:id/timeline", async (request, reply) => {
     try {
       const params = threadParams.parse(request.params);
-      const timelineKey = params.id;
+      const query = timelineSnapshotQuery.parse(request.query);
+      const includeCollections = query.mode !== "compact";
+      const timelineKey = `${params.id}:${includeCollections ? "full" : "compact"}`;
       const existingRequest = inFlightTimelineSnapshotRequests.get(timelineKey);
       const reusedInFlightRequest = existingRequest != null;
       const startedAt = Date.now();
@@ -377,11 +382,13 @@ export async function registerChatRoutes(app: FastifyInstance) {
         data: {
           threadId: params.id,
           timelineKey,
+          mode: includeCollections ? "full" : "compact",
           reusedInFlightRequest,
         },
       });
 
       const snapshotPromise = existingRequest ?? app.chatService.listThreadSnapshot(params.id, {
+        includeCollections,
         onTiming: (entry: TimelineSnapshotTimingEntry) => {
           timings.push(entry);
         },
@@ -399,6 +406,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
           data: {
             threadId: params.id,
             timelineKey,
+            mode: includeCollections ? "full" : "compact",
             reusedInFlightRequest,
             durationMs: Date.now() - startedAt,
             timings,

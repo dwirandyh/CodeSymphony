@@ -3,7 +3,7 @@ import { api } from "../../lib/api";
 import { FALLBACK_CODEX_MODELS } from "../../lib/agentModelDefaults";
 import { queryKeys } from "../../lib/queryKeys";
 
-export function useCodexModels() {
+export function useCodexModels(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.models.codexCatalog,
     queryFn: async () => {
@@ -16,6 +16,7 @@ export function useCodexModels() {
         };
       }
     },
+    enabled: options?.enabled ?? true,
     staleTime: 5 * 60_000,
     refetchInterval: 10 * 60_000,
   });

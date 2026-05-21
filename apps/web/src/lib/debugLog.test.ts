@@ -13,6 +13,7 @@ describe("debugLog", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     delete window.__CS_DEBUG_LOG__;
     delete window.__CS_DEBUG_LOG_ENABLED__;
     window.localStorage.removeItem("codesymphony.debugLog");
@@ -111,5 +112,49 @@ describe("debugLog", () => {
     expect(window.__CS_DEBUG_LOG__).toHaveLength(1);
     expect(window.__CS_DEBUG_LOG__?.[0]?.data).toEqual({ threadId: "thread-1" });
     expect(sendBeacon).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries forced logs with fetch when the runtime is temporarily unavailable", async () => {
+    vi.useFakeTimers();
+
+    const sendBeacon = vi.fn(() => true);
+    Object.defineProperty(window.navigator, "sendBeacon", {
+      configurable: true,
+      value: sendBeacon,
+    });
+
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error("runtime unavailable"))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { debugLog } = await import("./debugLog");
+    debugLog("startup.perf", "startup.session.started", { sessionId: "s1" }, { force: true });
+
+    expect(sendBeacon).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps forced startup metrics flowing even when persisted source filters do not match", async () => {
+    const sendBeacon = vi.fn(() => true);
+    Object.defineProperty(window.navigator, "sendBeacon", {
+      configurable: true,
+      value: sendBeacon,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    window.localStorage.setItem("codesymphony.debugLog.sources", "workspace.live");
+
+    const { debugLog } = await import("./debugLog");
+    debugLog("startup.perf", "startup.session.started", { sessionId: "s1" }, { force: true });
+
+    expect(window.__CS_DEBUG_LOG__).toHaveLength(1);
+    expect(window.__CS_DEBUG_LOG__?.[0]?.source).toBe("startup.perf");
+    expect(sendBeacon).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

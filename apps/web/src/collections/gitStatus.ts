@@ -4,6 +4,11 @@ import type { QueryClient } from "@tanstack/react-query";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { api } from "../lib/api";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  readWorkspaceStartupBootstrapQueryData,
+  waitForWorkspaceStartupBootstrap,
+} from "../lib/workspaceStartupBootstrap";
+import { withWorkspaceCollectionPersistence } from "../lib/workspacePersistence";
 
 export type GitStatusRow = GitStatus & {
   worktreeId: string;
@@ -25,17 +30,48 @@ export function toPlainGitStatus(row: GitStatusRow): GitStatus {
 }
 
 function createGitStatusCollection(queryClient: QueryClient, worktreeId: string) {
-  return createCollection(
-    queryCollectionOptions<GitStatusRow>({
-      id: `git-status:${worktreeId}`,
-      queryKey: queryKeys.worktrees.gitStatus(worktreeId),
-      queryFn: async () => [{ worktreeId, ...(await api.getGitStatus(worktreeId)) }],
-      queryClient,
-      getKey: (row) => row.worktreeId,
-      retry: false,
-      staleTime: 60_000,
-    }),
+  let readCurrentRows = (): GitStatusRow[] => [];
+  let seededFromLocalState = false;
+
+  const collection = createCollection(
+    withWorkspaceCollectionPersistence(
+      queryCollectionOptions<GitStatusRow>({
+        id: `git-status:${worktreeId}`,
+        queryKey: queryKeys.worktrees.gitStatus(worktreeId),
+        queryFn: async () => {
+          await waitForWorkspaceStartupBootstrap();
+
+          if (!seededFromLocalState) {
+            seededFromLocalState = true;
+
+            const currentRows = readCurrentRows();
+            if (currentRows.length > 0) {
+              return currentRows;
+            }
+
+            const cachedRows = readWorkspaceStartupBootstrapQueryData<GitStatusRow[] | undefined>(
+              queryClient,
+              queryKeys.worktrees.gitStatus(worktreeId),
+            );
+            if (cachedRows !== undefined) {
+              return cachedRows;
+            }
+          }
+
+          return [{ worktreeId, ...(await api.getGitStatus(worktreeId)) }];
+        },
+        queryClient,
+        getKey: (row) => row.worktreeId,
+        retry: false,
+        staleTime: 60_000,
+      }),
+      { schemaVersion: 1 },
+    ),
   );
+
+  readCurrentRows = () => ((collection.toArray as unknown as GitStatusRow[]).map((row) => ({ ...row })));
+
+  return collection;
 }
 
 type GitStatusCollection = ReturnType<typeof createGitStatusCollection>;

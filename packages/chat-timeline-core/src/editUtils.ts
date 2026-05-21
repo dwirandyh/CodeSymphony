@@ -11,6 +11,10 @@ import {
 } from "./eventUtils.js";
 import type { EditedRun } from "./types.js";
 
+type ExtractEditedRunsOptions = {
+  eventsAreSorted?: boolean;
+};
+
 function isEditToolName(toolName: string | null): boolean {
   if (!toolName) {
     return false;
@@ -144,15 +148,24 @@ function isEditToolLifecycleEvent(event: ChatEvent): boolean {
   return false;
 }
 
-export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): EditedRun[] {
-  const ordered = [...context].sort((a, b) => a.idx - b.idx);
+export function extractEditedRuns(
+  context: ChatEvent[],
+  fullContext?: ChatEvent[],
+  options?: ExtractEditedRunsOptions,
+): EditedRun[] {
+  const ordered = options?.eventsAreSorted ? context : [...context].sort((a, b) => a.idx - b.idx);
   const byRunKey = new Map<string, EditedRun>();
   const toolNameByUseId = new Map<string, string>();
   const permissionRequestIds = new Set<string>();
   const claimedPermissionRequestIds = new Set<string>();
   const toolLifecycleRunKeys = new Set<string>();
+  const fullOrdered = fullContext == null
+    ? ordered
+    : options?.eventsAreSorted
+      ? fullContext
+      : [...fullContext].sort((a, b) => a.idx - b.idx);
 
-  for (const event of [...(fullContext ?? ordered)].sort((a, b) => a.idx - b.idx)) {
+  for (const event of fullOrdered) {
     if (event.type !== "tool.started" && event.type !== "tool.output") {
       continue;
     }

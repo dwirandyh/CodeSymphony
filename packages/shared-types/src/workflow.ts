@@ -1136,6 +1136,33 @@ export const GitStatusSchema = z.object({
 });
 export type GitStatus = z.infer<typeof GitStatusSchema>;
 
+export const WorkspaceStartupBootstrapQuerySchema = z.object({
+  repositoryId: z.string().trim().min(1).optional(),
+  worktreeId: z.string().trim().min(1).optional(),
+  threadId: z.string().trim().min(1).optional(),
+}).strict();
+export type WorkspaceStartupBootstrapQuery = z.infer<typeof WorkspaceStartupBootstrapQuerySchema>;
+
+export const WorkspaceStartupBootstrapSelectionSchema = z.object({
+  repositoryId: z.string().nullable(),
+  worktreeId: z.string().nullable(),
+  threadId: z.string().nullable(),
+});
+export type WorkspaceStartupBootstrapSelection = z.infer<typeof WorkspaceStartupBootstrapSelectionSchema>;
+
+export const WorkspaceStartupBootstrapDataSchema = z.object({
+  selection: WorkspaceStartupBootstrapSelectionSchema,
+  repositories: z.array(RepositorySchema).optional(),
+  repository: RepositorySchema.nullable(),
+  worktree: WorktreeSchema.nullable(),
+  threads: z.array(ChatThreadSchema),
+  threadsLoaded: z.boolean(),
+  thread: ChatThreadSchema.nullable(),
+  gitStatus: GitStatusSchema.nullable(),
+  capturedAt: z.string().datetime(),
+});
+export type WorkspaceStartupBootstrapData = z.infer<typeof WorkspaceStartupBootstrapDataSchema>;
+
 export const GitBranchDiffSummarySchema = z.object({
   branch: z.string(),
   baseBranch: z.string(),

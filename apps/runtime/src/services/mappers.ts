@@ -19,6 +19,10 @@ import {
   type Worktree,
 } from "@codesymphony/shared-types";
 
+type MapChatAttachmentOptions = {
+  hydrateContentFromStorage?: boolean;
+};
+
 function parseSerializedJson<T>(value: string | null, parser: (input: unknown) => T): T | null {
   if (!value) {
     return null;
@@ -94,11 +98,16 @@ export function mapChatThread(thread: DbChatThread, isActive = false): ChatThrea
   };
 }
 
-export function mapChatAttachment(attachment: DbChatAttachment): ChatAttachment {
+export function mapChatAttachment(
+  attachment: DbChatAttachment,
+  options?: MapChatAttachmentOptions,
+): ChatAttachment {
   let content = attachment.content;
+  const hydrateContentFromStorage = options?.hydrateContentFromStorage !== false;
 
   if (
-    content.length === 0
+    hydrateContentFromStorage
+    && content.length === 0
     && attachment.mimeType.startsWith("image/")
     && attachment.storagePath
     && existsSync(attachment.storagePath)
@@ -123,14 +132,17 @@ export function mapChatAttachment(attachment: DbChatAttachment): ChatAttachment 
   };
 }
 
-export function mapChatMessage(message: DbChatMessage & { attachments?: DbChatAttachment[] }): ChatMessage {
+export function mapChatMessage(
+  message: DbChatMessage & { attachments?: DbChatAttachment[] },
+  options?: MapChatAttachmentOptions,
+): ChatMessage {
   return {
     id: message.id,
     threadId: message.threadId,
     seq: message.seq,
     role: message.role,
     content: message.content,
-    attachments: (message.attachments ?? []).map(mapChatAttachment),
+    attachments: (message.attachments ?? []).map((attachment) => mapChatAttachment(attachment, options)),
     createdAt: message.createdAt.toISOString(),
   };
 }

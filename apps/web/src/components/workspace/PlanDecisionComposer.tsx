@@ -32,6 +32,7 @@ type PlanDecisionComposerProps = {
   runtimeInfo?: RuntimeInfo | null;
   onApprove: (selection: ApprovePlanInput) => void;
   onRevise: (feedback: string) => void;
+  onDismiss: () => void;
 };
 
 type DecisionMode = "accept" | "revise";
@@ -56,6 +57,7 @@ export function PlanDecisionComposer({
   runtimeInfo = null,
   onApprove,
   onRevise,
+  onDismiss,
 }: PlanDecisionComposerProps) {
   const [mode, setMode] = useState<DecisionMode>("accept");
   const [feedback, setFeedback] = useState("");
@@ -249,6 +251,16 @@ export function PlanDecisionComposer({
           </div>
 
           <div className="mt-2.5 flex flex-wrap items-center justify-end gap-2 sm:flex-nowrap">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              aria-label="Dismiss plan"
+              onClick={onDismiss}
+            >
+              Dismiss
+            </Button>
             {mode === "accept" ? (
               <AgentModelSelector
                 disabled={busy}

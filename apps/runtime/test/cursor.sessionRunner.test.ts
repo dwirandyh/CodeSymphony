@@ -6,6 +6,7 @@ import {
   createMockCursorChild,
   fakeCursorNewSessionRequests,
   fakeCursorSessions,
+  MockCursorChild,
   resetFakeCursorAcpState,
 } from "./support/fakeCursorAcp";
 
@@ -883,6 +884,24 @@ describe("cursor session runner", () => {
       onPlanFileDetected: () => {},
       onSubagentStarted: () => {},
       onSubagentStopped: () => {},
+    })).rejects.toThrow("Cursor Agent CLI could not be started");
+  });
+
+  it("adds setup hints when the Cursor catalog child emits a spawn error", async () => {
+    vi.doMock("node:child_process", () => ({
+      spawn: () => {
+        const child = new MockCursorChild();
+        queueMicrotask(() => {
+          child.emit("error", new Error("spawn cursor-agent ENOENT"));
+        });
+        return child;
+      },
+    }));
+
+    const { listCursorSlashCommands } = await import("../src/cursor/sessionRunner");
+
+    await expect(listCursorSlashCommands({
+      cwd: "/tmp/project",
     })).rejects.toThrow("Cursor Agent CLI could not be started");
   });
 

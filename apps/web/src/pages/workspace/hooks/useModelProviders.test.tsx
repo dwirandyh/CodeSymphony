@@ -40,8 +40,8 @@ let root: Root;
 let queryClient: QueryClient;
 let latestHook: ReturnType<typeof useModelProviders> | null = null;
 
-function HookHarness() {
-  latestHook = useModelProviders();
+function HookHarness({ enabled = true }: { enabled?: boolean }) {
+  latestHook = useModelProviders({ enabled });
   return (
     <div>
       {latestHook.providers.length === 0
@@ -70,11 +70,11 @@ afterEach(() => {
   container.remove();
 });
 
-function renderHarness() {
+function renderHarness(options?: { enabled?: boolean }) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <HookHarness />
+        <HookHarness enabled={options?.enabled} />
       </QueryClientProvider>,
     );
   });
@@ -88,6 +88,14 @@ async function flushEffects() {
 }
 
 describe("useModelProviders", () => {
+  it("stays inert when disabled", async () => {
+    renderHarness({ enabled: false });
+    await flushEffects();
+
+    expect(container.textContent).toBe("empty");
+    expect(apiMocks.listModelProviders).not.toHaveBeenCalled();
+  });
+
   it("loads providers from the initial fetch", async () => {
     apiMocks.listModelProviders.mockResolvedValueOnce([makeProvider({ id: "initial", modelId: "claude-initial" })]);
 

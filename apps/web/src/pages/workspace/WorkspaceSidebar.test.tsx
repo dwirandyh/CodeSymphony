@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkspaceSidebar } from "./WorkspaceSidebar";
+import { WorkspaceSidebar, WorkspaceSidebarFallback } from "./WorkspaceSidebar";
 
 vi.mock("../../components/workspace/RepositoryPanel", () => ({
   RepositoryPanel: () => <div>Repository Panel Mock</div>,
@@ -61,6 +61,14 @@ function renderSidebar(overrides?: Partial<Parameters<typeof WorkspaceSidebar>[0
 }
 
 describe("WorkspaceSidebar", () => {
+  it("renders lightweight repository fallback copy", () => {
+    act(() => {
+      root.render(<WorkspaceSidebarFallback />);
+    });
+
+    expect(container.textContent).toContain("Loading repositories");
+  });
+
   it("keeps the sidebar hidden on mobile web until the desktop breakpoint", () => {
     renderSidebar();
 
@@ -88,5 +96,19 @@ describe("WorkspaceSidebar", () => {
     renderSidebar();
     expect(container.textContent).toContain("Automations");
     expect(container.textContent).toContain("Settings");
+  });
+
+  it("keeps the repository list area height-constrained so workspace items can scroll above footer actions", () => {
+    renderSidebar();
+
+    const repositoryRegion = container.querySelector("[data-testid='workspace-sidebar-repositories']");
+    if (!repositoryRegion) {
+      throw new Error("Repository region not found");
+    }
+
+    expect(repositoryRegion.className).toContain("flex");
+    expect(repositoryRegion.className).toContain("min-h-0");
+    expect(repositoryRegion.className).toContain("flex-1");
+    expect(repositoryRegion.className).toContain("overflow-hidden");
   });
 });

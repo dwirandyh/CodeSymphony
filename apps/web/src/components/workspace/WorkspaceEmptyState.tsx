@@ -96,6 +96,7 @@ type WorkspaceEmptyStateProps = {
   repositoryName: string | null;
   worktreeBranch: string | null;
   worktreePath: string | null;
+  enableInstalledAppsQuery?: boolean;
   hasWorktree: boolean;
   worktreeReady: boolean;
   preparingThread: boolean;
@@ -124,6 +125,7 @@ export function WorkspaceEmptyState({
   reviewKind,
   reviewRef,
   worktreePath,
+  enableInstalledAppsQuery = true,
   canCreateThread,
   canOpenFiles,
   canCreateTerminal,
@@ -136,7 +138,9 @@ export function WorkspaceEmptyState({
   onOpenPullRequest,
   onRevealRepositories,
 }: WorkspaceEmptyStateProps) {
-  const { data: installedApps = [] } = useInstalledApps();
+  const { data: installedApps = [] } = useInstalledApps({
+    enabled: enableInstalledAppsQuery,
+  });
   const [openingApp, setOpeningApp] = useState(false);
   const fileShortcut = isMacPlatform() ? ["Cmd", "Shift", "O"] : ["Ctrl", "Shift", "O"];
   const reviewShortcut = reviewKind === "mr" ? ["MR"] : ["PR"];

@@ -5,16 +5,24 @@ import type { ModelProvider } from "@codesymphony/shared-types";
 import { getModelProvidersCollection, toPlainModelProvider } from "../../../collections/modelProviders";
 import { api } from "../../../lib/api";
 
-export function useModelProviders() {
+export function useModelProviders(options?: { enabled?: boolean }) {
   const queryClient = useQueryClient();
-  const collection = useMemo(() => getModelProvidersCollection(queryClient), [queryClient]);
-  const { data: liveProviders, isLoading } = useLiveQuery(() => collection, [collection]);
+  const enabled = options?.enabled ?? true;
+  const collection = useMemo(
+    () => enabled ? getModelProvidersCollection(queryClient) : null,
+    [enabled, queryClient],
+  );
+  const { data: liveProviders, isLoading } = useLiveQuery(() => collection ?? undefined, [collection]);
   const providers = useMemo(
     () => liveProviders?.map((provider) => toPlainModelProvider(provider as ModelProvider)) ?? [],
     [liveProviders],
   );
 
   const replaceProviders = useCallback((nextProviders: ModelProvider[]) => {
+    if (!collection) {
+      return;
+    }
+
     const nextById = new Map(nextProviders.map((provider) => [provider.id, provider] as const));
     const currentIds = (collection.toArray as ModelProvider[]).map((provider) => provider.id);
 
@@ -31,11 +39,19 @@ export function useModelProviders() {
   }, [collection]);
 
   const refreshProviders = useCallback(async (): Promise<ModelProvider[]> => {
+    if (!collection) {
+      return [];
+    }
+
     await collection.utils.refetch();
     return (collection.toArray as ModelProvider[]).map((provider) => toPlainModelProvider(provider));
   }, [collection]);
 
   const selectProvider = useCallback(async (id: string | null): Promise<ModelProvider[]> => {
+    if (!collection) {
+      return [];
+    }
+
     if (id === null) {
       await api.deactivateAllProviders();
       const currentProviders = (collection.toArray as ModelProvider[]).map((provider) => ({
@@ -62,7 +78,7 @@ export function useModelProviders() {
 
   return {
     providers,
-    loading: isLoading || collection.utils.isLoading,
+    loading: collection ? isLoading || collection.utils.isLoading : false,
     refreshProviders,
     replaceProviders,
     selectProvider,

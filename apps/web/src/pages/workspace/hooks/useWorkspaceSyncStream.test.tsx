@@ -10,10 +10,17 @@ vi.mock("../../../lib/debugLog", () => ({
   debugLog: vi.fn(),
 }));
 
+const measureStartupMetricSinceBootMock = vi.fn();
+
+vi.mock("../../../lib/startupPerf", () => ({
+  measureStartupMetricSinceBoot: (...args: unknown[]) => measureStartupMetricSinceBootMock(...args),
+}));
+
 const {
   runtimeBaseUrlMock,
   getTimelineSnapshotMock,
   getThreadStatusSnapshotMock,
+  startWorkspaceStartupBootstrapMock,
   refetchRepositoriesCollectionMock,
   refetchAllThreadsCollectionsMock,
   refetchThreadsCollectionMock,
@@ -29,6 +36,7 @@ const {
   runtimeBaseUrlMock: "http://127.0.0.1:4331",
   getTimelineSnapshotMock: vi.fn(),
   getThreadStatusSnapshotMock: vi.fn(),
+  startWorkspaceStartupBootstrapMock: vi.fn(),
   refetchRepositoriesCollectionMock: vi.fn(),
   refetchAllThreadsCollectionsMock: vi.fn(),
   refetchThreadsCollectionMock: vi.fn(),
@@ -50,6 +58,10 @@ vi.mock("../../../lib/api", () => ({
       return runtimeBaseUrlMock;
     },
   },
+}));
+
+vi.mock("../../../lib/workspaceStartupBootstrap", () => ({
+  startWorkspaceStartupBootstrap: (...args: unknown[]) => startWorkspaceStartupBootstrapMock(...args),
 }));
 
 vi.mock("../../../collections/repositories", () => ({
@@ -203,6 +215,8 @@ beforeEach(() => {
   getTimelineSnapshotMock.mockResolvedValue(makeTimelineSnapshot());
   getThreadStatusSnapshotMock.mockReset();
   getThreadStatusSnapshotMock.mockResolvedValue(makeStatusSnapshot());
+  startWorkspaceStartupBootstrapMock.mockReset();
+  startWorkspaceStartupBootstrapMock.mockResolvedValue(null);
   refetchRepositoriesCollectionMock.mockReset();
   refetchRepositoriesCollectionMock.mockResolvedValue(undefined);
   refetchAllThreadsCollectionsMock.mockReset();
@@ -218,6 +232,7 @@ beforeEach(() => {
   requestGitStatusLiveRefreshMock.mockReset();
   requestRepositoryBranchesLiveRefreshMock.mockReset();
   requestRepositoryReviewsLiveRefreshMock.mockReset();
+  measureStartupMetricSinceBootMock.mockReset();
 
   originalWebSocket = globalThis.WebSocket;
   vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket);
@@ -235,6 +250,44 @@ afterEach(() => {
 });
 
 describe("useWorkspaceSyncStream", () => {
+  it("retries startup bootstrap before revalidating collections when live socket opens", async () => {
+    renderHook();
+
+    act(() => {
+      MockWebSocket.instances[0]!.open();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(startWorkspaceStartupBootstrapMock).toHaveBeenCalledWith(queryClient);
+    expect(startWorkspaceStartupBootstrapMock.mock.invocationCallOrder[0]).toBeLessThan(
+      refetchRepositoriesCollectionMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(startWorkspaceStartupBootstrapMock.mock.invocationCallOrder[0]).toBeLessThan(
+      refetchAllThreadsCollectionsMock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
+  it("does not block collection revalidation on a slow startup bootstrap retry", async () => {
+    startWorkspaceStartupBootstrapMock.mockImplementationOnce(() => new Promise(() => {}));
+
+    renderHook();
+
+    act(() => {
+      MockWebSocket.instances[0]!.open();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(startWorkspaceStartupBootstrapMock).toHaveBeenCalledWith(queryClient);
+    expect(refetchRepositoriesCollectionMock).toHaveBeenCalledWith(queryClient);
+    expect(refetchAllThreadsCollectionsMock).toHaveBeenCalledWith(queryClient);
+  });
+
   it("reconnects and revalidates workspace state after the workspace live websocket closes", async () => {
     renderHook();
 
@@ -242,6 +295,10 @@ describe("useWorkspaceSyncStream", () => {
     expect(MockWebSocket.instances[0]!.url).toBe("ws://127.0.0.1:4331/api/workspace/live/ws");
     act(() => {
       MockWebSocket.instances[0]!.open();
+    });
+
+    expect(measureStartupMetricSinceBootMock).toHaveBeenCalledWith("startup.live_connected_ms", {
+      source: "workspace-sync-socket",
     });
 
     await act(async () => {

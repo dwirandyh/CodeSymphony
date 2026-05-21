@@ -258,7 +258,7 @@ describe("chatService permission flow", () => {
     expect(events.some((event) => event.type === "permission.resolved")).toBe(false);
   });
 
-  it("auto-approves in-worktree edit permission requests without user prompt", async () => {
+  it("requires approval for in-worktree edit permission requests in default mode", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {
         await onText("Workspace edit");
@@ -282,11 +282,11 @@ describe("chatService permission flow", () => {
         subagentOwnerToolUseId: null,
         launcherToolUseId: null,
       });
-      expect(decision).toEqual({ decision: "allow" });
+      expect(decision).toEqual({ decision: "deny" });
 
-      await onText("Edited inside workspace.");
+      await onText("Edit denied.");
       return {
-        output: "Edited inside workspace.",
+        output: "Edit denied.",
         sessionId: "session-workspace-edit",
       };
     });
@@ -303,9 +303,22 @@ describe("chatService permission flow", () => {
       content: "edit src/main.ts",
     });
 
+    const requested = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-worktree-edit",
+    );
+    expect(requested.payload.toolName).toBe("Edit");
+    expect(requested.payload.blockedPath).toBe("src/main.ts");
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-worktree-edit",
+      decision: "deny",
+    });
+
     const events = await waitForTerminalEvent(chatService, threadId);
-    expect(events.some((event) => event.type === "permission.requested")).toBe(false);
-    expect(events.some((event) => event.type === "permission.resolved")).toBe(false);
+    expect(events.some((event) => event.type === "permission.requested")).toBe(true);
+    expect(events.some((event) => event.type === "permission.resolved")).toBe(true);
   });
 
   it("auto renames default thread title after first assistant reply via metadata event", async () => {
@@ -1095,6 +1108,138 @@ describe("chatService permission flow", () => {
     const messages = await chatService.listMessages(threadId);
     const assistantMessage = messages.find((message) => message.role === "assistant");
     expect(assistantMessage?.content).toContain("Tool execution denied by user.");
+  });
+
+  it("auto-denies a repeated permission request after the user already denied the same action", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const firstDecision = await onPermissionRequest({
+        requestId: "perm-repeat-1",
+        toolName: "Edit",
+        toolInput: { file_path: "src/main.ts" },
+        blockedPath: "src/main.ts",
+        decisionReason: "Edit requires approval",
+        suggestions: [],
+      });
+
+      const secondDecision = await onPermissionRequest({
+        requestId: "perm-repeat-2",
+        toolName: "Edit",
+        toolInput: { file_path: "src/main.ts" },
+        blockedPath: "src/main.ts",
+        decisionReason: "Edit requires approval",
+        suggestions: [],
+      });
+
+      await onText(`Decisions: ${firstDecision.decision}/${secondDecision.decision}`);
+      return {
+        output: `Decisions: ${firstDecision.decision}/${secondDecision.decision}`,
+        sessionId: "session-repeat-deny",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "edit src/main.ts",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-repeat-1",
+    );
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-repeat-1",
+      decision: "deny",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const repeatedRequestEvents = events.filter(
+      (event) => event.type === "permission.requested" && String(event.payload.toolName) === "Edit",
+    );
+    expect(repeatedRequestEvents).toHaveLength(1);
+
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Decisions: deny/deny");
+  });
+
+  it("auto-denies an alternate mutating permission request that targets the same file after rejection", async () => {
+    const { threadId, worktreePath } = await seedThread();
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const targetFile = `${worktreePath}/src/main.ts`;
+
+      const firstDecision = await onPermissionRequest({
+        requestId: "perm-repeat-edit",
+        toolName: "Edit",
+        toolInput: { file_path: targetFile },
+        blockedPath: targetFile,
+        decisionReason: "Edit requires approval",
+        suggestions: [],
+      });
+
+      const secondDecision = await onPermissionRequest({
+        requestId: "perm-repeat-bash",
+        toolName: "Bash",
+        toolInput: {
+          command: `/bin/zsh -lc "sed -i '' -e '$a\\\\\n// denied' src/main.ts"`,
+        },
+        blockedPath: null,
+        decisionReason: "Do you want to allow a one-line edit to append the requested marker to src/main.ts?",
+        suggestions: [
+          "sed",
+          "-i",
+          "",
+          "-e",
+          "$a\\\\\n// denied",
+          "src/main.ts",
+        ],
+      });
+
+      await onText(`Decisions: ${firstDecision.decision}/${secondDecision.decision}`);
+      return {
+        output: `Decisions: ${firstDecision.decision}/${secondDecision.decision}`,
+        sessionId: "session-repeat-deny-alt-path",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+
+    await chatService.sendMessage(threadId, {
+      content: "edit src/main.ts",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-repeat-edit",
+    );
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-repeat-edit",
+      decision: "deny",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const repeatedRequestEvents = events.filter((event) => event.type === "permission.requested");
+    expect(repeatedRequestEvents).toHaveLength(1);
+
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Decisions: deny/deny");
   });
 
   it("rejects duplicate or missing permission resolve", async () => {

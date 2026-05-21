@@ -8,6 +8,8 @@ import type {
 } from "@prisma/client";
 import type { ChatEvent, ChatEventType } from "@codesymphony/shared-types";
 import type { RuntimeEventHub } from "../types.js";
+import { listPersistedChatEventRows } from "../services/chat/chatEventQuery.js";
+import { normalizeChatEventPayload } from "../services/chat/chatEventPayloadNormalization.js";
 
 const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
 
@@ -64,7 +66,7 @@ function mapDbEvent(event: DbChatEvent): ChatEvent | null {
     threadId: event.threadId,
     idx: event.idx,
     type,
-    payload: event.payload as Record<string, unknown>,
+    payload: normalizeChatEventPayload(type, event.payload),
     createdAt: event.createdAt.toISOString(),
   };
 }
@@ -201,13 +203,7 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
 
   async function list(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
     try {
-      const dbEvents = await prisma.chatEvent.findMany({
-        where: {
-          threadId,
-          ...(typeof afterIdx === "number" ? { idx: { gt: afterIdx } } : {}),
-        },
-        orderBy: { idx: "asc" },
-      });
+      const dbEvents = await listPersistedChatEventRows(prisma, threadId, afterIdx);
 
       const mappedDbEvents = dbEvents.flatMap((event) => {
         const mapped = mapDbEvent(event);

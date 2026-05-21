@@ -14,21 +14,55 @@ export function scheduleWindowIdleTask(
     return () => {};
   }
 
+  let completed = false;
+  let timeoutId: number | null = null;
+  let idleHandle: number | null = null;
+  const finish = () => {
+    if (completed) {
+      return;
+    }
+
+    completed = true;
+    if (timeoutId != null) {
+      window.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+
+    if (idleHandle != null && typeof idleWindow.cancelIdleCallback === "function") {
+      idleWindow.cancelIdleCallback(idleHandle);
+      idleHandle = null;
+    }
+
+    callback();
+  };
   const idleWindow = window as WindowWithIdleCallback;
   if (typeof idleWindow.requestIdleCallback === "function") {
-    const idleHandle = idleWindow.requestIdleCallback(callback, {
+    idleHandle = idleWindow.requestIdleCallback(finish, {
       timeout: options?.timeout ?? 0,
     });
 
+    const fallbackDelayMs = Math.max(0, options?.timeout ?? options?.fallbackDelayMs ?? 0);
+    timeoutId = window.setTimeout(finish, fallbackDelayMs);
+
     return () => {
-      if (typeof idleWindow.cancelIdleCallback === "function") {
+      completed = true;
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (idleHandle != null && typeof idleWindow.cancelIdleCallback === "function") {
         idleWindow.cancelIdleCallback(idleHandle);
+        idleHandle = null;
       }
     };
   }
 
-  const timeoutId = window.setTimeout(callback, options?.fallbackDelayMs ?? 0);
+  timeoutId = window.setTimeout(finish, options?.fallbackDelayMs ?? 0);
   return () => {
-    window.clearTimeout(timeoutId);
+    completed = true;
+    if (timeoutId != null) {
+      window.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
   };
 }

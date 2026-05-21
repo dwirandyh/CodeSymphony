@@ -645,6 +645,37 @@ describe("chat routes", () => {
       expect(res.json().data.collectionsIncluded).toBe(true);
     });
 
+    it("requests compact timeline snapshots without canonical collections", async () => {
+      mockChatService.listThreadSnapshot.mockResolvedValue({
+        messages: [],
+        events: [],
+        timeline: {
+          timelineItems: [],
+          summary: {
+            oldestRenderableKey: null,
+            oldestRenderableKind: null,
+            oldestRenderableMessageId: null,
+            oldestRenderableHydrationPending: false,
+            headIdentityStable: true,
+          },
+          newestSeq: 10,
+          newestIdx: 200,
+          collectionsIncluded: false,
+          messages: [],
+          events: [],
+        },
+      });
+
+      const res = await app.inject({ method: "GET", url: "/api/threads/t1/timeline?mode=compact" });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", expect.objectContaining({
+        includeCollections: false,
+        onTiming: expect.any(Function),
+      }));
+      expect(res.json().data.collectionsIncluded).toBe(false);
+    });
+
     it("does not leak overlap-unresolved subagent explore events into top-level explore cards", async () => {
       const suffix = uniqueSuffix();
       const repository = await prisma.repository.create({

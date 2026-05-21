@@ -32,6 +32,15 @@ function explicitSkillNameFromEvents(events: ChatEvent[]): string | null {
   return null;
 }
 
+function resolveSkillSummary(events: ChatEvent[], primaryEvent: ChatEvent): string | null {
+  const explicitSkillName = explicitSkillNameFromEvents(events);
+  if (explicitSkillName) {
+    return `Using ${explicitSkillName} skill`;
+  }
+
+  return payloadStringOrNull(primaryEvent.payload.summary);
+}
+
 function isExplicitSkillToolEvent(event: ChatEvent): boolean {
   return (event.type === "tool.started" || event.type === "tool.output" || event.type === "tool.finished")
     && payloadStringOrNull(event.payload.toolName)?.toLowerCase() === "skill";
@@ -223,7 +232,14 @@ function toolRunId(event: ChatEvent): string | null {
   return runIds[0] ?? null;
 }
 
-export function extractGenericToolRuns(events: ChatEvent[]): GenericToolRun[] {
+type ExtractGenericToolRunsOptions = {
+  eventsAreSorted?: boolean;
+};
+
+export function extractGenericToolRuns(
+  events: ChatEvent[],
+  options?: ExtractGenericToolRunsOptions,
+): GenericToolRun[] {
   const genericToolEventsByRunId = new Map<string, ChatEvent[]>();
   for (const event of events) {
     if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
@@ -242,7 +258,7 @@ export function extractGenericToolRuns(events: ChatEvent[]): GenericToolRun[] {
 
   const runs: GenericToolRun[] = [];
   for (const [runId, groupedEvents] of genericToolEventsByRunId.entries()) {
-    const sortedEvents = [...groupedEvents].sort((a, b) => a.idx - b.idx);
+    const sortedEvents = options?.eventsAreSorted ? groupedEvents : [...groupedEvents].sort((a, b) => a.idx - b.idx);
     const firstEvent = sortedEvents[0] ?? null;
     const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
       ?? sortedEvents.find((event) => event.type === "tool.output")
@@ -269,7 +285,10 @@ export function extractGenericToolRuns(events: ChatEvent[]): GenericToolRun[] {
       startIdx: firstEvent.idx,
       anchorIdx: firstEvent.idx,
       toolName: payloadStringOrNull(primaryEvent.payload.toolName),
-      summary: payloadStringOrNull(primaryEvent.payload.summary),
+      summary:
+        payloadStringOrNull(primaryEvent.payload.toolName)?.toLowerCase() === "skill"
+          ? resolveSkillSummary(sortedEvents, primaryEvent)
+          : payloadStringOrNull(primaryEvent.payload.summary),
       output: outputEvent && typeof outputEvent.payload.output === "string" ? outputEvent.payload.output : null,
       error: resolvedError,
       truncated: (outputEvent?.payload.truncated === true) || (errorEvent?.payload.truncated === true),
@@ -582,7 +601,7 @@ export function processOrphanToolEvents(
         sourceEvents: sortedEvents,
         toolUseId: runId,
         toolName: "Skill",
-        summary: explicitSkillName ? `Using ${explicitSkillName} skill` : payloadStringOrNull(primaryEvent.payload.summary),
+        summary: resolveSkillSummary(sortedEvents, primaryEvent),
         output: typeof primaryEvent.payload.output === "string" ? primaryEvent.payload.output : null,
         error: typeof primaryEvent.payload.error === "string" ? primaryEvent.payload.error : null,
         truncated: primaryEvent.payload.truncated === true,

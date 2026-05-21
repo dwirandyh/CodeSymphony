@@ -59,6 +59,7 @@ import {
 import { useComposerMention } from "./useComposerMention";
 import { useComposerAttachments } from "./useComposerAttachments";
 import { useComposerSlashCommand } from "./useComposerSlashCommand";
+import { useSlashCommandsQuery } from "../../../hooks/queries/useSlashCommandsQuery";
 import { useFileIndex } from "../../../pages/workspace/hooks/useFileIndex";
 import { resolveAgentDefaultModel } from "../../../lib/agentModelDefaults";
 import {
@@ -90,8 +91,8 @@ type ComposerProps = {
   modeLocked: boolean;
   fileIndex?: FileEntry[];
   fileIndexLoading?: boolean;
-  slashCommands: SlashCommand[];
-  slashCommandsLoading: boolean;
+  slashCommands?: SlashCommand[];
+  slashCommandsLoading?: boolean;
   providers: ModelProvider[];
   codexModels?: readonly CodexModelCatalogEntry[];
   cursorModels?: readonly CursorModelCatalogEntry[];
@@ -244,8 +245,8 @@ function ComposerContent({
   modeLocked,
   fileIndex,
   fileIndexLoading,
-  slashCommands,
-  slashCommandsLoading,
+  slashCommands: providedSlashCommands,
+  slashCommandsLoading: providedSlashCommandsLoading,
   providers,
   codexModels = [],
   cursorModels = [],
@@ -284,6 +285,8 @@ function ComposerContent({
   const [permissionPreviewMode, setPermissionPreviewMode] = useState<ChatThreadPermissionMode | null>(null);
   const [mobileSessionSheetOpen, setMobileSessionSheetOpen] = useState(false);
   const [composerPopoverHost, setComposerPopoverHost] = useState<HTMLDivElement | null>(null);
+  const shouldUseProvidedSlashCommands = providedSlashCommands !== undefined || providedSlashCommandsLoading !== undefined;
+  const [slashCommandsRequested, setSlashCommandsRequested] = useState(() => shouldUseProvidedSlashCommands);
   const hasProvidedFileIndex = fileIndex !== undefined && typeof fileIndexLoading === "boolean";
   const [hasRequestedFileIndex, setHasRequestedFileIndex] = useState(() => hasProvidedFileIndex);
   const [isMobile, setIsMobile] = useState(() => {
@@ -339,6 +342,16 @@ function ComposerContent({
   }, [mobileSessionSheetOpen]);
 
   useEffect(() => {
+    if (shouldUseProvidedSlashCommands || slashCommandsRequested) {
+      return;
+    }
+
+    if (draftText.includes("/")) {
+      setSlashCommandsRequested(true);
+    }
+  }, [draftText, shouldUseProvidedSlashCommands, slashCommandsRequested]);
+
+  useEffect(() => {
     setHasRequestedFileIndex(hasProvidedFileIndex);
   }, [hasProvidedFileIndex, worktreeId]);
 
@@ -351,6 +364,14 @@ function ComposerContent({
     : null;
   const canRenderQueuedMessages = queuedMessages.length > 0 && queuedMessageHandlers !== null;
   const codexBuiltinModelOverride = runtimeInfo?.codexCliProviderOverride?.model ?? null;
+  const slashCommandsQuery = useSlashCommandsQuery(worktreeId, agent, {
+    enabled: !shouldUseProvidedSlashCommands && slashCommandsRequested,
+    refetchInterval: false,
+  });
+  const slashCommands = providedSlashCommands ?? slashCommandsQuery.data?.commands ?? [];
+  const slashCommandsLoading = providedSlashCommandsLoading ?? (
+    !shouldUseProvidedSlashCommands && slashCommandsRequested && slashCommandsQuery.isLoading
+  );
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => buildAgentSelectionOptions({
     providers,
     codexModels,
@@ -627,9 +648,20 @@ function ComposerContent({
     prevContentLenRef.current = (editor.textContent ?? "").length;
     lastStableHTMLRef.current = editor.innerHTML;
     syncValueFromEditor();
+    if (!shouldUseProvidedSlashCommands && !slashCommandsRequested && currentText.includes("/")) {
+      setSlashCommandsRequested(true);
+    }
     detectMention();
     detectSlashCommand();
-  }, [autoConvertLongTextEnabled, syncValueFromEditor, applyAttachmentsChange, detectMention, detectSlashCommand]);
+  }, [
+    autoConvertLongTextEnabled,
+    syncValueFromEditor,
+    applyAttachmentsChange,
+    detectMention,
+    detectSlashCommand,
+    shouldUseProvidedSlashCommands,
+    slashCommandsRequested,
+  ]);
 
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;

@@ -21,6 +21,8 @@
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "lint": "tsc --noEmit -p tsconfig.json",
     "bench:thread-snapshot": "tsx --env-file .env src/scripts/benchmarkThreadSnapshots.ts",
+    "startup:metrics:collect": "tsx --env-file .env src/scripts/collectStartupMetrics.ts",
+    "startup:metrics:reset": "tsx --env-file .env src/scripts/resetDebugLog.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:seed": "prisma db seed"

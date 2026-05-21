@@ -119,7 +119,6 @@ import { buildCodexCliProviderHint } from "../../codex/config.js";
 import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
 import { listCursorSlashCommands } from "../../cursor/sessionRunner.js";
 import { appendRuntimeDebugLog } from "../../routes/debug.js";
-import { shouldAutoApproveWorkspaceEdit } from "./workspaceEditPermissions.js";
 import { getUnavailableWorktreeErrorMessage, isOperationalWorktreeStatus } from "../worktreeService.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
@@ -166,11 +165,13 @@ type ThreadRunState = {
   abortController?: AbortController;
   activeToolUseIds: Set<string>;
   activeSubagentToolUseIds: Set<string>;
+  deniedPermissionSignatures: Set<string>;
   queueHandoffPending: boolean;
   cancellationReason: "queued_message_dispatch" | null;
 };
 
 type ThreadSnapshotOptions = {
+  includeCollections?: boolean;
   onTiming?: (entry: ThreadSnapshotTimingEntry) => void;
 };
 
@@ -369,6 +370,123 @@ function normalizePermissionMode(permissionMode: ChatThreadPermissionMode | unde
   return permissionMode === "full_access" ? "full_access" : "default";
 }
 
+function normalizePermissionRequestTargetPath(worktreePath: string, target: string | null | undefined): string | null {
+  const normalizedTarget = target?.trim().replace(/^['"]|['"]$/g, "") ?? "";
+  if (!normalizedTarget) {
+    return null;
+  }
+
+  return normalize(isAbsolute(normalizedTarget) ? normalizedTarget : resolve(worktreePath, normalizedTarget));
+}
+
+function extractPathLikeValues(input: string): string[] {
+  return Array.from(
+    input.matchAll(/(?:\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+|[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+)/g),
+    (match) => match[0],
+  );
+}
+
+function extractPermissionRequestTargetPath(payload: {
+  toolName: string;
+  toolInput?: Record<string, unknown> | null;
+  blockedPath?: string | null;
+  decisionReason?: string | null;
+  suggestions?: string[] | null;
+  worktreePath: string;
+}): string | null {
+  const blockedPath = normalizePermissionRequestTargetPath(payload.worktreePath, payload.blockedPath);
+  if (blockedPath) {
+    return blockedPath;
+  }
+
+  const editTarget = normalizePermissionRequestTargetPath(
+    payload.worktreePath,
+    editTargetFromUnknownToolInput(payload.toolName, payload.toolInput ?? null),
+  );
+  if (editTarget) {
+    return editTarget;
+  }
+
+  const suggestionCandidates = (payload.suggestions ?? [])
+    .flatMap((entry) => extractPathLikeValues(entry))
+    .map((entry) => normalizePermissionRequestTargetPath(payload.worktreePath, entry))
+    .filter((entry): entry is string => entry != null);
+  if (suggestionCandidates.length > 0) {
+    return suggestionCandidates[suggestionCandidates.length - 1] ?? null;
+  }
+
+  const decisionReasonCandidates = extractPathLikeValues(payload.decisionReason ?? "")
+    .map((entry) => normalizePermissionRequestTargetPath(payload.worktreePath, entry))
+    .filter((entry): entry is string => entry != null);
+  if (decisionReasonCandidates.length > 0) {
+    return decisionReasonCandidates[decisionReasonCandidates.length - 1] ?? null;
+  }
+
+  const command = typeof payload.toolInput?.command === "string"
+    ? payload.toolInput.command
+    : "";
+  const commandCandidates = extractPathLikeValues(command)
+    .map((entry) => normalizePermissionRequestTargetPath(payload.worktreePath, entry))
+    .filter((entry): entry is string => entry != null);
+  return commandCandidates[commandCandidates.length - 1] ?? null;
+}
+
+function isLikelyMutatingPermissionRequest(payload: {
+  toolName: string;
+  toolInput?: Record<string, unknown> | null;
+  blockedPath?: string | null;
+  decisionReason?: string | null;
+  suggestions?: string[] | null;
+}): boolean {
+  const toolName = payload.toolName.trim();
+  if (isEditTool(toolName) || (payload.blockedPath?.trim() ?? "").length > 0) {
+    return true;
+  }
+
+  const command = typeof payload.toolInput?.command === "string"
+    ? payload.toolInput.command
+    : "";
+  const suggestionText = (payload.suggestions ?? []).join(" ");
+  const decisionReason = payload.decisionReason ?? "";
+  const mutationText = `${command} ${suggestionText} ${decisionReason}`.toLowerCase();
+  return /\b(sed\s+-i|perl\s+-pi|python\b|node\b|mv\b|rm\b|tee\b|append|write|edit|modify|delete|rename)\b/.test(mutationText)
+    || />{1,2}/.test(command);
+}
+
+function buildPermissionRequestSignatures(payload: {
+  toolName: string;
+  toolInput?: Record<string, unknown> | null;
+  blockedPath?: string | null;
+  decisionReason?: string | null;
+  suggestions?: string[] | null;
+  worktreePath: string;
+}): string[] {
+  const normalizedToolName = payload.toolName.trim().toLowerCase();
+  const blockedPath = normalizePermissionRequestTargetPath(payload.worktreePath, payload.blockedPath) ?? "";
+  const command = typeof payload.toolInput?.command === "string"
+    ? payload.toolInput.command.trim()
+    : "";
+  const editTarget = normalizePermissionRequestTargetPath(
+    payload.worktreePath,
+    editTargetFromUnknownToolInput(payload.toolName, payload.toolInput ?? null),
+  ) ?? "";
+
+  const signatures = new Set<string>();
+  signatures.add(JSON.stringify({
+    toolName: normalizedToolName,
+    blockedPath,
+    command,
+    editTarget,
+  }));
+
+  const targetPath = extractPermissionRequestTargetPath(payload);
+  if (targetPath && isLikelyMutatingPermissionRequest(payload)) {
+    signatures.add(`target:${targetPath}`);
+  }
+
+  return [...signatures];
+}
+
 function mergeSlashCommands(...catalogs: ReadonlyArray<ReadonlyArray<{ name: string; description: string; argumentHint: string }>>): Array<{
   name: string;
   description: string;
@@ -538,8 +656,8 @@ export function createChatService(deps: RuntimeDeps) {
 
   function setThreadRunState(
     threadId: string,
-    nextState: Omit<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "queueHandoffPending" | "cancellationReason" | "startedAtMs">
-    & Partial<Pick<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "queueHandoffPending" | "cancellationReason" | "startedAtMs">>,
+    nextState: Omit<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "deniedPermissionSignatures" | "queueHandoffPending" | "cancellationReason" | "startedAtMs">
+    & Partial<Pick<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "deniedPermissionSignatures" | "queueHandoffPending" | "cancellationReason" | "startedAtMs">>,
   ): void {
     const existing = threadRuns.get(threadId);
     threadRuns.set(threadId, {
@@ -547,6 +665,7 @@ export function createChatService(deps: RuntimeDeps) {
       startedAtMs: nextState.startedAtMs ?? existing?.startedAtMs ?? Date.now(),
       activeToolUseIds: nextState.activeToolUseIds ?? existing?.activeToolUseIds ?? new Set<string>(),
       activeSubagentToolUseIds: nextState.activeSubagentToolUseIds ?? existing?.activeSubagentToolUseIds ?? new Set<string>(),
+      deniedPermissionSignatures: nextState.deniedPermissionSignatures ?? existing?.deniedPermissionSignatures ?? new Set<string>(),
       queueHandoffPending: nextState.queueHandoffPending ?? existing?.queueHandoffPending ?? false,
       cancellationReason: nextState.cancellationReason ?? existing?.cancellationReason ?? null,
     });
@@ -1903,19 +2022,28 @@ export function createChatService(deps: RuntimeDeps) {
             return { decision: "allow" };
           }
 
-          if (shouldAutoApproveWorkspaceEdit({
-            workspaceRoot: thread.worktree.path,
+          const permissionSignatures = buildPermissionRequestSignatures({
             toolName: payload.toolName,
             toolInput: payload.toolInput,
             blockedPath: payload.blockedPath,
-          })) {
-            deps.logService?.log("debug", "chat.permission", "Auto-approved in-workspace edit request", {
+            decisionReason: payload.decisionReason,
+            suggestions: Array.isArray(payload.suggestions)
+              ? payload.suggestions.filter((entry): entry is string => typeof entry === "string")
+              : [],
+            worktreePath,
+          });
+          const currentRun = getThreadRun(threadId);
+          if (permissionSignatures.some((signature) => currentRun?.deniedPermissionSignatures.has(signature))) {
+            deps.logService?.log("debug", "chat.permission", "Auto-denied duplicate permission request after user rejection", {
               threadId,
               requestId: payload.requestId,
               toolName: payload.toolName,
               blockedPath: payload.blockedPath,
             });
-            return { decision: "allow" };
+            return {
+              decision: "deny",
+              message: "Tool execution denied by user.",
+            };
           }
 
           markThreadWaiting(threadId, "waiting_permission");
@@ -1939,6 +2067,7 @@ export function createChatService(deps: RuntimeDeps) {
           entry.ownershipReason = payload.ownershipReason ?? null;
           entry.ownershipCandidates = payload.ownershipCandidates ?? [];
           entry.activeSubagentToolUseIds = payload.activeSubagentToolUseIds ?? [];
+          entry.permissionSignatures = permissionSignatures;
           entry.promise = new Promise<PermissionDecisionResult>((resolve, reject) => {
             entry.resolve = resolve;
             entry.reject = reject;
@@ -2647,7 +2776,7 @@ export function createChatService(deps: RuntimeDeps) {
         include: { attachments: true },
       });
 
-      return messages.map(mapChatMessage);
+      return messages.map((message) => mapChatMessage(message));
     },
 
     async listQueuedMessages(threadId: string): Promise<ChatQueuedMessage[]> {
@@ -2729,6 +2858,7 @@ export function createChatService(deps: RuntimeDeps) {
       options?: ThreadSnapshotOptions,
     ): Promise<ChatThreadSnapshot> {
       const snapshotStartedAtMs = getPerfNow();
+      const includeCollections = options?.includeCollections !== false;
       await timeSnapshotPhase(options, "queued-dispatch-check", undefined, () => maybeDispatchQueuedMessages(threadId));
       await timeSnapshotPhase(options, "thread-exists", undefined, () => requireThreadExists(deps, threadId));
       const queryStartedAtMs = getPerfNow();
@@ -2746,7 +2876,9 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       const mapStartedAtMs = getPerfNow();
-      const messages = mapMessages(messageRows);
+      const messages = mapMessages(messageRows, {
+        hydrateAttachmentContentFromStorage: includeCollections,
+      });
       const events = eventRows;
       recordSnapshotPhase(options, "map.full-collections", mapStartedAtMs, {
         messagesCount: messages.length,
@@ -2758,6 +2890,7 @@ export function createChatService(deps: RuntimeDeps) {
         messages,
         events,
         threadId,
+        includeCollections,
       });
       recordSnapshotPhase(options, "timeline.assemble", timelineStartedAtMs, {
         timelineItemsCount: timeline.timelineItems.length,
@@ -2771,8 +2904,8 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       return {
-        messages,
-        events,
+        messages: includeCollections ? messages : [],
+        events: includeCollections ? events : [],
         timeline,
       };
     },
@@ -2971,6 +3104,19 @@ export function createChatService(deps: RuntimeDeps) {
         entry.result = result;
         entry.resolve = undefined;
         entry.reject = undefined;
+        if (!isAllow && entry.permissionSignatures.length > 0) {
+          const currentRun = getThreadRun(threadId);
+          if (currentRun) {
+            const nextDeniedPermissionSignatures = new Set(currentRun.deniedPermissionSignatures);
+            for (const permissionSignature of entry.permissionSignatures) {
+              nextDeniedPermissionSignatures.add(permissionSignature);
+            }
+            setThreadRunState(threadId, {
+              ...currentRun,
+              deniedPermissionSignatures: nextDeniedPermissionSignatures,
+            });
+          }
+        }
         if (!hasPendingPermissionRequests(threadId)) {
           markThreadRunning(threadId);
         }

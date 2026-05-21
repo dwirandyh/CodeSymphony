@@ -49,6 +49,7 @@ describe("PlanDecisionComposer", () => {
           opencodeModels={[]}
           onApprove={vi.fn()}
           onRevise={vi.fn()}
+          onDismiss={vi.fn()}
           {...overrides}
         />
       );
@@ -64,7 +65,7 @@ describe("PlanDecisionComposer", () => {
     expect(container.querySelector('button[aria-label="Select plan execution target"]')).toBeTruthy();
     expect(container.querySelector('button[aria-label="Implement plan"]')).toBeTruthy();
     expect(container.querySelector('button[aria-label="Handover plan"]')).toBeTruthy();
-    expect(container.textContent).not.toContain("Dismiss");
+    expect(container.querySelector('button[aria-label="Dismiss plan"]')).toBeTruthy();
   });
 
   it("calls onApprove with same-thread execution when Implement is clicked", () => {
@@ -95,6 +96,16 @@ describe("PlanDecisionComposer", () => {
       modelProviderId: null,
       executionKind: "handoff",
     });
+  });
+
+  it("calls onDismiss when Dismiss is clicked", () => {
+    const onDismiss = vi.fn();
+    renderComposer({ onDismiss });
+
+    const dismissButton = container.querySelector('button[aria-label="Dismiss plan"]');
+    act(() => dismissButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
   it("shows only Handover when the selected target requires a handoff", () => {
@@ -248,6 +259,7 @@ describe("PlanDecisionComposer", () => {
   it("disables execution actions when busy", () => {
     renderComposer({ busy: true });
 
+    expect((container.querySelector('button[aria-label="Dismiss plan"]') as HTMLButtonElement | null)?.disabled).toBe(true);
     expect((container.querySelector('button[aria-label="Implement plan"]') as HTMLButtonElement | null)?.disabled).toBe(true);
     expect((container.querySelector('button[aria-label="Handover plan"]') as HTMLButtonElement | null)?.disabled).toBe(true);
   });

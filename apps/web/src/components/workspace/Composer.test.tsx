@@ -335,6 +335,30 @@ describe("Composer", () => {
     expect(container.textContent).toContain("Create a commit");
   });
 
+  it("defers slash command fetching until the user actually types a slash trigger", async () => {
+    const getSlashCommandsSpy = vi.spyOn(api, "getSlashCommands").mockResolvedValue({
+      commands: sampleSlashCommands,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    renderComposer({
+      slashCommands: undefined,
+      slashCommandsLoading: undefined,
+      agent: "cursor",
+      model: "default[]",
+    });
+
+    await flushMicrotasks();
+    expect(getSlashCommandsSpy).not.toHaveBeenCalled();
+
+    const editor = getEditor();
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(getSlashCommandsSpy).toHaveBeenCalledWith("wt-1", "cursor");
+  });
+
   it("shows Codex skill suggestions when the active agent is codex", async () => {
     renderComposer({
       agent: "codex",

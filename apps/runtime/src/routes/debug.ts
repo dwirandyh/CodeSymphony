@@ -141,6 +141,29 @@ export function appendRuntimeDebugLog(entry: DebugLogPayload): number {
   return seq;
 }
 
+export function resetRuntimeDebugLog(options?: { clearFile?: boolean }) {
+  const clearedEntries = runtimeDebugBuffer.length;
+
+  runtimeDebugBuffer.splice(0, runtimeDebugBuffer.length);
+  runtimeDebugSeq = 0;
+  lastDebugLogAppendError = null;
+
+  if (options?.clearFile) {
+    try {
+      writeFileSync(LOG_PATH, "", "utf-8");
+    } catch (error) {
+      lastDebugLogAppendError = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to reset debug log at ${LOG_PATH}:`, error);
+    }
+  }
+
+  return {
+    clearedEntries,
+    logPath: LOG_PATH,
+    lastAppendError: lastDebugLogAppendError,
+  };
+}
+
 export function resolveDatabaseInfo(databaseUrl: string | undefined): RuntimeDatabaseInfo {
   if (!databaseUrl) {
     return { urlKind: "missing", resolvedPath: null, urlPreview: null };
@@ -240,6 +263,15 @@ export async function registerDebugRoutes(app: FastifyInstance) {
         filteredEntries: filteredEntries.length,
         entries: filteredEntries.slice(-limit),
       },
+    };
+  });
+
+  app.post("/debug/log-buffer/reset", async () => {
+    const resetResult = resetRuntimeDebugLog({ clearFile: true });
+
+    return {
+      ok: true,
+      clearedEntries: resetResult.clearedEntries,
     };
   });
 

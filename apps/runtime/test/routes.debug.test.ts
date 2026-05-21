@@ -19,6 +19,10 @@ describe("debug routes", () => {
     app = Fastify({ logger: false });
     await app.register(registerDebugRoutes, { prefix: "/api" });
     await app.ready();
+    await app.inject({
+      method: "POST",
+      url: "/api/debug/log-buffer/reset",
+    });
   });
 
   afterEach(async () => {
@@ -87,6 +91,37 @@ describe("debug routes", () => {
           data: { threadId: "thread-1" },
         }),
       ]);
+    });
+
+    it("clears the in-memory log buffer through the reset route", async () => {
+      await app.inject({
+        method: "POST",
+        url: "/api/debug/log",
+        payload: [
+          { seq: 1, ts: 100.5, source: "startup.perf", message: "startup.session.started", data: { sessionId: "session-1" } },
+          { seq: 2, ts: 200.0, source: "startup.perf", message: "startup.shell_visible_ms", data: { sessionId: "session-1" } },
+        ],
+      });
+
+      const resetResponse = await app.inject({
+        method: "POST",
+        url: "/api/debug/log-buffer/reset",
+      });
+
+      expect(resetResponse.statusCode).toBe(200);
+      expect(resetResponse.json()).toEqual({
+        ok: true,
+        clearedEntries: 2,
+      });
+
+      const bufferResponse = await app.inject({
+        method: "GET",
+        url: "/api/debug/log-buffer?source=startup.perf",
+      });
+
+      expect(bufferResponse.statusCode).toBe(200);
+      expect(bufferResponse.json().data.filteredEntries).toBe(0);
+      expect(bufferResponse.json().data.entries).toEqual([]);
     });
   });
 });

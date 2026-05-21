@@ -47,6 +47,7 @@ import { registerDeviceRoutes } from "./routes/devices.js";
 import { registerAutomationRoutes } from "./routes/automations.js";
 import { registerResourceMonitorRoutes } from "./routes/resourceMonitor.js";
 import { registerWorkspaceLiveResourceRoutes } from "./routes/workspaceLiveResources.js";
+import { registerWorkspaceBootstrapRoutes } from "./routes/workspaceBootstrap.js";
 import type { PrismaMigrationExecutionPlan } from "./migrate.js";
 
 declare module "fastify" {
@@ -210,6 +211,7 @@ function createApp() {
   app.register(registerAutomationRoutes, { prefix: "/api" });
   app.register(registerResourceMonitorRoutes, { prefix: "/api" });
   app.register(registerWorkspaceLiveResourceRoutes, { prefix: "/api" });
+  app.register(registerWorkspaceBootstrapRoutes, { prefix: "/api" });
 
   app.addHook("onClose", async () => {
     worktreeWatchService.dispose();
@@ -346,6 +348,16 @@ function resolveFileDatabasePath(databaseUrl: string | undefined): string | null
   return path.resolve(process.cwd(), rawPath);
 }
 
+function resolveStartupReadyDelayMs() {
+  const rawValue = process.env.CODESYMPHONY_STARTUP_READY_DELAY_MS?.trim();
+  if (!rawValue) {
+    return 0;
+  }
+
+  const parsedValue = Number.parseInt(rawValue, 10);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : 0;
+}
+
 async function restoreBundledDatabaseFromTemplate(
   templateDatabasePath: string,
   databaseUrl: string | undefined,
@@ -410,9 +422,15 @@ async function main() {
 
     const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
     const port = Number(process.env.RUNTIME_PORT ?? "4331");
+    const startupReadyDelayMs = resolveStartupReadyDelayMs();
 
     const app = createApp();
     const database = resolveDatabaseInfo(process.env.DATABASE_URL);
+
+    if (startupReadyDelayMs > 0) {
+      app.log.info({ startupReadyDelayMs }, "Delaying runtime listen for startup measurement");
+      await new Promise((resolve) => setTimeout(resolve, startupReadyDelayMs));
+    }
 
     await app.listen({ host, port });
     app.log.info({

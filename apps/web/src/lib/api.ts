@@ -63,6 +63,7 @@ import type {
   UpdateWorktreeFileContentInput,
   UpdateModelProviderInput,
   UpdateRepositoryScriptsInput,
+  WorkspaceStartupBootstrapData,
   UpdateWorktreeBaseBranchInput,
   WorktreeFileContent,
   Worktree,
@@ -70,6 +71,8 @@ import type {
 import { resolveRuntimeApiBases } from "./runtimeUrl";
 import { logService } from "./logService";
 import { debugLog } from "./debugLog";
+import { trackStartupBootstrapPayload } from "./startupPerf";
+import { notifyStartupRuntimeReady } from "./startupRuntimeReadySignal";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:4331/api";
 const RETRY_DELAYS_MS = [150, 400];
@@ -85,6 +88,9 @@ const API_REQUEST_SETTLE_PATTERNS = [
   /^\/worktrees\/[^/]+\/git\/branch-diff-summary$/,
   /^\/worktrees\/[^/]+\/threads$/,
 ];
+const STARTUP_PAYLOAD_PATTERNS = [
+  /^\/workspace\/bootstrap(?:\?.*)?$/,
+];
 
 let activeApiBase: string | null = null;
 let apiRequestSeq = 0;
@@ -96,7 +102,6 @@ type ApiRequestDebugContext = {
   threadId: string | null;
   worktreeId: string | null;
 };
-
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -113,27 +118,34 @@ function roundRequestMs(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+function normalizeApiRequestPath(path: string): string {
+  const queryStart = path.indexOf("?");
+  return queryStart === -1 ? path : path.slice(0, queryStart);
+}
+
 function matchesApiRequestPattern(path: string, patterns: RegExp[]): boolean {
-  return patterns.some((pattern) => pattern.test(path));
+  const normalizedPath = normalizeApiRequestPath(path);
+  return patterns.some((pattern) => pattern.test(normalizedPath));
 }
 
 function createApiRequestDebugContext(path: string): ApiRequestDebugContext {
-  const threadId = path.match(/^\/threads\/([^/?]+)/)?.[1] ?? null;
-  const repositoryId = path.match(/^\/repositories\/([^/?]+)/)?.[1] ?? null;
-  const worktreeId = path.match(/^\/worktrees\/([^/?]+)/)?.[1] ?? null;
+  const normalizedPath = normalizeApiRequestPath(path);
+  const threadId = normalizedPath.match(/^\/threads\/([^/?]+)/)?.[1] ?? null;
+  const repositoryId = normalizedPath.match(/^\/repositories\/([^/?]+)/)?.[1] ?? null;
+  const worktreeId = normalizedPath.match(/^\/worktrees\/([^/?]+)/)?.[1] ?? null;
 
   let label = "runtime.request";
-  if (/^\/threads\/[^/]+\/messages$/.test(path)) {
+  if (/^\/threads\/[^/]+\/messages$/.test(normalizedPath)) {
     label = "thread.sendMessage";
-  } else if (/^\/threads\/[^/]+\/status-snapshot$/.test(path)) {
+  } else if (/^\/threads\/[^/]+\/status-snapshot$/.test(normalizedPath)) {
     label = "thread.statusSnapshot";
-  } else if (/^\/threads\/[^/]+\/timeline$/.test(path)) {
+  } else if (/^\/threads\/[^/]+\/timeline$/.test(normalizedPath)) {
     label = "thread.timeline";
-  } else if (/^\/repositories\/[^/]+\/reviews$/.test(path)) {
+  } else if (/^\/repositories\/[^/]+\/reviews$/.test(normalizedPath)) {
     label = "repository.reviews";
-  } else if (/^\/worktrees\/[^/]+\/git\/branch-diff-summary$/.test(path)) {
+  } else if (/^\/worktrees\/[^/]+\/git\/branch-diff-summary$/.test(normalizedPath)) {
     label = "worktree.branchDiffSummary";
-  } else if (/^\/worktrees\/[^/]+\/threads$/.test(path)) {
+  } else if (/^\/worktrees\/[^/]+\/threads$/.test(normalizedPath)) {
     label = "worktree.threads";
   }
 
@@ -161,6 +173,24 @@ function shouldLogApiRequestSettle(params: {
     || params.inflightAtStart >= 6
     || matchesApiRequestPattern(params.path, API_REQUEST_SETTLE_PATTERNS)
   );
+}
+
+function shouldTrackStartupPayload(path: string, method: string) {
+  return method === "GET" && matchesApiRequestPattern(path, STARTUP_PAYLOAD_PATTERNS);
+}
+
+function estimateResponsePayloadBytes(response: Response, payload: unknown) {
+  const contentLength = response.headers.get("content-length");
+  const parsedLength = contentLength ? Number.parseInt(contentLength, 10) : Number.NaN;
+  if (Number.isFinite(parsedLength) && parsedLength > 0) {
+    return parsedLength;
+  }
+
+  try {
+    return new TextEncoder().encode(JSON.stringify(payload)).length;
+  } catch {
+    return 0;
+  }
 }
 
 function getConfiguredApiBases(): string[] {
@@ -386,6 +416,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       throw new Error(payload?.error ?? "Request failed");
     }
 
+    if (shouldTrackStartupPayload(path, method)) {
+      trackStartupBootstrapPayload(path, estimateResponsePayloadBytes(response, payload));
+    }
+
+    notifyStartupRuntimeReady(debugContext.label);
+
     let extracted: T;
     if (payload && typeof payload === "object" && "data" in payload) {
       extracted = extractDataEnvelope<T>(payload);
@@ -438,6 +474,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   pickDirectory: () => request<{ path: string }>("/system/pick-directory", { method: "POST" }),
   listRepositories: () => request<Repository[]>("/repositories"),
+  getWorkspaceBootstrap: (selection?: {
+    repositoryId?: string | null;
+    worktreeId?: string | null;
+    threadId?: string | null;
+  }) => {
+    const searchParams = new URLSearchParams();
+    if (selection?.repositoryId) {
+      searchParams.set("repositoryId", selection.repositoryId);
+    }
+    if (selection?.worktreeId) {
+      searchParams.set("worktreeId", selection.worktreeId);
+    }
+    if (selection?.threadId) {
+      searchParams.set("threadId", selection.threadId);
+    }
+    const query = searchParams.toString();
+    return request<WorkspaceStartupBootstrapData>(`/workspace/bootstrap${query.length > 0 ? `?${query}` : ""}`);
+  },
   listAutomations: (filters?: { repositoryId?: string; enabled?: boolean }) => {
     const searchParams = new URLSearchParams();
     if (filters?.repositoryId) {
@@ -640,8 +694,11 @@ export const api = {
     request<ChatThreadSnapshot>(`/threads/${threadId}/snapshot`),
   getThreadStatusSnapshot: (threadId: string) =>
     request<ChatThreadStatusSnapshot>(`/threads/${threadId}/status-snapshot`),
-  getTimelineSnapshot: (threadId: string) => {
-    const path = `/threads/${threadId}/timeline`;
+  getTimelineSnapshot: (threadId: string, options?: { mode?: "full" | "compact" }) => {
+    const mode = options?.mode ?? "full";
+    const path = mode === "compact"
+      ? `/threads/${threadId}/timeline?mode=compact`
+      : `/threads/${threadId}/timeline`;
     const startedAt =
       typeof performance !== "undefined" && typeof performance.now === "function"
         ? performance.now()
@@ -650,6 +707,7 @@ export const api = {
     debugLog("thread.timeline.api", "timeline.request.started", {
       threadId,
       path,
+      mode,
     });
 
     return request<ChatTimelineSnapshot>(path)
@@ -661,6 +719,7 @@ export const api = {
         debugLog("thread.timeline.api", "timeline.request.succeeded", {
           threadId,
           path,
+          mode,
           durationMs: Math.round((endedAt - startedAt) * 10) / 10,
           messagesCount: snapshot.messages.length,
           eventsCount: snapshot.events.length,
@@ -679,6 +738,7 @@ export const api = {
         debugLog("thread.timeline.api", "timeline.request.failed", {
           threadId,
           path,
+          mode,
           durationMs: Math.round((endedAt - startedAt) * 10) / 10,
           error: error instanceof Error ? error.message : String(error),
         });

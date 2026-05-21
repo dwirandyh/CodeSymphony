@@ -9,6 +9,10 @@ import {
 } from "./exploreUtils.js";
 import type { SubagentGroup, SubagentStep } from "./types.js";
 
+type ExtractSubagentGroupsOptions = {
+  eventsAreSorted?: boolean;
+};
+
 type SubagentAttributionReasonCode =
   | "claimed_explicit_owner"
   | "claimed_parent_lineage"
@@ -219,8 +223,11 @@ function buildExplicitOwnerHintLookup(events: ChatEvent[]): Map<string, string[]
   return lookup;
 }
 
-export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
-  const ordered = [...events].sort((a, b) => a.idx - b.idx);
+export function extractSubagentGroups(
+  events: ChatEvent[],
+  options?: ExtractSubagentGroupsOptions,
+): SubagentGroup[] {
+  const ordered = options?.eventsAreSorted ? events : [...events].sort((a, b) => a.idx - b.idx);
   const groups: SubagentGroup[] = [];
   const debugLog: Record<string, unknown>[] = [];
 

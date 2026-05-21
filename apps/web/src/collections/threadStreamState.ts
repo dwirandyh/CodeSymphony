@@ -9,6 +9,7 @@ type ThreadStreamState = {
   lastEventIdx: number | null;
   lastMessageSeq: number | null;
   lastAppliedSnapshotKey: string | null;
+  lastAppliedSnapshotIncludesCollections: boolean;
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   disposed: boolean;
@@ -25,6 +26,7 @@ function createThreadStreamState(): ThreadStreamState {
     lastEventIdx: null,
     lastMessageSeq: null,
     lastAppliedSnapshotKey: null,
+    lastAppliedSnapshotIncludesCollections: false,
     reconnectAttempts: 0,
     reconnectTimer: null,
     disposed: false,
@@ -128,8 +130,19 @@ export function getThreadLastAppliedSnapshotKey(threadId: string) {
   return getThreadStreamState(threadId).lastAppliedSnapshotKey;
 }
 
-export function setThreadLastAppliedSnapshotKey(threadId: string, snapshotKey: string | null) {
-  getThreadStreamState(threadId).lastAppliedSnapshotKey = snapshotKey;
+export function getThreadLastAppliedSnapshotIncludesCollections(threadId: string) {
+  return getThreadStreamState(threadId).lastAppliedSnapshotIncludesCollections;
+}
+
+export function setThreadLastAppliedSnapshotKey(
+  threadId: string,
+  snapshotKey: string | null,
+  options?: { includesCollections?: boolean },
+) {
+  const state = getThreadStreamState(threadId);
+  state.lastAppliedSnapshotKey = snapshotKey;
+  state.lastAppliedSnapshotIncludesCollections =
+    snapshotKey != null && (options?.includesCollections ?? true);
 }
 
 export function resetThreadReconnectAttempts(threadId: string) {

@@ -43,10 +43,17 @@ function AppIconGlyph({ app, className }: { app: ExternalApp; className?: string
 interface OpenInAppButtonProps {
   targetPath: string;
   className?: string;
+  enableInstalledAppsQuery?: boolean;
 }
 
-export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps) {
-  const { data: apps = [], isLoading } = useInstalledApps();
+export function OpenInAppButton({
+  targetPath,
+  className,
+  enableInstalledAppsQuery = true,
+}: OpenInAppButtonProps) {
+  const { data: apps = [], isLoading } = useInstalledApps({
+    enabled: enableInstalledAppsQuery,
+  });
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [opening, setOpening] = useState(false);
   const [preferredId, setPreferredId] = useState<string | null>(() => getPreferredAppId(targetPath));
