@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { notifyStartupRuntimeReady } from "../../lib/startupRuntimeReadySignal";
-import { STARTUP_SHELL_SNAPSHOT_STORAGE_KEY } from "../../lib/startupShellSnapshot";
+import { saveStartupShellSnapshot, STARTUP_SHELL_SNAPSHOT_STORAGE_KEY } from "../../lib/startupShellSnapshot";
 import { WorkspaceStartupGate } from "./WorkspaceStartupGate";
 import { useWorkspaceStartupState } from "./workspaceStartupState";
 
@@ -90,6 +90,22 @@ describe("WorkspaceStartupGate", () => {
     });
   }
 
+  function persistStartupShellSnapshot() {
+    saveStartupShellSnapshot({
+      version: 1,
+      capturedAt: "2026-05-19T12:00:00.000Z",
+      repoId: "repo-1",
+      repoName: "Repo One",
+      worktreeId: "wt-1",
+      worktreeBranch: "main",
+      worktreePath: "/tmp/repo",
+      worktreeStatus: "active",
+      threadId: "thread-1",
+      threadTitle: "Fix startup",
+      threadStatus: "idle",
+    });
+  }
+
   it("renders children immediately outside the desktop shell", () => {
     isTauriDesktopMock.mockReturnValue(false);
 
@@ -129,19 +145,7 @@ describe("WorkspaceStartupGate", () => {
 
   it("renders children immediately on desktop when a startup shell snapshot exists", async () => {
     isTauriDesktopMock.mockReturnValue(true);
-    window.localStorage.setItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY, JSON.stringify({
-      version: 1,
-      capturedAt: "2026-05-19T12:00:00.000Z",
-      repoId: "repo-1",
-      repoName: "Repo One",
-      worktreeId: "wt-1",
-      worktreeBranch: "main",
-      worktreePath: "/tmp/repo",
-      worktreeStatus: "active",
-      threadId: "thread-1",
-      threadTitle: "Fix startup",
-      threadStatus: "idle",
-    }));
+    persistStartupShellSnapshot();
     fetchMock.mockResolvedValue({ ok: true } as Response);
 
     renderGate();
@@ -159,19 +163,7 @@ describe("WorkspaceStartupGate", () => {
 
   it("waits longer before marking persisted desktop shell as stale", async () => {
     isTauriDesktopMock.mockReturnValue(true);
-    window.localStorage.setItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY, JSON.stringify({
-      version: 1,
-      capturedAt: "2026-05-19T12:00:00.000Z",
-      repoId: "repo-1",
-      repoName: "Repo One",
-      worktreeId: "wt-1",
-      worktreeBranch: "main",
-      worktreePath: "/tmp/repo",
-      worktreeStatus: "active",
-      threadId: "thread-1",
-      threadTitle: "Fix startup",
-      threadStatus: "idle",
-    }));
+    persistStartupShellSnapshot();
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
 
     renderGateWithStartupStateProbe();
@@ -194,19 +186,7 @@ describe("WorkspaceStartupGate", () => {
 
   it("treats a successful runtime signal as ready even before health probe succeeds", async () => {
     isTauriDesktopMock.mockReturnValue(true);
-    window.localStorage.setItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY, JSON.stringify({
-      version: 1,
-      capturedAt: "2026-05-19T12:00:00.000Z",
-      repoId: "repo-1",
-      repoName: "Repo One",
-      worktreeId: "wt-1",
-      worktreeBranch: "main",
-      worktreePath: "/tmp/repo",
-      worktreeStatus: "active",
-      threadId: "thread-1",
-      threadTitle: "Fix startup",
-      threadStatus: "idle",
-    }));
+    persistStartupShellSnapshot();
     fetchMock.mockImplementation(() => new Promise<Response>(() => {}));
 
     renderGateWithStartupStateProbe();
@@ -224,19 +204,7 @@ describe("WorkspaceStartupGate", () => {
 
   it("exposes persisted shell state on web while runtime reconnects", async () => {
     isTauriDesktopMock.mockReturnValue(false);
-    window.localStorage.setItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY, JSON.stringify({
-      version: 1,
-      capturedAt: "2026-05-19T12:00:00.000Z",
-      repoId: "repo-1",
-      repoName: "Repo One",
-      worktreeId: "wt-1",
-      worktreeBranch: "main",
-      worktreePath: "/tmp/repo",
-      worktreeStatus: "active",
-      threadId: "thread-1",
-      threadTitle: "Fix startup",
-      threadStatus: "idle",
-    }));
+    persistStartupShellSnapshot();
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
 
     renderGateWithStartupStateProbe();

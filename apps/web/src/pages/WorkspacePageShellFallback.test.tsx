@@ -59,6 +59,73 @@ describe("WorkspacePageShellFallback", () => {
     expect(container.textContent).toContain("Instant open");
     expect(container.textContent).toContain("Reconnecting to your recent messages.");
     expect(container.querySelector('[aria-label="Source Control"]')).not.toBeNull();
+    expect(container.querySelector('[aria-placeholder="Message CodeSymphony... (type / or $ for commands, @ to mention files)"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Attach files"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Select permission mode"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Send message"]')).not.toBeNull();
+  });
+
+  it("renders the full persisted workspace list on the first frame", () => {
+    renderFallback({
+      activeView: "chat",
+      panel: undefined,
+      runtimeState: "restoring",
+      snapshot: {
+        version: 1,
+        capturedAt: "2026-05-20T00:00:00.000Z",
+        repoId: "repo-2",
+        repoName: "Runtime",
+        worktreeId: "wt-2",
+        worktreeBranch: "feat/faster-shell",
+        worktreePath: "/tmp/runtime",
+        worktreeStatus: "active",
+        threadId: "thread-2",
+        threadTitle: "Hydration shell",
+        threadStatus: "idle",
+        repositories: [
+          {
+            id: "repo-1",
+            name: "Web",
+            rootPath: "/tmp/web",
+            defaultBranch: "main",
+            worktrees: [
+              {
+                id: "wt-1",
+                repositoryId: "repo-1",
+                branch: "feat/web-shell",
+                path: "/tmp/web",
+                baseBranch: "main",
+                status: "active",
+                branchRenamed: false,
+              },
+            ],
+          },
+          {
+            id: "repo-2",
+            name: "Runtime",
+            rootPath: "/tmp/runtime",
+            defaultBranch: "main",
+            worktrees: [
+              {
+                id: "wt-2",
+                repositoryId: "repo-2",
+                branch: "feat/faster-shell",
+                path: "/tmp/runtime",
+                baseBranch: "main",
+                status: "active",
+                branchRenamed: false,
+              },
+            ],
+          },
+        ],
+        expandedRepositoryIds: ["repo-1", "repo-2"],
+      },
+    });
+
+    expect(container.textContent).toContain("Web");
+    expect(container.textContent).toContain("Runtime");
+    expect(container.textContent).toContain("feat/web-shell");
+    expect(container.textContent).toContain("feat/faster-shell");
   });
 
   it("uses the selected file name when restoring file view", () => {

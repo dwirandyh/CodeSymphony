@@ -1,4 +1,5 @@
 import type { ComponentProps } from "react";
+import { ArrowUp, ChevronDown, Plus, SlidersHorizontal, Zap } from "lucide-react";
 import type { ChatThread, Repository } from "@codesymphony/shared-types";
 import { StartupSplash } from "../components/startup/StartupSplash";
 import { StartupStatusBanner } from "../components/startup/StartupStatusBanner";
@@ -62,8 +63,34 @@ const FALLBACK_GIT_CHANGES: ComponentProps<typeof WorkspaceRightPanel>["gitChang
 };
 
 function buildFallbackRepositories(snapshot: StartupShellSnapshot): Repository[] {
+  const repositoriesFromSnapshot = snapshot.repositories?.map((repository) => ({
+    id: repository.id,
+    name: repository.name,
+    rootPath: repository.rootPath,
+    defaultBranch: repository.defaultBranch,
+    createdAt: snapshot.capturedAt || FALLBACK_TIMESTAMP,
+    updatedAt: snapshot.capturedAt || FALLBACK_TIMESTAMP,
+    worktrees: repository.worktrees.map((worktree) => ({
+      id: worktree.id,
+      repositoryId: worktree.repositoryId,
+      branch: worktree.branch,
+      path: worktree.path,
+      baseBranch: worktree.baseBranch,
+      status: worktree.status,
+      branchRenamed: worktree.branchRenamed,
+      createdAt: snapshot.capturedAt || FALLBACK_TIMESTAMP,
+      updatedAt: snapshot.capturedAt || FALLBACK_TIMESTAMP,
+    })),
+  })) ?? [];
+
+  if (snapshot.repositories?.length) {
+    if (!snapshot.repoId || repositoriesFromSnapshot.some((repository) => repository.id === snapshot.repoId)) {
+      return repositoriesFromSnapshot;
+    }
+  }
+
   if (!snapshot.repoId || !snapshot.repoName) {
-    return [];
+    return repositoriesFromSnapshot;
   }
 
   const hasWorktree = !!(
@@ -72,7 +99,7 @@ function buildFallbackRepositories(snapshot: StartupShellSnapshot): Repository[]
     || snapshot.worktreePath
   );
 
-  return [{
+  return [...repositoriesFromSnapshot, {
     id: snapshot.repoId,
     name: snapshot.repoName,
     rootPath: snapshot.worktreePath ?? snapshot.repoName,
@@ -149,9 +176,7 @@ function renderThreadShellBody(params: {
   runtimeState: WorkspaceStartupRuntimeState;
   selectedTabLabel: string;
 }) {
-  const detail = params.runtimeState === "reconnecting" || params.runtimeState === "offline"
-    ? "Reconnecting to your recent messages."
-    : "Restoring the last thread view from local workspace state.";
+  const composerPlaceholder = "Message CodeSymphony... (type / or $ for commands, @ to mention files)";
 
   return (
     <>
@@ -162,15 +187,11 @@ function renderThreadShellBody(params: {
               <div className="h-full overflow-auto">
                 <div className="mx-auto flex h-full w-full max-w-3xl flex-col px-3 py-4">
                   <div className="flex-1" />
-                  <div className="mx-auto w-full max-w-md text-center">
-                    <div className="text-sm font-medium tracking-tight text-foreground">
-                      {params.selectedTabLabel}
-                    </div>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                      {detail}
-                    </p>
+                  <div className="pb-3 text-xs text-muted-foreground">
+                    {params.runtimeState === "reconnecting" || params.runtimeState === "offline"
+                      ? "Reconnecting to your recent messages."
+                      : `${params.selectedTabLabel} is restoring from local workspace state.`}
                   </div>
-                  <div className="flex-1" />
                 </div>
               </div>
             </div>
@@ -181,19 +202,54 @@ function renderThreadShellBody(params: {
       <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
         <div className="mx-auto w-full max-w-3xl">
           <div className="relative rounded-2xl border border-input/50 bg-background/35 px-3 pb-11 pt-2.5 shadow-sm backdrop-blur-sm lg:rounded-3xl lg:px-4 lg:pb-12 lg:pt-3">
-            <div className="min-h-[72px] rounded-xl bg-background/20" />
-            <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-border/35 px-3 py-2 text-[11px] lg:px-4">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="rounded-md bg-secondary/70 px-2 py-1 font-medium text-foreground/85">
-                  Default
-                </span>
-                <span className="truncate text-muted-foreground">
-                  Workspace state is syncing in the background
-                </span>
-              </div>
-              <span className="rounded-md border border-border/40 px-2 py-1 text-muted-foreground">
-                Send
-              </span>
+            <div
+              role="textbox"
+              aria-multiline="true"
+              aria-readonly="true"
+              aria-placeholder={composerPlaceholder}
+              data-placeholder={composerPlaceholder}
+              className="min-h-[60px] max-h-[140px] w-full overflow-y-auto resize-none border-none bg-transparent p-0 text-sm text-foreground shadow-none outline-none empty:before:pointer-events-none empty:before:text-muted-foreground empty:before:content-[attr(data-placeholder)] md:min-h-[74px] md:max-h-[400px]"
+            />
+
+            <div className="absolute bottom-2 left-2.5 right-12 flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:bottom-3 lg:left-3 lg:right-auto lg:overflow-visible">
+              <button
+                type="button"
+                disabled
+                className="flex items-center justify-center rounded-full bg-secondary/60 p-1.5 text-muted-foreground opacity-80"
+                aria-label="Attach files"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                disabled
+                className="flex items-center gap-1.5 rounded-full bg-secondary/60 px-2.5 py-1 text-xs font-medium text-muted-foreground opacity-80"
+                aria-label="Switch to plan mode"
+              >
+                <Zap className="h-3 w-3" />
+                Execute
+              </button>
+              <button
+                type="button"
+                disabled
+                className="flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground opacity-80"
+                aria-label="Select permission mode"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
+                <span className="max-w-[160px] truncate">Default</span>
+                <ChevronDown className="h-3 w-3 shrink-0" />
+              </button>
+            </div>
+
+            <div className="absolute bottom-2 right-2.5 flex items-center gap-2 lg:bottom-3 lg:right-3">
+              <button
+                type="button"
+                disabled
+                aria-label="Send message"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-white/90 text-black opacity-90"
+              >
+                <ArrowUp className="h-3.5 w-3.5" />
+              </button>
             </div>
           </div>
         </div>
@@ -330,6 +386,7 @@ export function WorkspacePageShellFallback({
   const repositories = buildFallbackRepositories(snapshot);
   const threads = buildFallbackThreads(snapshot);
   const fileTabs = buildFallbackFileTabs(filePath);
+  const expandedRepositoryIds = snapshot.expandedRepositoryIds ?? (snapshot.repoId ? [snapshot.repoId] : []);
   const selectedTabLabel = resolveSelectedTabLabel({
     activeView,
     filePath,
@@ -344,8 +401,8 @@ export function WorkspacePageShellFallback({
           repositories={repositories}
           selectedRepositoryId={snapshot.repoId}
           selectedWorktreeId={snapshot.worktreeId}
-          hiddenRepositoryIds={[]}
-          expandedByRepo={snapshot.repoId ? { [snapshot.repoId]: true } : {}}
+          hiddenRepositoryIds={snapshot.hiddenRepositoryIds ?? []}
+          expandedByRepo={Object.fromEntries(expandedRepositoryIds.map((repositoryId) => [repositoryId, true]))}
           loadingRepos={false}
           submittingRepo={false}
           submittingWorktree={false}

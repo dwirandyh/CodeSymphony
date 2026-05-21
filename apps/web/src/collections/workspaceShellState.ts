@@ -1,12 +1,13 @@
-import { createCollection } from "@tanstack/db";
+import { createCollection, localStorageCollectionOptions } from "@tanstack/db";
 import {
-  restoreStartupShellSnapshot,
+  readPersistedStartupShellSnapshot,
+  saveStartupShellSnapshot,
+  STARTUP_SHELL_SNAPSHOT_STORAGE_KEY,
+  WORKSPACE_SHELL_STATE_ROW_ID,
   type StartupShellSnapshot,
 } from "../lib/startupShellSnapshot";
-import { withWorkspaceCollectionPersistence } from "../lib/workspacePersistence";
 
 const WORKSPACE_SHELL_STATE_COLLECTION_ID = "workspace-shell-state";
-const WORKSPACE_SHELL_STATE_ROW_ID = "workspace-shell";
 
 type WorkspaceShellStateRow = StartupShellSnapshot & {
   id: typeof WORKSPACE_SHELL_STATE_ROW_ID;
@@ -19,19 +20,13 @@ function toWorkspaceShellStateRow(snapshot: StartupShellSnapshot): WorkspaceShel
   };
 }
 
-function toStartupShellSnapshot(row: WorkspaceShellStateRow | null | undefined): StartupShellSnapshot | null {
-  return restoreStartupShellSnapshot(row);
-}
-
 function createWorkspaceShellStateCollection() {
   return createCollection(
-    withWorkspaceCollectionPersistence(
-      {
-        id: WORKSPACE_SHELL_STATE_COLLECTION_ID,
-        getKey: (row: WorkspaceShellStateRow) => row.id,
-      },
-      { schemaVersion: 1 },
-    ),
+    localStorageCollectionOptions<WorkspaceShellStateRow>({
+      id: WORKSPACE_SHELL_STATE_COLLECTION_ID,
+      storageKey: STARTUP_SHELL_SNAPSHOT_STORAGE_KEY,
+      getKey: (row) => row.id,
+    }),
   );
 }
 
@@ -53,15 +48,7 @@ function getWorkspaceShellStateRows(collection: WorkspaceShellStateCollection): 
 }
 
 export function readWorkspaceShellStateSnapshot(): StartupShellSnapshot | null {
-  const collection = getWorkspaceShellStateCollection();
-  const row = getWorkspaceShellStateRows(collection)[0];
-  const snapshot = toStartupShellSnapshot(row);
-
-  if (!snapshot && row) {
-    collection.delete(row.id);
-  }
-
-  return snapshot;
+  return readPersistedStartupShellSnapshot();
 }
 
 export function writeWorkspaceShellStateSnapshot(snapshot: StartupShellSnapshot | null) {
@@ -71,7 +58,9 @@ export function writeWorkspaceShellStateSnapshot(snapshot: StartupShellSnapshot 
   if (!snapshot) {
     if (existing) {
       collection.delete(existing.id);
+      return;
     }
+    saveStartupShellSnapshot(null);
     return;
   }
 

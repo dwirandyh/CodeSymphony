@@ -5,6 +5,7 @@ import {
   loadStartupShellSnapshot,
   mergeStartupShellSnapshotInputFromFallback,
   primeStartupShellSnapshot,
+  readPersistedStartupShellSnapshot,
   resolveStartupShellFallbackState,
   resolveStartupWorkspaceSelection,
   saveStartupShellSnapshot,
@@ -85,6 +86,86 @@ describe("startupShellSnapshot", () => {
     saveStartupShellSnapshot(snapshot);
 
     expect(loadStartupShellSnapshot()).toEqual(snapshot);
+  });
+
+  it("round-trips persisted repository shell lists and panel state", () => {
+    const snapshot = buildStartupShellSnapshot({
+      capturedAt: "2026-05-19T12:00:00.000Z",
+      repoId: "repo-1",
+      repoName: "Repo One",
+      worktreeId: "wt-1",
+      worktreeBranch: "main",
+      worktreePath: "/tmp/repo-one",
+      worktreeStatus: "active",
+      threadId: "thread-1",
+      threadTitle: "Fix startup",
+      threadStatus: "idle",
+      repositories: [
+        {
+          id: "repo-1",
+          name: "Repo One",
+          rootPath: "/tmp/repo-one",
+          defaultBranch: "main",
+          worktrees: [
+            {
+              id: "wt-1",
+              repositoryId: "repo-1",
+              branch: "main",
+              path: "/tmp/repo-one",
+              baseBranch: "main",
+              status: "active",
+              branchRenamed: false,
+            },
+          ],
+        },
+        {
+          id: "repo-2",
+          name: "Repo Two",
+          rootPath: "/tmp/repo-two",
+          defaultBranch: "develop",
+          worktrees: [
+            {
+              id: "wt-2",
+              repositoryId: "repo-2",
+              branch: "feat/shell",
+              path: "/tmp/repo-two",
+              baseBranch: "develop",
+              status: "active",
+              branchRenamed: true,
+            },
+          ],
+        },
+      ],
+      hiddenRepositoryIds: ["repo-2"],
+      expandedRepositoryIds: ["repo-1", "repo-2"],
+    });
+
+    saveStartupShellSnapshot(snapshot);
+
+    expect(loadStartupShellSnapshot()).toEqual(snapshot);
+  });
+
+  it("migrates the legacy raw snapshot payload into TanStack localStorage format", () => {
+    window.localStorage.setItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      capturedAt: "2026-05-19T12:00:00.000Z",
+      repoId: "repo-1",
+      repoName: "Repo One",
+      worktreeId: "wt-1",
+      worktreeBranch: "main",
+      worktreePath: "/tmp/repo",
+      worktreeStatus: "active",
+      threadId: "thread-1",
+      threadTitle: "Fix startup",
+      threadStatus: "idle",
+    }));
+
+    const snapshot = primeStartupShellSnapshot();
+    const raw = window.localStorage.getItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY);
+
+    expect(snapshot).toEqual(readPersistedStartupShellSnapshot());
+    expect(raw).toContain("\"s:workspace-shell\"");
+    expect(raw).toContain("\"versionKey\"");
   });
 
   it("primes localStorage from persisted workspace shell fallback when fast snapshot is missing", () => {

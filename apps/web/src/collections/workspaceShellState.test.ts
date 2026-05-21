@@ -1,28 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadStartupShellSnapshot, STARTUP_SHELL_SNAPSHOT_STORAGE_KEY } from "../lib/startupShellSnapshot";
 
 describe("workspaceShellState", () => {
   beforeEach(() => {
     vi.resetModules();
+    window.localStorage.removeItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY);
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    window.localStorage.removeItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY);
   });
 
   it("writes, reads, updates, and clears last known workspace shell snapshot", async () => {
-    vi.doMock("../lib/workspacePersistence", async () => {
-      const { localOnlyCollectionOptions } = await import("@tanstack/db");
-
-      return {
-        withWorkspaceCollectionPersistence: (options: { id?: string; getKey: (row: { id: string }) => string }) => (
-          localOnlyCollectionOptions({
-            ...options,
-            initialData: [],
-          })
-        ),
-      };
-    });
-
     const {
       readWorkspaceShellStateSnapshot,
       writeWorkspaceShellStateSnapshot,
@@ -47,6 +37,7 @@ describe("workspaceShellState", () => {
 
     writeWorkspaceShellStateSnapshot(initialSnapshot);
     expect(readWorkspaceShellStateSnapshot()).toEqual(initialSnapshot);
+    expect(loadStartupShellSnapshot()).toEqual(initialSnapshot);
 
     writeWorkspaceShellStateSnapshot({
       ...initialSnapshot,
@@ -54,6 +45,11 @@ describe("workspaceShellState", () => {
       capturedAt: "2026-05-19T14:01:00.000Z",
     });
     expect(readWorkspaceShellStateSnapshot()).toEqual({
+      ...initialSnapshot,
+      threadTitle: "Phase 2",
+      capturedAt: "2026-05-19T14:01:00.000Z",
+    });
+    expect(loadStartupShellSnapshot()).toEqual({
       ...initialSnapshot,
       threadTitle: "Phase 2",
       capturedAt: "2026-05-19T14:01:00.000Z",
@@ -66,43 +62,33 @@ describe("workspaceShellState", () => {
   });
 
   it("drops invalid persisted workspace shell rows when schema version mismatches", async () => {
-    vi.doMock("../lib/workspacePersistence", async () => {
-      const { localOnlyCollectionOptions } = await import("@tanstack/db");
-
-      return {
-        withWorkspaceCollectionPersistence: (options: { id?: string; getKey: (row: { id: string }) => string }) => (
-          localOnlyCollectionOptions({
-            ...options,
-            initialData: [],
-          })
-        ),
-      };
-    });
-
     const {
-      getWorkspaceShellStateCollection,
       readWorkspaceShellStateSnapshot,
       resetWorkspaceShellStateCollectionForTest,
     } = await import("./workspaceShellState");
 
-    const collection = getWorkspaceShellStateCollection();
-    collection.insert({
-      id: "workspace-shell",
-      version: 2,
-      capturedAt: "2026-05-19T14:00:00.000Z",
-      repoId: "repo-1",
-      repoName: "CodeSymphony",
-      worktreeId: "wt-1",
-      worktreeBranch: "main",
-      worktreePath: "/tmp/repo",
-      worktreeStatus: "active",
-      threadId: "thread-1",
-      threadTitle: "Instant open",
-      threadStatus: "idle",
-    } as never);
+    window.localStorage.setItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY, JSON.stringify({
+      "s:workspace-shell": {
+        versionKey: "invalid-schema",
+        data: {
+          id: "workspace-shell",
+          version: 2,
+          capturedAt: "2026-05-19T14:00:00.000Z",
+          repoId: "repo-1",
+          repoName: "CodeSymphony",
+          worktreeId: "wt-1",
+          worktreeBranch: "main",
+          worktreePath: "/tmp/repo",
+          worktreeStatus: "active",
+          threadId: "thread-1",
+          threadTitle: "Instant open",
+          threadStatus: "idle",
+        },
+      },
+    }));
 
     expect(readWorkspaceShellStateSnapshot()).toBeNull();
-    expect(collection.toArray).toEqual([]);
+    expect(loadStartupShellSnapshot()).toBeNull();
 
     await resetWorkspaceShellStateCollectionForTest();
   });

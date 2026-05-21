@@ -1,5 +1,26 @@
+import type { Repository, WorktreeStatus } from "@codesymphony/shared-types";
+
 export const STARTUP_SHELL_SNAPSHOT_VERSION = 1;
 export const STARTUP_SHELL_SNAPSHOT_STORAGE_KEY = "codesymphony:workspace:startup-shell:v1";
+export const WORKSPACE_SHELL_STATE_ROW_ID = "workspace-shell";
+
+export type StartupShellWorktreeSnapshot = {
+  id: string;
+  repositoryId: string;
+  branch: string;
+  path: string;
+  baseBranch: string;
+  status: WorktreeStatus;
+  branchRenamed: boolean;
+};
+
+export type StartupShellRepositorySnapshot = {
+  id: string;
+  name: string;
+  rootPath: string;
+  defaultBranch: string;
+  worktrees: StartupShellWorktreeSnapshot[];
+};
 
 export type StartupShellSnapshot = {
   version: 1;
@@ -13,6 +34,9 @@ export type StartupShellSnapshot = {
   threadId: string | null;
   threadTitle: string | null;
   threadStatus: string | null;
+  repositories?: StartupShellRepositorySnapshot[];
+  hiddenRepositoryIds?: string[];
+  expandedRepositoryIds?: string[];
 };
 
 declare global {
@@ -34,6 +58,30 @@ type StartupShellSnapshotFallbackMergeInput = {
   preserveThreadFallback?: boolean;
 };
 
+type StartupShellSnapshotStorageRow = StartupShellSnapshot & {
+  id: typeof WORKSPACE_SHELL_STATE_ROW_ID;
+};
+
+type StartupShellSnapshotStoredItem = {
+  versionKey: string;
+  data: StartupShellSnapshotStorageRow;
+};
+
+type PersistedStartupShellSnapshotReadResult = {
+  snapshot: StartupShellSnapshot | null;
+  needsMigration: boolean;
+};
+
+const STARTUP_SHELL_SNAPSHOT_STORAGE_ROW_KEY = `s:${WORKSPACE_SHELL_STATE_ROW_ID}`;
+const STARTUP_SHELL_ALLOWED_WORKTREE_STATUSES = new Set<WorktreeStatus>([
+  "active",
+  "archived",
+  "creating",
+  "create_failed",
+  "deleting",
+  "delete_failed",
+]);
+
 function normalizeNullableString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -41,6 +89,198 @@ function normalizeNullableString(value: unknown): string | null {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const normalizedValues: string[] = [];
+
+  for (const entry of value) {
+    const normalizedEntry = normalizeNullableString(entry);
+    if (!normalizedEntry || seen.has(normalizedEntry)) {
+      continue;
+    }
+    seen.add(normalizedEntry);
+    normalizedValues.push(normalizedEntry);
+  }
+
+  return normalizedValues;
+}
+
+function normalizeStartupShellWorktreeSnapshot(
+  value: unknown,
+): StartupShellWorktreeSnapshot | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const worktree = value as Partial<StartupShellWorktreeSnapshot>;
+  const id = normalizeNullableString(worktree.id);
+  const repositoryId = normalizeNullableString(worktree.repositoryId);
+  const branch = normalizeNullableString(worktree.branch);
+  const path = normalizeNullableString(worktree.path);
+  const baseBranch = normalizeNullableString(worktree.baseBranch);
+  const status = normalizeNullableString(worktree.status);
+
+  if (!id || !repositoryId || !branch || !path || !baseBranch || !status) {
+    return null;
+  }
+
+  if (!STARTUP_SHELL_ALLOWED_WORKTREE_STATUSES.has(status as WorktreeStatus)) {
+    return null;
+  }
+
+  return {
+    id,
+    repositoryId,
+    branch,
+    path,
+    baseBranch,
+    status: status as WorktreeStatus,
+    branchRenamed: worktree.branchRenamed === true,
+  };
+}
+
+function normalizeStartupShellRepositorySnapshot(
+  value: unknown,
+): StartupShellRepositorySnapshot | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const repository = value as Partial<StartupShellRepositorySnapshot>;
+  const id = normalizeNullableString(repository.id);
+  const name = normalizeNullableString(repository.name);
+  const rootPath = normalizeNullableString(repository.rootPath);
+  const defaultBranch = normalizeNullableString(repository.defaultBranch);
+
+  if (!id || !name || !rootPath || !defaultBranch) {
+    return null;
+  }
+
+  const worktrees = Array.isArray(repository.worktrees)
+    ? repository.worktrees.flatMap((worktree) => {
+      const normalizedWorktree = normalizeStartupShellWorktreeSnapshot(worktree);
+      return normalizedWorktree ? [normalizedWorktree] : [];
+    })
+    : [];
+
+  return {
+    id,
+    name,
+    rootPath,
+    defaultBranch,
+    worktrees,
+  };
+}
+
+function normalizeStartupShellRepositorySnapshots(
+  value: unknown,
+): StartupShellRepositorySnapshot[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const repositories: StartupShellRepositorySnapshot[] = [];
+
+  for (const entry of value) {
+    const normalizedRepository = normalizeStartupShellRepositorySnapshot(entry);
+    if (!normalizedRepository || seen.has(normalizedRepository.id)) {
+      continue;
+    }
+    seen.add(normalizedRepository.id);
+    repositories.push(normalizedRepository);
+  }
+
+  return repositories;
+}
+
+export function buildStartupShellRepositorySnapshots(
+  repositories: Repository[],
+): StartupShellRepositorySnapshot[] {
+  return repositories.map((repository) => ({
+    id: repository.id,
+    name: repository.name,
+    rootPath: repository.rootPath,
+    defaultBranch: repository.defaultBranch,
+    worktrees: repository.worktrees.map((worktree) => ({
+      id: worktree.id,
+      repositoryId: worktree.repositoryId,
+      branch: worktree.branch,
+      path: worktree.path,
+      baseBranch: worktree.baseBranch,
+      status: worktree.status,
+      branchRenamed: worktree.branchRenamed,
+    })),
+  }));
+}
+
+function createStartupShellSnapshotVersionKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function toStartupShellSnapshotStorageRow(
+  snapshot: StartupShellSnapshot,
+): StartupShellSnapshotStorageRow {
+  return {
+    id: WORKSPACE_SHELL_STATE_ROW_ID,
+    ...snapshot,
+  };
+}
+
+function parseStoredStartupShellSnapshotRow(value: unknown): StartupShellSnapshot | null {
+  if (!value || typeof value !== "object" || !("data" in value)) {
+    return null;
+  }
+
+  const row = (value as StartupShellSnapshotStoredItem).data;
+  return restoreStartupShellSnapshot(row);
+}
+
+function readPersistedStartupShellSnapshotFromStorage(
+  storage: Pick<Storage, "getItem">,
+): PersistedStartupShellSnapshotReadResult {
+  try {
+    const raw = storage.getItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY);
+    if (!raw) {
+      return { snapshot: null, needsMigration: false };
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const preferredSnapshot = parseStoredStartupShellSnapshotRow(
+        (parsed as Record<string, unknown>)[STARTUP_SHELL_SNAPSHOT_STORAGE_ROW_KEY],
+      );
+      if (preferredSnapshot) {
+        return { snapshot: preferredSnapshot, needsMigration: false };
+      }
+
+      for (const value of Object.values(parsed as Record<string, unknown>)) {
+        const snapshot = parseStoredStartupShellSnapshotRow(value);
+        if (snapshot) {
+          return { snapshot, needsMigration: false };
+        }
+      }
+    }
+
+    const legacySnapshot = restoreStartupShellSnapshot(parsed as Partial<StartupShellSnapshot> | null);
+    return {
+      snapshot: legacySnapshot,
+      needsMigration: legacySnapshot != null,
+    };
+  } catch {
+    return { snapshot: null, needsMigration: false };
+  }
 }
 
 function readStartupShellSnapshotOverride(): StartupShellSnapshot | null {
@@ -87,6 +327,7 @@ export function hasStartupShellSnapshot(snapshot: StartupShellSnapshot | null): 
       || snapshot.repoName
       || snapshot.worktreeBranch
       || snapshot.threadTitle
+      || (snapshot.repositories?.length ?? 0) > 0
     )
   );
 }
@@ -185,6 +426,13 @@ export function mergeStartupShellSnapshotInputFromFallback(
 }
 
 export function buildStartupShellSnapshot(input: StartupShellSnapshotInput): StartupShellSnapshot | null {
+  const repositories = normalizeStartupShellRepositorySnapshots(input.repositories);
+  const validRepositoryIds = new Set(repositories.map((repository) => repository.id));
+  const hiddenRepositoryIds = normalizeStringArray(input.hiddenRepositoryIds)
+    .filter((repositoryId) => validRepositoryIds.has(repositoryId));
+  const expandedRepositoryIds = normalizeStringArray(input.expandedRepositoryIds)
+    .filter((repositoryId) => validRepositoryIds.has(repositoryId));
+
   const snapshot: StartupShellSnapshot = {
     version: STARTUP_SHELL_SNAPSHOT_VERSION,
     capturedAt: input.capturedAt ?? new Date().toISOString(),
@@ -197,6 +445,9 @@ export function buildStartupShellSnapshot(input: StartupShellSnapshotInput): Sta
     threadId: normalizeNullableString(input.threadId),
     threadTitle: normalizeNullableString(input.threadTitle),
     threadStatus: normalizeNullableString(input.threadStatus),
+    ...(repositories.length > 0 ? { repositories } : {}),
+    ...(hiddenRepositoryIds.length > 0 ? { hiddenRepositoryIds } : {}),
+    ...(expandedRepositoryIds.length > 0 ? { expandedRepositoryIds } : {}),
   };
 
   return hasStartupShellSnapshot(snapshot) ? snapshot : null;
@@ -220,6 +471,9 @@ export function restoreStartupShellSnapshot(
     threadId: snapshot.threadId ?? null,
     threadTitle: snapshot.threadTitle ?? null,
     threadStatus: snapshot.threadStatus ?? null,
+    repositories: snapshot.repositories,
+    hiddenRepositoryIds: snapshot.hiddenRepositoryIds,
+    expandedRepositoryIds: snapshot.expandedRepositoryIds,
   });
 }
 
@@ -235,17 +489,13 @@ export function loadStartupShellSnapshot(
     return null;
   }
 
-  try {
-    const raw = storage.getItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
+  return readPersistedStartupShellSnapshotFromStorage(storage).snapshot;
+}
 
-    const parsed = JSON.parse(raw) as Partial<StartupShellSnapshot> | null;
-    return restoreStartupShellSnapshot(parsed);
-  } catch {
-    return null;
-  }
+export function readPersistedStartupShellSnapshot(
+  storage: Pick<Storage, "getItem"> = window.localStorage,
+): StartupShellSnapshot | null {
+  return readPersistedStartupShellSnapshotFromStorage(storage).snapshot;
 }
 
 export function primeStartupShellSnapshot(params?: {
@@ -264,9 +514,13 @@ export function primeStartupShellSnapshot(params?: {
     return null;
   }
 
-  const existingSnapshot = loadStartupShellSnapshot(storage);
-  if (existingSnapshot) {
-    return existingSnapshot;
+  const persistedSnapshot = readPersistedStartupShellSnapshotFromStorage(storage);
+  if (persistedSnapshot.snapshot) {
+    if (persistedSnapshot.needsMigration) {
+      saveStartupShellSnapshot(persistedSnapshot.snapshot, storage);
+    }
+
+    return persistedSnapshot.snapshot;
   }
 
   const fallbackSnapshot = restoreStartupShellSnapshot(params?.readFallbackSnapshot?.() ?? null);
@@ -288,7 +542,13 @@ export function saveStartupShellSnapshot(
       return;
     }
 
-    storage.setItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
+    const storedSnapshot: Record<string, StartupShellSnapshotStoredItem> = {
+      [STARTUP_SHELL_SNAPSHOT_STORAGE_ROW_KEY]: {
+        versionKey: createStartupShellSnapshotVersionKey(),
+        data: toStartupShellSnapshotStorageRow(snapshot),
+      },
+    };
+    storage.setItem(STARTUP_SHELL_SNAPSHOT_STORAGE_KEY, JSON.stringify(storedSnapshot));
   } catch {
     // Ignore storage failures and keep live UI responsive.
   }

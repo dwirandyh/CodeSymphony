@@ -109,11 +109,11 @@ import { debugLog } from "../lib/debugLog";
 import { loadGeneralSettings, saveGeneralSettings, type GeneralSettings } from "../lib/generalSettings";
 import { scheduleWindowIdleTask } from "../lib/idleTask";
 import {
+  buildStartupShellRepositorySnapshots,
   buildStartupShellSnapshot,
   mergeStartupShellSnapshotInputFromFallback,
   resolveStartupShellFallbackState,
   resolveStartupWorkspaceSelection,
-  saveStartupShellSnapshot,
 } from "../lib/startupShellSnapshot";
 import { resolveWorkspaceLiveErrorSummary, type WorkspaceLiveStatusItem } from "../lib/workspaceLiveErrorState";
 import {
@@ -814,6 +814,16 @@ export function WorkspacePage() {
   );
   const hiddenRepositoryIds = normalizedRepositoryPanelPreferences.hidden;
   const hiddenRepositoryIdSet = useMemo(() => new Set(hiddenRepositoryIds), [hiddenRepositoryIds]);
+  const startupRepositorySnapshots = useMemo(
+    () => buildStartupShellRepositorySnapshots(orderedRepositories),
+    [orderedRepositories],
+  );
+  const snapshotExpandedRepositoryIds = useMemo(
+    () => orderedRepositories
+      .filter((repository) => expandedByRepo[repository.id] ?? repos.selectedRepositoryId === repository.id)
+      .map((repository) => repository.id),
+    [expandedByRepo, orderedRepositories, repos.selectedRepositoryId],
+  );
   const visibleRepositories = useMemo(
     () => orderedRepositories.filter((repository) => !hiddenRepositoryIdSet.has(repository.id)),
     [hiddenRepositoryIdSet, orderedRepositories],
@@ -1372,7 +1382,6 @@ export function WorkspacePage() {
       selectedWorktreeId: repos.selectedWorktreeId,
     });
 
-    saveStartupShellSnapshot(null);
     writeWorkspaceShellStateSnapshot(null);
 
     if (!nextSelection) {
@@ -1419,13 +1428,16 @@ export function WorkspacePage() {
         repositoriesCount: repos.repositories.length,
         runtimeState: startupState.runtimeState,
       })) {
-        saveStartupShellSnapshot(null);
         writeWorkspaceShellStateSnapshot(null);
       }
       return;
     }
 
-    const nextSnapshot = buildStartupShellSnapshot(mergeStartupShellSnapshotInputFromFallback({
+    const preserveStartupRepositoryListFallback = startupSelectionFallbackActive
+      || startupState.runtimeState !== "ready"
+      || repos.loadingRepos;
+    const nextSnapshot = buildStartupShellSnapshot({
+      ...mergeStartupShellSnapshotInputFromFallback({
       liveInput: {
         repoId: repos.selectedRepositoryId,
         repoName: repos.selectedRepository?.name ?? null,
@@ -1441,9 +1453,18 @@ export function WorkspacePage() {
       preserveRepoFallback: startupRepoFallbackActive,
       preserveWorktreeFallback: startupWorktreeFallbackActive,
       preserveThreadFallback: preserveStartupThreadFallback,
-    }));
+      }),
+      repositories: preserveStartupRepositoryListFallback
+        ? startupSnapshot?.repositories ?? startupRepositorySnapshots
+        : startupRepositorySnapshots,
+      hiddenRepositoryIds: preserveStartupRepositoryListFallback
+        ? startupSnapshot?.hiddenRepositoryIds ?? hiddenRepositoryIds
+        : hiddenRepositoryIds,
+      expandedRepositoryIds: preserveStartupRepositoryListFallback
+        ? startupSnapshot?.expandedRepositoryIds ?? snapshotExpandedRepositoryIds
+        : snapshotExpandedRepositoryIds,
+    });
 
-    saveStartupShellSnapshot(nextSnapshot);
     writeWorkspaceShellStateSnapshot(nextSnapshot);
   }, [
     chat.selectedThreadId,
@@ -1462,10 +1483,14 @@ export function WorkspacePage() {
     selectedThreadShell,
     selectedWorktreeUnavailable,
     startupRepoFallbackActive,
+    startupRepositorySnapshots,
     startupSnapshot,
     startupState.runtimeState,
     startupThreadFallbackActive,
+    startupSelectionFallbackActive,
     startupWorktreeFallbackActive,
+    hiddenRepositoryIds,
+    snapshotExpandedRepositoryIds,
   ]);
 
   useEffect(() => {
