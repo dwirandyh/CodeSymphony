@@ -57,7 +57,8 @@ describe("WorkspacePageShellFallback", () => {
     expect(container.textContent).toContain("CodeSymphony");
     expect(container.textContent).toContain("feat/instant-open");
     expect(container.textContent).toContain("Instant open");
-    expect(container.textContent).toContain("Reconnecting to your recent messages.");
+    expect(container.textContent).not.toContain("Reconnecting to your recent messages.");
+    expect(container.textContent).not.toContain("is restoring from local workspace state.");
     expect(container.querySelector('[aria-label="Source Control"]')).not.toBeNull();
     expect(container.querySelector('[aria-placeholder="Message CodeSymphony... (type / or $ for commands, @ to mention files)"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Attach files"]')).not.toBeNull();
@@ -74,8 +75,8 @@ describe("WorkspacePageShellFallback", () => {
     expect(container.textContent).toContain("Git");
     expect(container.textContent).toContain("More");
     expect(container.querySelector('[data-testid="bottom-panel-resize-handle"]')).not.toBeNull();
-    expect(container.textContent).toContain("No setup output yet.");
-    expect(container.querySelector('[title="Collapse panel"]')).not.toBeNull();
+    expect(container.querySelector('[title="Expand panel"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="bottom-panel-body"]')?.className).toContain("invisible");
   });
 
   it("renders the full persisted workspace list on the first frame", () => {

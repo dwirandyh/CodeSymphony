@@ -6,7 +6,6 @@ import { ensureConfiguredOpencodeBinaryOnPath, resolveOpencodeBinaryPath } from 
 const execFileAsync = promisify(execFile);
 
 const OPENCODE_MODELS_TIMEOUT_MS = 20_000;
-const OPENCODE_MODELS_CACHE_TTL_MS = 5 * 60_000;
 const OPENCODE_MODELS_MAX_BUFFER_BYTES = 1024 * 1024;
 const OPENCODE_MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
 
@@ -15,9 +14,6 @@ type OpencodeVerboseModelRecord = {
   name?: string;
   providerID?: string;
 };
-
-let cachedModels: OpencodeModelCatalogEntry[] | null = null;
-let cachedAtMs = 0;
 
 function resolveOpencodeModelProviderId(modelId: string, providerId?: string): string {
   const normalizedProviderId = providerId?.trim();
@@ -155,12 +151,6 @@ export async function listOpencodeModels(
   options?: { refresh?: boolean },
 ): Promise<OpencodeModelCatalogEntry[]> {
   const refresh = options?.refresh === true;
-  const cached = cachedModels;
-  const cacheIsFresh = cached !== null && Date.now() - cachedAtMs < OPENCODE_MODELS_CACHE_TTL_MS;
-  if (!refresh && cacheIsFresh && cached) {
-    return cached;
-  }
-
   ensureConfiguredOpencodeBinaryOnPath();
 
   const args = ["models", "--verbose"];
@@ -179,7 +169,5 @@ export async function listOpencodeModels(
     throw new Error("OpenCode CLI returned an empty model catalog.");
   }
 
-  cachedModels = models;
-  cachedAtMs = Date.now();
   return models;
 }

@@ -1,5 +1,4 @@
 import {
-  BUILTIN_CHAT_MODELS_BY_AGENT,
   type CliAgent,
 } from "@codesymphony/shared-types";
 import { resolveAgentDefaultModel } from "../../lib/agentModelDefaults";
@@ -69,12 +68,11 @@ function normalizeSelection(input: unknown, fallback: AgentDefaultSelection): Ag
   }
 
   const normalizedModel = model.trim();
-  const builtinModels = BUILTIN_CHAT_MODELS_BY_AGENT[agent] as readonly string[];
   const normalizedProviderId = typeof modelProviderId === "string" && modelProviderId.trim().length > 0
     ? modelProviderId.trim()
     : null;
 
-  if (normalizedProviderId !== null || builtinModels.includes(normalizedModel)) {
+  if (normalizedProviderId !== null) {
     return {
       agent,
       model: normalizedModel,
@@ -82,15 +80,7 @@ function normalizeSelection(input: unknown, fallback: AgentDefaultSelection): Ag
     };
   }
 
-  if (agent === "codex") {
-    return {
-      agent,
-      model: normalizedModel,
-      modelProviderId: null,
-    };
-  }
-
-  if (agent === "opencode" && isBuiltinOpencodeModelId(normalizedModel)) {
+  if (agent !== "opencode" || isBuiltinOpencodeModelId(normalizedModel)) {
     return {
       agent,
       model: normalizedModel,

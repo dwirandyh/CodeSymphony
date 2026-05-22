@@ -19,6 +19,7 @@ import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
 import { cn } from "../../lib/utils";
 import {
   MODEL_PROVIDER_AGENTS_BY_COMPATIBILITY,
+  type ClaudeModelCatalogEntry,
   type CliAgent,
   type CodexModelCatalogEntry,
   type CursorModelCatalogEntry,
@@ -47,6 +48,7 @@ import {
 import { COMPLETION_SOUND_OPTIONS, playCompletionSound } from "../../lib/completionSounds";
 import {
   buildAgentSelectionOptions,
+  formatFriendlyModelName,
   type AgentSelectionOption,
 } from "./composer/AgentModelSelector";
 
@@ -394,7 +396,7 @@ function normalizeAgentDefaultSelection(
     return selection;
   }
 
-  if (selection.agent === "codex" && selection.modelProviderId === null && selection.model.trim().length > 0) {
+  if (selection.modelProviderId === null && selection.model.trim().length > 0) {
     return {
       agent: selection.agent,
       model: selection.model.trim(),
@@ -416,6 +418,28 @@ function normalizeAgentDefaultSelection(
     model: resolveAgentDefaultModel(selection.agent),
     modelProviderId: null,
   };
+}
+
+function ensureAgentModelOptionVisible(
+  options: AgentModelOption[],
+  selection: AgentDefaultSelection,
+): AgentModelOption[] {
+  const matchingOption = options.find((option) => (
+    option.model === selection.model
+    && option.modelProviderId === selection.modelProviderId
+  ));
+  if (matchingOption) {
+    return options;
+  }
+
+  return [{
+    key: selection.modelProviderId ?? `${selection.agent}:${selection.model}:adhoc`,
+    model: selection.model,
+    modelProviderId: selection.modelProviderId,
+    label: formatFriendlyModelName(selection.agent, selection.model),
+    detail: selection.modelProviderId ? "Custom" : "Built-in",
+    source: selection.modelProviderId ? "custom" : "builtin",
+  }, ...options];
 }
 
 function buildRepositoryFormState(
@@ -500,9 +524,11 @@ interface SettingsDialogProps {
   onClose: () => void;
   repositories: Repository[];
   selectedRepositoryId?: string | null;
+  claudeModels?: readonly ClaudeModelCatalogEntry[];
   codexModels?: readonly CodexModelCatalogEntry[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels?: readonly OpencodeModelCatalogEntry[];
+  modelCatalogsLoading?: boolean;
   generalSettings: GeneralSettings;
   runtimeLabel?: string | null;
   runtimeTitle?: string | null;
@@ -534,9 +560,11 @@ export function SettingsDialog({
   onClose,
   repositories,
   selectedRepositoryId,
+  claudeModels = [],
   codexModels = [],
   cursorModels = [],
   opencodeModels = [],
+  modelCatalogsLoading = false,
   generalSettings,
   runtimeLabel,
   runtimeTitle,
@@ -571,7 +599,7 @@ export function SettingsDialog({
   const wasOpenRef = useRef(false);
   const {
     providers,
-    loading: loadingModels,
+    loading: loadingProviders,
     refreshProviders,
     replaceProviders,
   } = useModelProviders();
@@ -625,11 +653,12 @@ export function SettingsDialog({
   const agentSelectionOptions = useMemo(
     () => buildAgentSelectionOptions({
       providers,
+      claudeModels,
       codexModels,
       cursorModels,
       opencodeModels,
     }),
-    [codexModels, cursorModels, opencodeModels, providers],
+    [claudeModels, codexModels, cursorModels, opencodeModels, providers],
   );
   const agentModelOptions = useMemo<Record<CliAgent, AgentModelOption[]>>(() => ({
     claude: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.claude),
@@ -637,12 +666,18 @@ export function SettingsDialog({
     cursor: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.cursor),
     opencode: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.opencode),
   }), [agentSelectionOptions]);
+  const visibleAgentModelOptions = useMemo(() => ({
+    newChat: ensureAgentModelOptionVisible(agentModelOptions[agentDefaults.newChat.agent], agentDefaults.newChat),
+    commit: ensureAgentModelOptionVisible(agentModelOptions[agentDefaults.commit.agent], agentDefaults.commit),
+    pullRequest: ensureAgentModelOptionVisible(agentModelOptions[agentDefaults.pullRequest.agent], agentDefaults.pullRequest),
+  }), [agentDefaults.commit, agentDefaults.newChat, agentDefaults.pullRequest, agentModelOptions]);
 
   const resolvedAgentDefaults = useMemo<AgentDefaults>(() => ({
-    newChat: normalizeAgentDefaultSelection(agentDefaults.newChat, agentModelOptions[agentDefaults.newChat.agent]),
-    commit: normalizeAgentDefaultSelection(agentDefaults.commit, agentModelOptions[agentDefaults.commit.agent]),
-    pullRequest: normalizeAgentDefaultSelection(agentDefaults.pullRequest, agentModelOptions[agentDefaults.pullRequest.agent]),
-  }), [agentDefaults, agentModelOptions]);
+    newChat: normalizeAgentDefaultSelection(agentDefaults.newChat, visibleAgentModelOptions.newChat),
+    commit: normalizeAgentDefaultSelection(agentDefaults.commit, visibleAgentModelOptions.commit),
+    pullRequest: normalizeAgentDefaultSelection(agentDefaults.pullRequest, visibleAgentModelOptions.pullRequest),
+  }), [agentDefaults, visibleAgentModelOptions]);
+  const loadingModels = loadingProviders || modelCatalogsLoading;
 
   // ── Workspace: Select first repo ──
   useEffect(() => {
@@ -1594,7 +1629,7 @@ export function SettingsDialog({
                           ["pullRequest", "Agent for PR", "Used when starting PR or MR review flows."],
                         ] as const).map(([key, label, description]) => {
                           const selection = resolvedAgentDefaults[key];
-                          const options = agentModelOptions[selection.agent];
+                          const options = visibleAgentModelOptions[key];
 
                           return (
                             <div

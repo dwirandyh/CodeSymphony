@@ -11,7 +11,7 @@ describe("workspaceTerminalPersistence", () => {
     sessionStorage.clear();
   });
 
-  it("restores terminal tabs and run sessions for the same runtime", () => {
+  it("restores terminal tabs and run sessions for the same runtime without reopening the bottom panel", () => {
     writePersistedWorkspaceTerminalUiState(sessionStorage, {
       runtimePid: 321,
       bottomPanelStateByWorktreeId: {
@@ -64,10 +64,10 @@ describe("workspaceTerminalPersistence", () => {
       bottomPanelStateByWorktreeId: {
         wt1: {
           activeTab: "run",
-          openSignal: 3,
+          openSignal: 0,
           runScriptActive: false,
           runScriptSessionId: "wt1:script-runner:1",
-          collapsed: false,
+          collapsed: true,
         },
       },
       terminalTabsByWorktreeId: {
@@ -127,10 +127,10 @@ describe("workspaceTerminalPersistence", () => {
       bottomPanelStateByWorktreeId: {
         wt1: {
           activeTab: "terminal",
-          openSignal: 1,
+          openSignal: 0,
           runScriptActive: false,
           runScriptSessionId: null,
-          collapsed: false,
+          collapsed: true,
         },
       },
       terminalTabsByWorktreeId: {},

@@ -9,6 +9,10 @@ import { AutomationDetailPage, AutomationsListPage, WorkspaceAutomationsPanel } 
 const navigateMock = vi.hoisted(() => vi.fn());
 const apiMocks = vi.hoisted(() => ({
   listAutomations: vi.fn(),
+  listClaudeModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
+  listCodexModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
+  listCursorModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
+  listOpencodeModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
   createAutomation: vi.fn(),
   getAutomation: vi.fn(),
   getFileIndex: vi.fn(),
@@ -46,6 +50,10 @@ vi.mock("@tanstack/react-router", async () => {
 vi.mock("../../lib/api", () => ({
   api: {
     listAutomations: apiMocks.listAutomations,
+    listClaudeModels: apiMocks.listClaudeModels,
+    listCodexModels: apiMocks.listCodexModels,
+    listCursorModels: apiMocks.listCursorModels,
+    listOpencodeModels: apiMocks.listOpencodeModels,
     createAutomation: apiMocks.createAutomation,
     getAutomation: apiMocks.getAutomation,
     getFileIndex: apiMocks.getFileIndex,

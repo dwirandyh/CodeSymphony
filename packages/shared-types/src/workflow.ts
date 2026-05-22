@@ -212,20 +212,10 @@ export function supportsModelProviderCompatibility(
 }
 
 export const BUILTIN_CHAT_MODELS_BY_AGENT = {
-  claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+  claude: [],
   codex: [],
-  cursor: [
-    "default[]",
-    "composer-2[fast=true]",
-    "composer-1.5[]",
-    "gpt-5.4[context=272k,reasoning=medium,fast=false]",
-    "gpt-5.4-mini[reasoning=medium]",
-    "gpt-5.3-codex[reasoning=medium,fast=false]",
-    "gpt-5.3-codex-spark[reasoning=medium]",
-    "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
-    "claude-opus-4-7[thinking=true,context=200k,effort=high]",
-  ],
-  opencode: ["opencode/minimax-m2.5-free", "opencode/ling-2.6-flash-free", "opencode/nemotron-3-super-free"],
+  cursor: [],
+  opencode: [],
 } as const satisfies Record<CliAgent, readonly string[]>;
 
 export const DEFAULT_CHAT_MODEL_BY_AGENT = {
@@ -1360,6 +1350,19 @@ export const CodexModelCatalogSchema = z.object({
   fetchedAt: z.string().datetime(),
 });
 export type CodexModelCatalog = z.infer<typeof CodexModelCatalogSchema>;
+
+export const ClaudeModelCatalogEntrySchema = z.object({
+  id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  description: z.string(),
+});
+export type ClaudeModelCatalogEntry = z.infer<typeof ClaudeModelCatalogEntrySchema>;
+
+export const ClaudeModelCatalogSchema = z.object({
+  models: z.array(ClaudeModelCatalogEntrySchema),
+  fetchedAt: z.string().datetime(),
+});
+export type ClaudeModelCatalog = z.infer<typeof ClaudeModelCatalogSchema>;
 
 export const OpencodeModelCatalogEntrySchema = z.object({
   id: z.string().trim().min(1),

@@ -78,6 +78,18 @@ const defaultProps = {
   slashCommands: sampleSlashCommands,
   slashCommandsLoading: false,
   providers: [],
+  claudeModels: [
+    {
+      id: "claude-sonnet-4-6",
+      name: "Sonnet 4.6",
+      description: "Built-in Claude model.",
+    },
+    {
+      id: "claude-opus-4-6",
+      name: "Opus 4.6",
+      description: "Most capable for complex work.",
+    },
+  ],
   opencodeModels: [
     {
       id: "opencode/minimax-m2.5-free",
@@ -659,6 +671,15 @@ describe("Composer", () => {
     expect(leftActionRow).not.toBeNull();
     expect(leftActionRow?.className).toContain("bottom-2 left-2.5");
     expect(leftActionRow?.contains(modelButton)).toBe(true);
+  });
+
+  it("uses the same responsive outer gutter rhythm as the workspace header", () => {
+    renderComposer();
+
+    const composerSection = getEditor().closest("section");
+    expect(composerSection?.className).toContain("px-1.5");
+    expect(composerSection?.className).toContain("sm:px-2.5");
+    expect(composerSection?.className).toContain("lg:px-3");
   });
 
   it("keeps permission selector next to the model selector in the left action row", () => {

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   ApprovePlanInput,
+  ClaudeModelCatalogEntry,
   CodexModelCatalogEntry,
   ChatThreadKind,
+  CliAgent,
   CursorModelCatalogEntry,
   ModelProvider,
   OpencodeModelCatalogEntry,
@@ -26,10 +28,13 @@ type PlanDecisionComposerProps = {
   threadKind: ChatThreadKind | null;
   hasMessages: boolean;
   providers: ModelProvider[];
-  codexModels: CodexModelCatalogEntry[];
-  cursorModels: CursorModelCatalogEntry[];
-  opencodeModels: OpencodeModelCatalogEntry[];
+  claudeModels?: readonly ClaudeModelCatalogEntry[];
+  codexModels: readonly CodexModelCatalogEntry[];
+  cursorModels: readonly CursorModelCatalogEntry[];
+  opencodeModels: readonly OpencodeModelCatalogEntry[];
+  modelCatalogReadyByAgent?: Partial<Record<CliAgent, boolean>>;
   runtimeInfo?: RuntimeInfo | null;
+  onAgentModelSelectorOpen?: () => void;
   onApprove: (selection: ApprovePlanInput) => void;
   onRevise: (feedback: string) => void;
   onDismiss: () => void;
@@ -51,10 +56,13 @@ export function PlanDecisionComposer({
   threadKind,
   hasMessages,
   providers,
+  claudeModels = [],
   codexModels,
   cursorModels,
   opencodeModels,
+  modelCatalogReadyByAgent,
   runtimeInfo = null,
+  onAgentModelSelectorOpen,
   onApprove,
   onRevise,
   onDismiss,
@@ -72,11 +80,12 @@ export function PlanDecisionComposer({
 
   const agentOptions = useMemo(() => buildAgentSelectionOptions({
     providers,
+    claudeModels,
     codexModels,
     cursorModels,
     opencodeModels,
     codexBuiltinModelOverride,
-  }), [codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
+  }), [claudeModels, codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
 
   useEffect(() => {
     if (findAgentSelectionOption(agentOptions, selection)) {
@@ -266,13 +275,16 @@ export function PlanDecisionComposer({
                 disabled={busy}
                 selection={selection}
                 providers={providers}
+                claudeModels={claudeModels}
                 codexModels={codexModels}
                 cursorModels={cursorModels}
                 opencodeModels={opencodeModels}
                 codexBuiltinModelOverride={codexBuiltinModelOverride}
+                modelCatalogReadyByAgent={modelCatalogReadyByAgent}
                 showAgentList={true}
                 ariaLabel="Select plan execution target"
                 popoverContainer={popoverHost}
+                onOpen={onAgentModelSelectorOpen}
                 onSelectionChange={(nextSelection) => setSelection(nextSelection)}
               />
             ) : null}

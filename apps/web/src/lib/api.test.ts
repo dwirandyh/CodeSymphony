@@ -757,6 +757,21 @@ describe("api", () => {
   });
 
   describe("model provider operations", () => {
+    it("lists Claude models", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({
+        models: [{ id: "default", name: "Default (recommended)", description: "Use the default model." }],
+        fetchedAt: "2026-01-01T00:00:00Z",
+      }));
+      await expect(api.listClaudeModels()).resolves.toEqual({
+        models: [{ id: "default", name: "Default (recommended)", description: "Use the default model." }],
+        fetchedAt: "2026-01-01T00:00:00Z",
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/claude/models"),
+        expect.objectContaining({ headers: expect.any(Headers) }),
+      );
+    });
+
     it("lists Codex models", async () => {
       mockFetch.mockReturnValueOnce(mockOk({
         models: [{ id: "gpt-5.5", name: "GPT-5.5", description: "Frontier coding model", hidden: false, isDefault: true }],

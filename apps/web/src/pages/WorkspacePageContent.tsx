@@ -1,10 +1,8 @@
 import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Menu, Settings, X } from "lucide-react";
 import {
-  BUILTIN_CHAT_MODELS_BY_AGENT,
+  type ClaudeModelCatalogEntry,
   type ChatThread,
-  type CursorModelCatalogEntry,
-  type OpencodeModelCatalogEntry,
   type ReviewRef,
   type ReviewKind,
 } from "@codesymphony/shared-types";
@@ -104,7 +102,6 @@ const preloadCodeEditorPanel = () => import("../components/workspace/CodeEditorP
 const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewPanel");
 
 import { api, type RuntimeInfo } from "../lib/api";
-import { FALLBACK_CODEX_MODELS } from "../lib/agentModelDefaults";
 import { debugLog } from "../lib/debugLog";
 import { loadGeneralSettings, saveGeneralSettings, type GeneralSettings } from "../lib/generalSettings";
 import { scheduleWindowIdleTask } from "../lib/idleTask";
@@ -166,6 +163,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
 import { useCodexModels } from "../hooks/queries/useCodexModels";
+import { useClaudeModels } from "../hooks/queries/useClaudeModels";
 import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
 import { useCursorModels } from "../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
@@ -184,30 +182,16 @@ import {
   shouldReleaseStartupSelectionFallback,
   shouldPreserveStartupThreadFallback,
 } from "./workspace/startupShellPersistence";
-import { shouldLoadWorkspaceAgentCatalog } from "./workspace/workspaceAgentCatalog";
+import {
+  shouldAutoLoadAllWorkspaceAgentCatalogs,
+  shouldLoadWorkspaceAgentCatalog,
+} from "./workspace/workspaceAgentCatalog";
 import { isBaseBranchSelected, resolveReviewBaseBranch, resolveReviewBranch } from "./workspace/reviewBranch";
 import {
   appendScriptOutputChunk,
   clearLifecycleScriptOutputs,
   upsertScriptOutputEntry,
 } from "./workspace/scriptOutputState";
-
-function createFallbackOpencodeEntry(modelId: string): OpencodeModelCatalogEntry {
-  const [providerId] = modelId.split("/", 1);
-
-  return {
-    id: modelId,
-    name: modelId,
-    providerId: providerId?.trim() || "opencode",
-  };
-}
-
-function createFallbackCursorEntry(modelId: string): CursorModelCatalogEntry {
-  return {
-    id: modelId,
-    name: modelId === "default[]" ? "Auto" : modelId.replace(/\[[^\]]*]$/, ""),
-  };
-}
 
 function resolveSelectedLatestReviewRef(input: {
   available: boolean | null | undefined;
@@ -1074,7 +1058,20 @@ export function WorkspacePage() {
   });
 
   const [loadAllModelCatalogs, setLoadAllModelCatalogs] = useState(false);
-  const codexModelCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
+  const claudeModelCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
+    enableNonCriticalWorkspaceData,
+    loadAllModelCatalogs,
+    catalogAgent: "claude",
+    composerAgent: chat.composerAgent,
+  });
+  const claudeModelsQuery = useClaudeModels({
+    enabled: claudeModelCatalogEnabled,
+  });
+  const claudeModels = useMemo<ClaudeModelCatalogEntry[]>(
+    () => [...(claudeModelsQuery.data?.models ?? [])],
+    [claudeModelsQuery.data?.models],
+  );
+  const codexCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
     enableNonCriticalWorkspaceData,
     loadAllModelCatalogs,
     catalogAgent: "codex",
@@ -1093,35 +1090,61 @@ export function WorkspacePage() {
     composerAgent: chat.composerAgent,
   });
   const codexModelsQuery = useCodexModels({
-    enabled: codexModelCatalogEnabled,
+    enabled: codexCatalogEnabled,
   });
   const codexModels = useMemo(
-    () => [
-      ...(codexModelsQuery.data?.models
-        ?? FALLBACK_CODEX_MODELS),
-    ],
+    () => [...(codexModelsQuery.data?.models ?? [])],
     [codexModelsQuery.data?.models],
   );
   const cursorModelsQuery = useCursorModels({
     enabled: cursorModelCatalogEnabled,
   });
   const cursorModels = useMemo(
-    () => [
-      ...(cursorModelsQuery.data?.models
-        ?? BUILTIN_CHAT_MODELS_BY_AGENT.cursor.map(createFallbackCursorEntry)),
-    ],
+    () => [...(cursorModelsQuery.data?.models ?? [])],
     [cursorModelsQuery.data?.models],
   );
   const opencodeModelsQuery = useOpencodeModels({
     enabled: opencodeModelCatalogEnabled,
   });
   const opencodeModels = useMemo(
-    () => [
-      ...(opencodeModelsQuery.data?.models
-        ?? BUILTIN_CHAT_MODELS_BY_AGENT.opencode.map(createFallbackOpencodeEntry)),
-    ],
+    () => [...(opencodeModelsQuery.data?.models ?? [])],
     [opencodeModelsQuery.data?.models],
   );
+  const modelCatalogReadyByAgent = useMemo(() => ({
+    claude: claudeModelsQuery.data !== undefined || claudeModelsQuery.isError,
+    codex: codexModelsQuery.data !== undefined || codexModelsQuery.isError,
+    cursor: cursorModelsQuery.data !== undefined || cursorModelsQuery.isError,
+    opencode: opencodeModelsQuery.data !== undefined || opencodeModelsQuery.isError,
+  }), [
+    claudeModelsQuery.data,
+    claudeModelsQuery.isError,
+    codexModelsQuery.data,
+    codexModelsQuery.isError,
+    cursorModelsQuery.data,
+    cursorModelsQuery.isError,
+    opencodeModelsQuery.data,
+    opencodeModelsQuery.isError,
+  ]);
+  const allModelCatalogsReady = modelCatalogReadyByAgent.claude
+    && modelCatalogReadyByAgent.codex
+    && modelCatalogReadyByAgent.cursor
+    && modelCatalogReadyByAgent.opencode;
+  const requestAllModelCatalogs = useCallback(() => {
+    setLoadAllModelCatalogs(true);
+  }, []);
+  const handleOpenAgentModelSelector = useCallback(() => {
+    requestAllModelCatalogs();
+  }, [requestAllModelCatalogs]);
+  useEffect(() => {
+    if (!shouldAutoLoadAllWorkspaceAgentCatalogs({
+      enableNonCriticalWorkspaceData,
+      loadAllModelCatalogs,
+    })) {
+      return;
+    }
+
+    setLoadAllModelCatalogs(true);
+  }, [enableNonCriticalWorkspaceData, loadAllModelCatalogs]);
   pushStartupRenderProfileSection("chat-session");
   const selectedThreadIdForLiveStatus = chat.selectedThreadIdForData ?? chat.selectedThreadId;
   const previousLiveScopeSelectionRef = useRef<WorkspaceLiveScopeSelection | null>(null);
@@ -1958,14 +1981,10 @@ export function WorkspacePage() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!settingsOpen || loadAllModelCatalogs) {
-      return;
-    }
-
-    setLoadAllModelCatalogs(true);
-  }, [loadAllModelCatalogs, settingsOpen]);
+  const openSettingsDialog = useCallback(() => {
+    requestAllModelCatalogs();
+    setSettingsOpen(true);
+  }, [requestAllModelCatalogs]);
 
   useEffect(() => {
     if (enableCriticalWorkspaceData) {
@@ -2847,7 +2866,7 @@ export function WorkspacePage() {
       .map((command) => command.trim())
       .filter((command) => command.length > 0);
     if (runCommands.length === 0) {
-      setSettingsOpen(true);
+      openSettingsDialog();
       return;
     }
     const shellScript = runCommands.join(" ; ");
@@ -3155,7 +3174,7 @@ export function WorkspacePage() {
                   automationCreate: undefined,
                 });
               }}
-              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenSettings={openSettingsDialog}
               onAttachRepository={repos.openFileBrowser}
               onSelectRepository={handleSelectRepository}
               onToggleRepositoryExpand={handleToggleRepositoryExpand}
@@ -3417,7 +3436,7 @@ export function WorkspacePage() {
                     onOpenDevices={handleOpenMobileDevices}
                     onOpenSettings={() => {
                       setMobilePanelOpen(null);
-                      setSettingsOpen(true);
+                      openSettingsDialog();
                     }}
                     onOpenUtility={(tab) => handleOpenMobileUtilities(tab)}
                   />
@@ -3606,10 +3625,13 @@ export function WorkspacePage() {
                               threadKind={selectedChatThread?.kind ?? null}
                               hasMessages={chat.messages.length > 0}
                               providers={modelProviders}
+                              claudeModels={claudeModels}
                               codexModels={codexModels}
                               cursorModels={cursorModels}
                               opencodeModels={opencodeModels}
+                              modelCatalogReadyByAgent={modelCatalogReadyByAgent}
                               runtimeInfo={runtimeInfo.data ?? null}
+                              onAgentModelSelectorOpen={handleOpenAgentModelSelector}
                               onApprove={(selection) => void gates.handleApprovePlan(selection)}
                               onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
                               onDismiss={() => void gates.handleDismissPlan()}
@@ -3706,9 +3728,11 @@ export function WorkspacePage() {
                       mode={chat.composerMode}
                       modeLocked={chat.composerModeLocked}
                       providers={modelProviders}
+                      claudeModels={claudeModels}
                       codexModels={codexModels}
                       cursorModels={cursorModels}
                       opencodeModels={opencodeModels}
+                      modelCatalogReadyByAgent={modelCatalogReadyByAgent}
                       runtimeInfo={runtimeInfo.data ?? null}
                       agent={chat.composerAgent}
                       model={chat.composerModel}
@@ -3729,6 +3753,7 @@ export function WorkspacePage() {
                       onAgentSelectionChange={(selection) => {
                         void chat.setComposerAgentSelection(selection);
                       }}
+                      onAgentModelSelectorOpen={handleOpenAgentModelSelector}
                       onPermissionModeChange={(permissionMode) => {
                         void chat.setComposerPermissionMode(permissionMode);
                       }}
@@ -3934,7 +3959,7 @@ export function WorkspacePage() {
                 className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-muted-foreground transition-colors active:bg-secondary/60"
                 onClick={() => {
                   handleCloseMobileRepositories();
-                  setSettingsOpen(true);
+                  openSettingsDialog();
                 }}
               >
                 <Settings className="h-3.5 w-3.5" />
@@ -3962,9 +3987,11 @@ export function WorkspacePage() {
             onClose={() => setSettingsOpen(false)}
             repositories={repos.repositories}
             selectedRepositoryId={repos.selectedRepositoryId}
+            claudeModels={claudeModels}
             codexModels={codexModels}
             cursorModels={cursorModels}
             opencodeModels={opencodeModels}
+            modelCatalogsLoading={loadAllModelCatalogs && !allModelCatalogsReady}
             generalSettings={generalSettings}
             runtimeLabel={runtimeLabel}
             runtimeTitle={runtimeTitle}

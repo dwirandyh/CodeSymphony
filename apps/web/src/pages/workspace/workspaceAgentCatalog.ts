@@ -1,6 +1,6 @@
 import type { CliAgent } from "@codesymphony/shared-types";
 
-type WorkspaceModelCatalogAgent = Extract<CliAgent, "codex" | "cursor" | "opencode">;
+type WorkspaceModelCatalogAgent = CliAgent;
 
 export function shouldLoadWorkspaceAgentCatalog(params: {
   enableNonCriticalWorkspaceData: boolean;
@@ -17,4 +17,11 @@ export function shouldLoadWorkspaceAgentCatalog(params: {
   }
 
   return params.composerAgent === params.catalogAgent;
+}
+
+export function shouldAutoLoadAllWorkspaceAgentCatalogs(params: {
+  enableNonCriticalWorkspaceData: boolean;
+  loadAllModelCatalogs: boolean;
+}) {
+  return params.enableNonCriticalWorkspaceData && !params.loadAllModelCatalogs;
 }

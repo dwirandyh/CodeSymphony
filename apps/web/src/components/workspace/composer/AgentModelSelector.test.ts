@@ -102,4 +102,42 @@ describe("AgentModelSelector", () => {
     expect(scroller?.style.maxHeight).toBe("280px");
     expect(scroller?.querySelectorAll("button")).toHaveLength(12);
   });
+
+  it("shows a loading state while the preview agent catalog is still being fetched", () => {
+    const onSelectionChange = vi.fn();
+
+    act(() => {
+      root.render(
+        createElement(AgentModelSelector, {
+          selection: {
+            agent: "cursor",
+            model: "default[]",
+            modelProviderId: null,
+          },
+          providers: [],
+          cursorModels: [],
+          opencodeModels: [],
+          modelCatalogReadyByAgent: {
+            claude: true,
+            codex: true,
+            cursor: false,
+            opencode: true,
+          },
+          showAgentList: true,
+          onSelectionChange,
+        }),
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Select CLI agent and model"]');
+    if (!trigger) {
+      throw new Error("Model selector trigger not found");
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Loading models...");
+  });
 });

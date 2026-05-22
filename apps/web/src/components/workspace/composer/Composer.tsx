@@ -16,6 +16,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  type ClaudeModelCatalogEntry,
   type ChatQueuedMessage,
   type ChatThreadKind,
   type CodexModelCatalogEntry,
@@ -94,9 +95,11 @@ type ComposerProps = {
   slashCommands?: SlashCommand[];
   slashCommandsLoading?: boolean;
   providers: ModelProvider[];
+  claudeModels?: readonly ClaudeModelCatalogEntry[];
   codexModels?: readonly CodexModelCatalogEntry[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
+  modelCatalogReadyByAgent?: Partial<Record<CliAgent, boolean>>;
   agent?: CliAgent;
   model?: string;
   modelProviderId?: string | null;
@@ -112,6 +115,7 @@ type ComposerProps = {
   onQueueDraft?: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onModeChange: (mode: ChatMode) => void;
   onStop: () => void;
+  onAgentModelSelectorOpen?: () => void;
   onAgentSelectionChange?: (selection: UpdateChatThreadAgentSelectionInput) => void;
   onPermissionModeChange: (permissionMode: ChatThreadPermissionMode) => void;
   onDeleteQueuedMessage?: (queueMessageId: string) => void;
@@ -248,9 +252,11 @@ function ComposerContent({
   slashCommands: providedSlashCommands,
   slashCommandsLoading: providedSlashCommandsLoading,
   providers,
+  claudeModels = [],
   codexModels = [],
   cursorModels = [],
   opencodeModels,
+  modelCatalogReadyByAgent,
   agent: providedAgent,
   model: providedModel,
   modelProviderId: providedModelProviderId,
@@ -266,6 +272,7 @@ function ComposerContent({
   onQueueDraft,
   onModeChange,
   onStop,
+  onAgentModelSelectorOpen,
   onAgentSelectionChange: onAgentSelectionChangeProp,
   onPermissionModeChange,
   onDeleteQueuedMessage,
@@ -374,11 +381,12 @@ function ComposerContent({
   );
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => buildAgentSelectionOptions({
     providers,
+    claudeModels,
     codexModels,
     cursorModels,
     opencodeModels,
     codexBuiltinModelOverride,
-  }), [codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
+  }), [claudeModels, codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
   const currentProvider = useMemo(
     () => (modelProviderId ? providers.find((provider) => provider.id === modelProviderId) ?? null : null),
     [modelProviderId, providers],
@@ -1285,7 +1293,7 @@ function ComposerContent({
   );
 
   return (
-    <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
+    <section className="px-1.5 pb-1 pt-0.5 safe-bottom sm:px-2.5 lg:px-3 lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
         <div
           className={`relative border bg-background/35 px-3 pb-11 pt-2.5 shadow-sm backdrop-blur-sm lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
@@ -1554,13 +1562,16 @@ function ComposerContent({
                 <AgentModelSelector
                   selection={{ agent, model, modelProviderId }}
                   providers={providers}
+                  claudeModels={claudeModels}
                   codexModels={codexModels}
                   cursorModels={cursorModels}
                   opencodeModels={opencodeModels}
                   codexBuiltinModelOverride={codexBuiltinModelOverride}
+                  modelCatalogReadyByAgent={modelCatalogReadyByAgent}
                   showAgentList={showAgentList}
                   selectionLockedReason={selectionBlockedReason}
                   popoverContainer={composerPopoverHost}
+                  onOpen={onAgentModelSelectorOpen}
                   onSelectionChange={(nextSelection) => {
                     onAgentSelectionChange(nextSelection);
                   }}

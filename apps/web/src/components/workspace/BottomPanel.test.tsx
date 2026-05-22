@@ -77,6 +77,16 @@ describe("BottomPanel", () => {
     expect(container.textContent).toContain("Debug Console");
   });
 
+  it("keeps the bottom panel shell flush to the side panels without negative bleed", () => {
+    act(() => {
+      root.render(<BottomPanel {...baseProps} />);
+    });
+
+    const shell = container.querySelector<HTMLElement>('[data-testid="bottom-panel-shell"]');
+    expect(shell?.className).not.toContain("-mx-1.5");
+    expect(shell?.className).not.toContain("px-1.5");
+  });
+
   it("renders collapse/expand button", () => {
     act(() => {
       root.render(<BottomPanel {...baseProps} />);

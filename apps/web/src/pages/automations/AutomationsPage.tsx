@@ -7,6 +7,7 @@ import type {
   AutomationRun,
   ChatMode,
   ChatThreadPermissionMode,
+  ClaudeModelCatalogEntry,
   CliAgent,
   CodexModelCatalogEntry,
   CursorModelCatalogEntry,
@@ -49,6 +50,7 @@ import {
   AgentModelSelector,
   type AgentModelSelection,
 } from "../../components/workspace/composer/AgentModelSelector";
+import { useClaudeModels } from "../../hooks/queries/useClaudeModels";
 import { useCodexModels } from "../../hooks/queries/useCodexModels";
 import { useCursorModels } from "../../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../../hooks/queries/useOpencodeModels";
@@ -922,6 +924,7 @@ function AutomationInlinePicker({
 function AutomationSessionPicker({
   value,
   providers,
+  claudeModels,
   codexModels,
   cursorModels,
   opencodeModels,
@@ -933,6 +936,7 @@ function AutomationSessionPicker({
 }: {
   value: Pick<AutomationFormState, "agent" | "model" | "modelProviderId">;
   providers: ModelProvider[];
+  claudeModels: readonly ClaudeModelCatalogEntry[];
   codexModels: readonly CodexModelCatalogEntry[];
   cursorModels: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
@@ -950,6 +954,7 @@ function AutomationSessionPicker({
         modelProviderId: value.modelProviderId,
       }}
       providers={providers}
+      claudeModels={claudeModels}
       codexModels={codexModels}
       cursorModels={cursorModels}
       opencodeModels={opencodeModels}
@@ -1416,6 +1421,7 @@ export function AutomationsListPage({
   const repositoriesQuery = useRepositories();
   const { providers } = useModelProviders();
   const runtimeInfo = useRuntimeInfo();
+  const claudeModelsQuery = useClaudeModels();
   const codexModelsQuery = useCodexModels();
   const cursorModelsQuery = useCursorModels();
   const opencodeModelsQuery = useOpencodeModels();
@@ -1595,6 +1601,7 @@ export function AutomationsListPage({
     },
   });
   const createRepository = findRepositoryById(repositories, createForm.repositoryId);
+  const claudeModels = claudeModelsQuery.data?.models ?? [];
   const codexModels = codexModelsQuery.data?.models ?? [];
   const cursorModels = cursorModelsQuery.data?.models ?? [];
   const opencodeModels = opencodeModelsQuery.data?.models ?? [];
@@ -1869,6 +1876,7 @@ export function AutomationsListPage({
                         modelProviderId: createForm.modelProviderId,
                       }}
                       providers={providers}
+                      claudeModels={claudeModels}
                       codexModels={codexModels}
                       cursorModels={cursorModels}
                       opencodeModels={opencodeModels}
@@ -1943,6 +1951,7 @@ export function AutomationDetailPage({
   const repositoriesQuery = useRepositories();
   const { providers } = useModelProviders();
   const runtimeInfo = useRuntimeInfo();
+  const claudeModelsQuery = useClaudeModels();
   const codexModelsQuery = useCodexModels();
   const cursorModelsQuery = useCursorModels();
   const opencodeModelsQuery = useOpencodeModels();
@@ -2176,6 +2185,7 @@ export function AutomationDetailPage({
     description: describeAutomationTarget(repository, option.value),
     icon: getAutomationTargetIcon(option.value),
   }));
+  const claudeModels = claudeModelsQuery.data?.models ?? [];
   const codexModels = codexModelsQuery.data?.models ?? [];
   const cursorModels = cursorModelsQuery.data?.models ?? [];
   const opencodeModels = opencodeModelsQuery.data?.models ?? [];
@@ -2393,6 +2403,7 @@ export function AutomationDetailPage({
                       modelProviderId: form.modelProviderId,
                     }}
                     providers={providers}
+                    claudeModels={claudeModels}
                     codexModels={codexModels}
                     cursorModels={cursorModels}
                     opencodeModels={opencodeModels}

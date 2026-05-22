@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { shouldLoadWorkspaceAgentCatalog } from "./workspaceAgentCatalog";
+import {
+  shouldAutoLoadAllWorkspaceAgentCatalogs,
+  shouldLoadWorkspaceAgentCatalog,
+} from "./workspaceAgentCatalog";
 
 describe("workspaceAgentCatalog", () => {
   it("keeps inactive agent catalogs out of the workspace startup path", () => {
@@ -35,6 +38,24 @@ describe("workspaceAgentCatalog", () => {
       loadAllModelCatalogs: true,
       catalogAgent: "codex",
       composerAgent: "codex",
+    })).toBe(false);
+  });
+
+  it("auto-loads every catalog once non-critical workspace data is enabled", () => {
+    expect(shouldAutoLoadAllWorkspaceAgentCatalogs({
+      enableNonCriticalWorkspaceData: true,
+      loadAllModelCatalogs: false,
+    })).toBe(true);
+  });
+
+  it("does not auto-load catalogs before the first non-critical frame or after it already ran", () => {
+    expect(shouldAutoLoadAllWorkspaceAgentCatalogs({
+      enableNonCriticalWorkspaceData: false,
+      loadAllModelCatalogs: false,
+    })).toBe(false);
+    expect(shouldAutoLoadAllWorkspaceAgentCatalogs({
+      enableNonCriticalWorkspaceData: true,
+      loadAllModelCatalogs: true,
     })).toBe(false);
   });
 });

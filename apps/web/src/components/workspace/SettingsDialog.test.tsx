@@ -2,7 +2,15 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
+import type {
+  ClaudeModelCatalogEntry,
+  CodexModelCatalogEntry,
+  CursorModelCatalogEntry,
+  ModelProvider,
+  OpencodeModelCatalogEntry,
+  Repository,
+  SaveAutomationConfig,
+} from "@codesymphony/shared-types";
 import { SettingsDialog } from "./SettingsDialog";
 import { AGENT_DEFAULTS_STORAGE_KEY } from "../../pages/workspace/agentDefaults";
 import { DEFAULT_GENERAL_SETTINGS, getModifierEnterLabel } from "../../lib/generalSettings";
@@ -36,6 +44,18 @@ vi.mock("../../lib/api", () => ({
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
+const claudeModels = [
+  {
+    id: "claude-sonnet-4-6",
+    name: "Sonnet 4.6",
+    description: "Built-in Claude model.",
+  },
+  {
+    id: "claude-opus-4-6",
+    name: "Opus 4.6",
+    description: "Most capable for complex work.",
+  },
+] as const;
 const codexModels = [
   {
     id: "gpt-5.5",
@@ -169,6 +189,11 @@ function renderDialog(
     runtimeLabel?: string | null;
     runtimeTitle?: string | null;
     selectedRepositoryId?: string | null;
+    claudeModels?: readonly ClaudeModelCatalogEntry[];
+    codexModels?: readonly CodexModelCatalogEntry[];
+    cursorModels?: readonly CursorModelCatalogEntry[];
+    opencodeModels?: readonly OpencodeModelCatalogEntry[];
+    modelCatalogsLoading?: boolean;
   },
 ) {
   act(() => {
@@ -179,9 +204,11 @@ function renderDialog(
           onClose={onClose}
           repositories={repositories}
           selectedRepositoryId={options?.selectedRepositoryId}
-          codexModels={codexModels}
-          cursorModels={cursorModels}
-          opencodeModels={opencodeModels}
+          claudeModels={options?.claudeModels ?? claudeModels}
+          codexModels={options?.codexModels ?? codexModels}
+          cursorModels={options?.cursorModels ?? cursorModels}
+          opencodeModels={options?.opencodeModels ?? opencodeModels}
+          modelCatalogsLoading={options?.modelCatalogsLoading}
           generalSettings={defaultGeneralSettings}
           runtimeLabel={options?.runtimeLabel}
           runtimeTitle={options?.runtimeTitle}
@@ -501,6 +528,39 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Agent for new chats");
     expect(document.body.textContent).toContain("Agent for commit");
     expect(document.body.textContent).toContain("Agent for PR");
+  });
+
+  it("shows a loading state while model catalogs are still being prepared", async () => {
+    renderDialog([makeRepo()], vi.fn(), undefined, {
+      modelCatalogsLoading: true,
+    });
+    await flushEffects();
+    await openModelsTab();
+
+    expect(document.body.textContent).toContain("Loading...");
+  });
+
+  it("keeps legacy built-in model selections visible when the runtime catalog uses new ids", async () => {
+    renderDialog([makeRepo()], vi.fn(), undefined, {
+      claudeModels: [
+        {
+          id: "default",
+          name: "Default (recommended)",
+          description: "Use the default model.",
+        },
+        {
+          id: "opus",
+          name: "Opus",
+          description: "Most capable for complex work.",
+        },
+      ],
+    });
+    await flushEffects();
+    await openModelsTab();
+
+    expect(getRadixSelectTriggerText("Agent for new chats model")).toBe("Sonnet 4.6");
+    expect(getRadixSelectTriggerText("Agent for commit model")).toBe("Sonnet 4.6");
+    expect(getRadixSelectTriggerText("Agent for PR model")).toBe("Sonnet 4.6");
   });
 
   it("persists default agent selections to localStorage", async () => {

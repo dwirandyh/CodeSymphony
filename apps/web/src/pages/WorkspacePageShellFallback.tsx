@@ -204,7 +204,7 @@ function renderBottomPanelShell(snapshot: StartupShellSnapshot) {
         selectedThreadId={snapshot.threadId}
         scriptOutputs={[]}
         activeTab="setup-script"
-        collapsed={false}
+        collapsed={true}
         onTabChange={() => {}}
         onCollapsedChange={() => {}}
         runScriptActive={false}
@@ -252,10 +252,7 @@ function renderMobileTopBarShell(params: {
   );
 }
 
-function renderThreadShellBody(params: {
-  runtimeState: WorkspaceStartupRuntimeState;
-  selectedTabLabel: string;
-}) {
+function renderThreadShellBody() {
   const composerPlaceholder = "Message CodeSymphony... (type / or $ for commands, @ to mention files)";
 
   return (
@@ -265,14 +262,7 @@ function renderThreadShellBody(params: {
           <div className="flex h-full min-h-0 flex-col">
             <div className="min-h-0 flex-1 overflow-hidden">
               <div className="h-full overflow-auto">
-                <div className="mx-auto flex h-full w-full max-w-3xl flex-col px-3 py-4">
-                  <div className="flex-1" />
-                  <div className="pb-3 text-xs text-muted-foreground">
-                    {params.runtimeState === "reconnecting" || params.runtimeState === "offline"
-                      ? "Reconnecting to your recent messages."
-                      : `${params.selectedTabLabel} is restoring from local workspace state.`}
-                  </div>
-                </div>
+                <div className="mx-auto h-full w-full max-w-3xl px-3 py-4" />
               </div>
             </div>
           </div>
@@ -389,7 +379,6 @@ function renderSurfaceShellBody(params: {
 function renderShellBody(params: {
   activeView: WorkspaceSearch["view"] | undefined;
   filePath?: string;
-  runtimeState: WorkspaceStartupRuntimeState;
   snapshot: StartupShellSnapshot;
   selectedTabLabel: string;
 }) {
@@ -434,10 +423,7 @@ function renderShellBody(params: {
     );
   }
 
-  return renderThreadShellBody({
-    runtimeState: params.runtimeState,
-    selectedTabLabel: params.selectedTabLabel,
-  });
+  return renderThreadShellBody();
 }
 
 export function WorkspacePageShellFallback({
@@ -564,7 +550,6 @@ export function WorkspacePageShellFallback({
               {renderShellBody({
                 activeView,
                 filePath,
-                runtimeState,
                 snapshot,
                 selectedTabLabel,
               })}

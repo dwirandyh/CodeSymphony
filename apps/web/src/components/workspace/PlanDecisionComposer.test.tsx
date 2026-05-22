@@ -19,6 +19,22 @@ afterEach(() => {
 });
 
 describe("PlanDecisionComposer", () => {
+  const claudeModels = [
+    {
+      id: "claude-sonnet-4-6",
+      name: "Sonnet 4.6",
+      description: "Built-in Claude model",
+    },
+  ] as const;
+  const codexModels = [
+    {
+      id: "gpt-5.4",
+      name: "GPT-5.4",
+      description: "Built-in Codex model",
+      hidden: false,
+      isDefault: true,
+    },
+  ] as const;
   const providers: ModelProvider[] = [{
     id: "provider-codex-1",
     compatibility: "openai",
@@ -44,7 +60,8 @@ describe("PlanDecisionComposer", () => {
           threadKind="default"
           hasMessages={true}
           providers={providers}
-          codexModels={[]}
+          claudeModels={claudeModels}
+          codexModels={codexModels}
           cursorModels={[]}
           opencodeModels={[]}
           onApprove={vi.fn()}
