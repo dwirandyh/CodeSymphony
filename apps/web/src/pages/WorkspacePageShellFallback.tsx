@@ -4,6 +4,7 @@ import type { ChatThread, Repository } from "@codesymphony/shared-types";
 import { StartupSplash } from "../components/startup/StartupSplash";
 import { StartupStatusBanner } from "../components/startup/StartupStatusBanner";
 import type { WorkspaceStartupRuntimeState } from "../components/startup/workspaceStartupState";
+import { BottomPanel } from "../components/workspace/BottomPanel";
 import { WorkspaceEmptyState } from "../components/workspace/WorkspaceEmptyState";
 import { WorkspaceHeader, type WorkspaceFileTab } from "../components/workspace/WorkspaceHeader";
 import type { StartupShellSnapshot } from "../lib/startupShellSnapshot";
@@ -154,20 +155,21 @@ function buildFallbackFileTabs(filePath?: string): WorkspaceFileTab[] {
   }];
 }
 
-function renderBottomPanelShell() {
+function renderBottomPanelShell(snapshot: StartupShellSnapshot) {
   return (
     <div className="hidden lg:block">
-      <div className="mx-3 rounded-t-lg border border-b-0 border-border/25 bg-card/75 px-1">
-        <div className="flex items-center border-b border-border/20 bg-card/75">
-          <div className="relative px-3 py-1.5 text-[11px] font-medium text-foreground">
-            Setup Script
-            <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary" />
-          </div>
-          <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground">Terminal</div>
-          <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground">Run</div>
-          <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground">Debug Console</div>
-        </div>
-      </div>
+      <BottomPanel
+        worktreeId={snapshot.worktreeId}
+        worktreePath={snapshot.worktreePath}
+        selectedThreadId={snapshot.threadId}
+        scriptOutputs={[]}
+        activeTab="setup-script"
+        collapsed={false}
+        onTabChange={() => {}}
+        onCollapsedChange={() => {}}
+        runScriptActive={false}
+        runScriptSessionId={null}
+      />
     </div>
   );
 }
@@ -478,7 +480,7 @@ export function WorkspacePageShellFallback({
               })}
             </section>
 
-            {renderBottomPanelShell()}
+            {renderBottomPanelShell(snapshot)}
           </div>
         </main>
 

@@ -63,6 +63,9 @@ describe("WorkspacePageShellFallback", () => {
     expect(container.querySelector('[aria-label="Attach files"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Select permission mode"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Send message"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="bottom-panel-resize-handle"]')).not.toBeNull();
+    expect(container.textContent).toContain("No setup output yet.");
+    expect(container.querySelector('[title="Collapse panel"]')).not.toBeNull();
   });
 
   it("renders the full persisted workspace list on the first frame", () => {
