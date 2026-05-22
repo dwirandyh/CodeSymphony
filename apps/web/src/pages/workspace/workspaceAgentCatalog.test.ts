@@ -8,7 +8,7 @@ describe("workspaceAgentCatalog", () => {
   it("keeps inactive agent catalogs out of the workspace startup path", () => {
     expect(shouldLoadWorkspaceAgentCatalog({
       enableNonCriticalWorkspaceData: true,
-      loadAllModelCatalogs: false,
+      loadAllAgentCatalogs: false,
       catalogAgent: "cursor",
       composerAgent: "codex",
     })).toBe(false);
@@ -17,7 +17,7 @@ describe("workspaceAgentCatalog", () => {
   it("loads the active composer agent catalog once non-critical workspace data is enabled", () => {
     expect(shouldLoadWorkspaceAgentCatalog({
       enableNonCriticalWorkspaceData: true,
-      loadAllModelCatalogs: false,
+      loadAllAgentCatalogs: false,
       catalogAgent: "codex",
       composerAgent: "codex",
     })).toBe(true);
@@ -26,7 +26,7 @@ describe("workspaceAgentCatalog", () => {
   it("loads every catalog after the settings dialog opts into the full model inventory", () => {
     expect(shouldLoadWorkspaceAgentCatalog({
       enableNonCriticalWorkspaceData: true,
-      loadAllModelCatalogs: true,
+      loadAllAgentCatalogs: true,
       catalogAgent: "opencode",
       composerAgent: "claude",
     })).toBe(true);
@@ -35,7 +35,7 @@ describe("workspaceAgentCatalog", () => {
   it("stays disabled until non-critical workspace data is ready", () => {
     expect(shouldLoadWorkspaceAgentCatalog({
       enableNonCriticalWorkspaceData: false,
-      loadAllModelCatalogs: true,
+      loadAllAgentCatalogs: true,
       catalogAgent: "codex",
       composerAgent: "codex",
     })).toBe(false);
@@ -44,18 +44,18 @@ describe("workspaceAgentCatalog", () => {
   it("auto-loads every catalog once non-critical workspace data is enabled", () => {
     expect(shouldAutoLoadAllWorkspaceAgentCatalogs({
       enableNonCriticalWorkspaceData: true,
-      loadAllModelCatalogs: false,
+      loadAllAgentCatalogs: false,
     })).toBe(true);
   });
 
   it("does not auto-load catalogs before the first non-critical frame or after it already ran", () => {
     expect(shouldAutoLoadAllWorkspaceAgentCatalogs({
       enableNonCriticalWorkspaceData: false,
-      loadAllModelCatalogs: false,
+      loadAllAgentCatalogs: false,
     })).toBe(false);
     expect(shouldAutoLoadAllWorkspaceAgentCatalogs({
       enableNonCriticalWorkspaceData: true,
-      loadAllModelCatalogs: true,
+      loadAllAgentCatalogs: true,
     })).toBe(false);
   });
 });

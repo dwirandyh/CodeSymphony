@@ -1,18 +1,18 @@
 import type { CliAgent } from "@codesymphony/shared-types";
 
-type WorkspaceModelCatalogAgent = CliAgent;
+type WorkspaceAgentCatalogAgent = CliAgent;
 
 export function shouldLoadWorkspaceAgentCatalog(params: {
   enableNonCriticalWorkspaceData: boolean;
-  loadAllModelCatalogs: boolean;
-  catalogAgent: WorkspaceModelCatalogAgent;
+  loadAllAgentCatalogs: boolean;
+  catalogAgent: WorkspaceAgentCatalogAgent;
   composerAgent: CliAgent;
 }) {
   if (!params.enableNonCriticalWorkspaceData) {
     return false;
   }
 
-  if (params.loadAllModelCatalogs) {
+  if (params.loadAllAgentCatalogs) {
     return true;
   }
 
@@ -21,7 +21,7 @@ export function shouldLoadWorkspaceAgentCatalog(params: {
 
 export function shouldAutoLoadAllWorkspaceAgentCatalogs(params: {
   enableNonCriticalWorkspaceData: boolean;
-  loadAllModelCatalogs: boolean;
+  loadAllAgentCatalogs: boolean;
 }) {
-  return params.enableNonCriticalWorkspaceData && !params.loadAllModelCatalogs;
+  return params.enableNonCriticalWorkspaceData && !params.loadAllAgentCatalogs;
 }

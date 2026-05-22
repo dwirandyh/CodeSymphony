@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +28,8 @@ const stubModelProviderService = {
 };
 
 let originalCodexHome: string | undefined;
+let originalSlashCommandCacheDir: string | undefined;
+let slashCommandCacheDir: string | null = null;
 
 function createStubModelProviderService(
   providersById: Record<string, {
@@ -131,7 +133,10 @@ describe("chatService agent selection", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     originalCodexHome = process.env.CODEX_HOME;
+    originalSlashCommandCacheDir = process.env.CODESYMPHONY_SLASH_COMMAND_CACHE_DIR;
     process.env.CODEX_HOME = mkdtempSync(join(tmpdir(), "codesymphony-test-codex-home-"));
+    slashCommandCacheDir = mkdtempSync(join(tmpdir(), "codesymphony-test-slash-command-cache-"));
+    process.env.CODESYMPHONY_SLASH_COMMAND_CACHE_DIR = slashCommandCacheDir;
     await resetDatabase();
   });
 
@@ -140,6 +145,17 @@ describe("chatService agent selection", () => {
       delete process.env.CODEX_HOME;
     } else {
       process.env.CODEX_HOME = originalCodexHome;
+    }
+
+    if (originalSlashCommandCacheDir === undefined) {
+      delete process.env.CODESYMPHONY_SLASH_COMMAND_CACHE_DIR;
+    } else {
+      process.env.CODESYMPHONY_SLASH_COMMAND_CACHE_DIR = originalSlashCommandCacheDir;
+    }
+
+    if (slashCommandCacheDir) {
+      rmSync(slashCommandCacheDir, { recursive: true, force: true });
+      slashCommandCacheDir = null;
     }
   });
 
@@ -317,6 +333,80 @@ describe("chatService agent selection", () => {
     expect(catalog.commands).toEqual(expect.arrayContaining([
       { name: "dogfood", description: "QA a web app.", argumentHint: "" },
     ]));
+  });
+
+  it("returns an empty slash-command catalog for OpenCode", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+      slashCommands: [{ name: "commit", description: "Create a commit", argumentHint: "" }],
+    }));
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { worktree } = await seedThread("OpenCode slash command catalog");
+
+    const catalog = await chatService.listSlashCommands(worktree.id, "opencode");
+
+    expect(catalog.commands).toEqual([]);
+    expect(claudeRunner).not.toHaveBeenCalled();
+  });
+
+  it("persists slash-command catalogs and refreshes them when local skills change", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    const cursorCatalogSpy = vi.spyOn(cursorSessionRunner, "listCursorSlashCommands").mockResolvedValue([]);
+    const { worktree } = await seedThread("Persistent slash command cache");
+    const skillDirPath = join(worktree.path, ".agents/skills/dogfood");
+    const skillFilePath = join(skillDirPath, "SKILL.md");
+    mkdirSync(skillDirPath, { recursive: true });
+    writeFileSync(
+      skillFilePath,
+      "---\nname: dogfood\ndescription: QA a web app.\n---\n",
+    );
+
+    const firstService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const firstCatalog = await firstService.listSlashCommands(worktree.id, "cursor");
+    const secondCatalog = await firstService.listSlashCommands(worktree.id, "cursor");
+
+    expect(firstCatalog.commands).toEqual(expect.arrayContaining([
+      { name: "dogfood", description: "QA a web app.", argumentHint: "" },
+    ]));
+    expect(secondCatalog).toEqual(firstCatalog);
+    expect(cursorCatalogSpy).toHaveBeenCalledTimes(1);
+
+    const secondService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const persistedCatalog = await secondService.listSlashCommands(worktree.id, "cursor");
+
+    expect(persistedCatalog).toEqual(firstCatalog);
+    expect(cursorCatalogSpy).toHaveBeenCalledTimes(1);
+
+    writeFileSync(
+      skillFilePath,
+      "---\nname: dogfood\ndescription: QA halaman settings.\n---\n",
+    );
+
+    const refreshedCatalog = await secondService.listSlashCommands(worktree.id, "cursor");
+
+    expect(refreshedCatalog.commands).toEqual(expect.arrayContaining([
+      { name: "dogfood", description: "QA halaman settings.", argumentHint: "" },
+    ]));
+    expect(cursorCatalogSpy).toHaveBeenCalledTimes(2);
   });
 
   it("normalizes /skill prompts for Cursor threads before invoking the runner", async () => {

@@ -84,6 +84,7 @@ import {
   inferPlanDetectionSource,
 } from "./chatAttachmentUtils.js";
 import { listCodexSkills, normalizeCodexSkillSlashCommandsForPrompt } from "./codexSkills.js";
+import { createSlashCommandCatalogCacheManager } from "./slashCommandCatalogCache.js";
 import {
   ensureThreadPermissionMap,
   ensureThreadQuestionMap,
@@ -571,6 +572,95 @@ export function createChatService(deps: RuntimeDeps) {
   const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
   const pendingThreadCreatesByKey = new Map<string, Promise<ChatThread>>();
   const queuedDispatchesByThread = new Map<string, Promise<void>>();
+  const slashCommandCatalogCache = createSlashCommandCatalogCacheManager({
+    load: async ({ worktreeId, worktreePath, agent }) => {
+      if (agent === "opencode") {
+        return SlashCommandCatalogSchema.parse({
+          commands: [],
+          updatedAt: new Date().toISOString(),
+        });
+      }
+
+      if (agent === "codex") {
+        try {
+          return SlashCommandCatalogSchema.parse({
+            commands: await listCodexSlashCommandsFromAppServer({
+              cwd: worktreePath,
+            }),
+            updatedAt: new Date().toISOString(),
+          });
+        } catch (error) {
+          deps.logService?.log("warn", "chat.slashCommands", "failed to load codex slash commands from app-server", {
+            worktreeId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          return SlashCommandCatalogSchema.parse({
+            commands: listCodexSkills(worktreePath),
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (agent === "cursor") {
+        const localSkills = listCodexSkills(worktreePath);
+        try {
+          return SlashCommandCatalogSchema.parse({
+            commands: mergeSlashCommands(
+              await listCursorSlashCommands({
+                cwd: worktreePath,
+              }),
+              localSkills,
+            ),
+            updatedAt: new Date().toISOString(),
+          });
+        } catch (error) {
+          deps.logService?.log("warn", "chat.slashCommands", "failed to load cursor slash commands", {
+            worktreeId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          return SlashCommandCatalogSchema.parse({
+            commands: localSkills,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      try {
+        const result = await deps.claudeRunner({
+          prompt: "",
+          sessionId: null,
+          listSlashCommandsOnly: true,
+          cwd: worktreePath,
+          sessionWorktreePath: worktreePath,
+          onText: () => {},
+          onToolStarted: () => {},
+          onToolOutput: () => {},
+          onToolFinished: () => {},
+          onQuestionRequest: async () => ({ answers: {} }),
+          onPermissionRequest: async () => ({ decision: "deny" }),
+          onPlanFileDetected: () => {},
+          onSubagentStarted: () => {},
+          onSubagentStopped: () => {},
+        });
+
+        return SlashCommandCatalogSchema.parse({
+          commands: result.slashCommands ?? [],
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        deps.logService?.log("warn", "chat.slashCommands", "failed to load slash commands", {
+          worktreeId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return SlashCommandCatalogSchema.parse({
+          commands: [],
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    },
+  });
 
   function getThreadRun(threadId: string): ThreadRunState | null {
     return threadRuns.get(threadId) ?? null;
@@ -2573,85 +2663,11 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Worktree not found");
       }
       assertWorktreeOperational(worktree);
-
-      if (agent === "codex") {
-        try {
-          return SlashCommandCatalogSchema.parse({
-            commands: await listCodexSlashCommandsFromAppServer({
-              cwd: worktree.path,
-            }),
-            updatedAt: new Date().toISOString(),
-          });
-        } catch (error) {
-          deps.logService?.log("warn", "chat.slashCommands", "failed to load codex slash commands from app-server", {
-            worktreeId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-
-          return SlashCommandCatalogSchema.parse({
-            commands: listCodexSkills(worktree.path),
-            updatedAt: new Date().toISOString(),
-          });
-        }
-      }
-
-      if (agent === "cursor") {
-        const localSkills = listCodexSkills(worktree.path);
-        try {
-          return SlashCommandCatalogSchema.parse({
-            commands: mergeSlashCommands(
-              await listCursorSlashCommands({
-                cwd: worktree.path,
-              }),
-              localSkills,
-            ),
-            updatedAt: new Date().toISOString(),
-          });
-        } catch (error) {
-          deps.logService?.log("warn", "chat.slashCommands", "failed to load cursor slash commands", {
-            worktreeId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-
-          return SlashCommandCatalogSchema.parse({
-            commands: localSkills,
-            updatedAt: new Date().toISOString(),
-          });
-        }
-      }
-
-      try {
-        const result = await deps.claudeRunner({
-          prompt: "",
-          sessionId: null,
-          listSlashCommandsOnly: true,
-          cwd: worktree.path,
-          sessionWorktreePath: worktree.path,
-          onText: () => {},
-          onToolStarted: () => {},
-          onToolOutput: () => {},
-          onToolFinished: () => {},
-          onQuestionRequest: async () => ({ answers: {} }),
-          onPermissionRequest: async () => ({ decision: "deny" }),
-          onPlanFileDetected: () => {},
-          onSubagentStarted: () => {},
-          onSubagentStopped: () => {},
-        });
-
-        return SlashCommandCatalogSchema.parse({
-          commands: result.slashCommands ?? [],
-          updatedAt: new Date().toISOString(),
-        });
-      } catch (error) {
-        deps.logService?.log("warn", "chat.slashCommands", "failed to load slash commands", {
-          worktreeId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return SlashCommandCatalogSchema.parse({
-          commands: [],
-          updatedAt: new Date().toISOString(),
-        });
-      }
+      return slashCommandCatalogCache.get({
+        worktreeId,
+        worktreePath: worktree.path,
+        agent,
+      });
     },
 
     async renameThreadTitle(threadId: string, rawInput: unknown): Promise<ChatThread> {

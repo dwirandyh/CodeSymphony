@@ -8,6 +8,7 @@ export type PersistentExpiringCacheSnapshot<T> = {
 
 type PersistedSnapshotEnvelope<T> = PersistentExpiringCacheSnapshot<T> & {
   expiresAtMs: number;
+  cacheVersion: string | null;
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -30,6 +31,13 @@ function isValidPersistedSnapshotEnvelope<T>(
     return false;
   }
 
+  if (
+    !("cacheVersion" in value)
+    || (typeof value.cacheVersion !== "string" && value.cacheVersion !== null)
+  ) {
+    return false;
+  }
+
   try {
     validate(value.value);
     return true;
@@ -45,8 +53,12 @@ export function createPersistentExpiringCache<T>(params: {
   validate: (candidate: unknown) => T;
   now?: () => number;
 }) {
-  let inflight: Promise<PersistentExpiringCacheSnapshot<T>> | null = null;
+  const inflightByVersion = new Map<string, Promise<PersistentExpiringCacheSnapshot<T>>>();
   const now = params.now ?? (() => Date.now());
+
+  function toCacheVersionKey(cacheVersion: string | null): string {
+    return cacheVersion == null ? "__default__" : cacheVersion;
+  }
 
   async function readPersistedSnapshot(): Promise<PersistedSnapshotEnvelope<T> | null> {
     try {
@@ -60,6 +72,7 @@ export function createPersistentExpiringCache<T>(params: {
         value: params.validate(parsed.value),
         fetchedAt: parsed.fetchedAt,
         expiresAtMs: parsed.expiresAtMs,
+        cacheVersion: parsed.cacheVersion,
       };
     } catch {
       return null;
@@ -71,12 +84,13 @@ export function createPersistentExpiringCache<T>(params: {
     await writeFile(params.storagePath, JSON.stringify(snapshot), "utf8");
   }
 
-  async function loadFresh(): Promise<PersistentExpiringCacheSnapshot<T>> {
+  async function loadFresh(cacheVersion: string | null): Promise<PersistentExpiringCacheSnapshot<T>> {
     const fetchedAtMs = now();
     const snapshot = {
       value: await params.load(),
       fetchedAt: new Date(fetchedAtMs).toISOString(),
       expiresAtMs: fetchedAtMs + params.ttlMs,
+      cacheVersion,
     };
     await writePersistedSnapshot(snapshot);
     return {
@@ -86,10 +100,11 @@ export function createPersistentExpiringCache<T>(params: {
   }
 
   return {
-    async get(options?: { refresh?: boolean }): Promise<PersistentExpiringCacheSnapshot<T>> {
+    async get(options?: { refresh?: boolean; cacheVersion?: string | null }): Promise<PersistentExpiringCacheSnapshot<T>> {
+      const cacheVersion = options?.cacheVersion ?? null;
       if (options?.refresh !== true) {
         const snapshot = await readPersistedSnapshot();
-        if (snapshot && now() < snapshot.expiresAtMs) {
+        if (snapshot && snapshot.cacheVersion === cacheVersion && now() < snapshot.expiresAtMs) {
           return {
             value: snapshot.value,
             fetchedAt: snapshot.fetchedAt,
@@ -97,13 +112,19 @@ export function createPersistentExpiringCache<T>(params: {
         }
       }
 
-      if (!inflight) {
-        inflight = loadFresh().finally(() => {
-          inflight = null;
-        });
+      const inflightKey = toCacheVersionKey(cacheVersion);
+      const inflight = inflightByVersion.get(inflightKey);
+      if (inflight) {
+        return inflight;
       }
 
-      return inflight;
+      const nextInflight = loadFresh(cacheVersion).finally(() => {
+        if (inflightByVersion.get(inflightKey) === nextInflight) {
+          inflightByVersion.delete(inflightKey);
+        }
+      });
+      inflightByVersion.set(inflightKey, nextInflight);
+      return nextInflight;
     },
     async clear(): Promise<void> {
       await rm(params.storagePath, { force: true });

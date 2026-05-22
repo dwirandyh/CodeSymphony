@@ -167,6 +167,7 @@ import { useClaudeModels } from "../hooks/queries/useClaudeModels";
 import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
 import { useCursorModels } from "../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
+import { useSlashCommandsQuery } from "../hooks/queries/useSlashCommandsQuery";
 import { THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS } from "../hooks/queries/useThreadSnapshot";
 import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../hooks/queries/useThreads";
 import { queryKeys } from "../lib/queryKeys";
@@ -1060,7 +1061,7 @@ export function WorkspacePage() {
   const [loadAllModelCatalogs, setLoadAllModelCatalogs] = useState(false);
   const claudeModelCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
     enableNonCriticalWorkspaceData,
-    loadAllModelCatalogs,
+    loadAllAgentCatalogs: loadAllModelCatalogs,
     catalogAgent: "claude",
     composerAgent: chat.composerAgent,
   });
@@ -1073,19 +1074,19 @@ export function WorkspacePage() {
   );
   const codexCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
     enableNonCriticalWorkspaceData,
-    loadAllModelCatalogs,
+    loadAllAgentCatalogs: loadAllModelCatalogs,
     catalogAgent: "codex",
     composerAgent: chat.composerAgent,
   });
   const cursorModelCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
     enableNonCriticalWorkspaceData,
-    loadAllModelCatalogs,
+    loadAllAgentCatalogs: loadAllModelCatalogs,
     catalogAgent: "cursor",
     composerAgent: chat.composerAgent,
   });
   const opencodeModelCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
     enableNonCriticalWorkspaceData,
-    loadAllModelCatalogs,
+    loadAllAgentCatalogs: loadAllModelCatalogs,
     catalogAgent: "opencode",
     composerAgent: chat.composerAgent,
   });
@@ -1138,13 +1139,78 @@ export function WorkspacePage() {
   useEffect(() => {
     if (!shouldAutoLoadAllWorkspaceAgentCatalogs({
       enableNonCriticalWorkspaceData,
-      loadAllModelCatalogs,
+      loadAllAgentCatalogs: loadAllModelCatalogs,
     })) {
       return;
     }
 
     setLoadAllModelCatalogs(true);
   }, [enableNonCriticalWorkspaceData, loadAllModelCatalogs]);
+  const slashCommandCatalogWorktreeId = enableNonCriticalWorkspaceData && selectedWorktreeOperational
+    ? repos.selectedWorktreeId
+    : null;
+  const slashCommandCatalogsEnabled = slashCommandCatalogWorktreeId != null;
+  const [loadAllSlashCommandCatalogs, setLoadAllSlashCommandCatalogs] = useState(false);
+  const claudeSlashCommandCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
+    enableNonCriticalWorkspaceData: slashCommandCatalogsEnabled,
+    loadAllAgentCatalogs: loadAllSlashCommandCatalogs,
+    catalogAgent: "claude",
+    composerAgent: chat.composerAgent,
+  });
+  const codexSlashCommandCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
+    enableNonCriticalWorkspaceData: slashCommandCatalogsEnabled,
+    loadAllAgentCatalogs: loadAllSlashCommandCatalogs,
+    catalogAgent: "codex",
+    composerAgent: chat.composerAgent,
+  });
+  const cursorSlashCommandCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
+    enableNonCriticalWorkspaceData: slashCommandCatalogsEnabled,
+    loadAllAgentCatalogs: loadAllSlashCommandCatalogs,
+    catalogAgent: "cursor",
+    composerAgent: chat.composerAgent,
+  });
+  const opencodeSlashCommandCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
+    enableNonCriticalWorkspaceData: slashCommandCatalogsEnabled,
+    loadAllAgentCatalogs: loadAllSlashCommandCatalogs,
+    catalogAgent: "opencode",
+    composerAgent: chat.composerAgent,
+  });
+  const claudeSlashCommandsQuery = useSlashCommandsQuery(slashCommandCatalogWorktreeId, "claude", {
+    enabled: claudeSlashCommandCatalogEnabled,
+  });
+  const codexSlashCommandsQuery = useSlashCommandsQuery(slashCommandCatalogWorktreeId, "codex", {
+    enabled: codexSlashCommandCatalogEnabled,
+  });
+  const cursorSlashCommandsQuery = useSlashCommandsQuery(slashCommandCatalogWorktreeId, "cursor", {
+    enabled: cursorSlashCommandCatalogEnabled,
+  });
+  const opencodeSlashCommandsQuery = useSlashCommandsQuery(slashCommandCatalogWorktreeId, "opencode", {
+    enabled: opencodeSlashCommandCatalogEnabled,
+  });
+  const composerSlashCommands = chat.composerAgent === "codex"
+    ? (codexSlashCommandsQuery.data?.commands ?? [])
+    : chat.composerAgent === "cursor"
+      ? (cursorSlashCommandsQuery.data?.commands ?? [])
+      : chat.composerAgent === "opencode"
+        ? (opencodeSlashCommandsQuery.data?.commands ?? [])
+        : (claudeSlashCommandsQuery.data?.commands ?? []);
+  const composerSlashCommandsLoading = chat.composerAgent === "codex"
+    ? codexSlashCommandsQuery.isLoading
+    : chat.composerAgent === "cursor"
+      ? cursorSlashCommandsQuery.isLoading
+      : chat.composerAgent === "opencode"
+        ? opencodeSlashCommandsQuery.isLoading
+        : claudeSlashCommandsQuery.isLoading;
+  useEffect(() => {
+    if (!shouldAutoLoadAllWorkspaceAgentCatalogs({
+      enableNonCriticalWorkspaceData: slashCommandCatalogsEnabled,
+      loadAllAgentCatalogs: loadAllSlashCommandCatalogs,
+    })) {
+      return;
+    }
+
+    setLoadAllSlashCommandCatalogs(true);
+  }, [loadAllSlashCommandCatalogs, slashCommandCatalogsEnabled]);
   pushStartupRenderProfileSection("chat-session");
   const selectedThreadIdForLiveStatus = chat.selectedThreadIdForData ?? chat.selectedThreadId;
   const previousLiveScopeSelectionRef = useRef<WorkspaceLiveScopeSelection | null>(null);
@@ -3727,6 +3793,8 @@ export function WorkspacePage() {
                       worktreeId={repos.selectedWorktreeId}
                       mode={chat.composerMode}
                       modeLocked={chat.composerModeLocked}
+                      slashCommands={slashCommandCatalogWorktreeId ? composerSlashCommands : undefined}
+                      slashCommandsLoading={slashCommandCatalogWorktreeId ? composerSlashCommandsLoading : undefined}
                       providers={modelProviders}
                       claudeModels={claudeModels}
                       codexModels={codexModels}
