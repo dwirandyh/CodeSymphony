@@ -7,9 +7,9 @@ import {
   type SlashCommandCatalog,
 } from "@codesymphony/shared-types";
 import { createPersistentExpiringCache } from "../persistentExpiringCache.js";
-import { resolveCodexSkillCatalogCacheVersion } from "./codexSkills.js";
+import { resolveSlashCommandCatalogCacheVersion } from "./slashCommandCatalogVersion.js";
 
-const SLASH_COMMAND_CATALOG_CACHE_TTL_MS = 3 * 24 * 60 * 60_000;
+const SLASH_COMMAND_CATALOG_CACHE_TTL_MS = 60 * 60_000;
 
 type SlashCommandCatalogLoaderParams = {
   worktreeId: string;
@@ -31,12 +31,6 @@ function resolveSlashCommandCatalogCachePath(worktreePath: string, agent: CliAge
     .update(worktreePath)
     .digest("hex");
   return path.join(resolveSlashCommandCatalogCacheDir(), agent, `${worktreeHash}.json`);
-}
-
-function resolveSlashCommandCatalogCacheVersion(worktreePath: string, agent: CliAgent): string | null {
-  return agent === "codex" || agent === "cursor"
-    ? resolveCodexSkillCatalogCacheVersion(worktreePath)
-    : null;
 }
 
 export function createSlashCommandCatalogCacheManager(params: {
