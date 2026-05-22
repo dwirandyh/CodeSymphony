@@ -1,10 +1,11 @@
 import type { ComponentProps } from "react";
-import { ArrowUp, ChevronDown, Plus, SlidersHorizontal, Zap } from "lucide-react";
+import { ArrowUp, ChevronDown, Menu, Plus, SlidersHorizontal, Zap } from "lucide-react";
 import type { ChatThread, Repository } from "@codesymphony/shared-types";
 import { StartupSplash } from "../components/startup/StartupSplash";
 import { StartupStatusBanner } from "../components/startup/StartupStatusBanner";
 import type { WorkspaceStartupRuntimeState } from "../components/startup/workspaceStartupState";
 import { BottomPanel } from "../components/workspace/BottomPanel";
+import { MobileActionBar } from "../components/workspace/MobileActionBar";
 import { WorkspaceEmptyState } from "../components/workspace/WorkspaceEmptyState";
 import { WorkspaceHeader, type WorkspaceFileTab } from "../components/workspace/WorkspaceHeader";
 import type { StartupShellSnapshot } from "../lib/startupShellSnapshot";
@@ -41,6 +42,30 @@ function resolveSelectedTabLabel(params: {
   }
 
   return params.snapshot.threadTitle ?? "Chat";
+}
+
+function resolveMobileTitle(params: {
+  activeView: WorkspaceSearch["view"] | undefined;
+  filePath?: string;
+  snapshot: StartupShellSnapshot;
+}) {
+  return resolveSelectedTabLabel(params);
+}
+
+function resolveMobileSubtitle(snapshot: StartupShellSnapshot) {
+  if (!snapshot.repoName) {
+    return "No repository selected";
+  }
+
+  return `${snapshot.repoName} · ${snapshot.worktreeBranch ?? "No worktree"}`;
+}
+
+function FilledPlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <path fill="currentColor" d="M4 2.5v11l9-5.5-9-5.5z" />
+    </svg>
+  );
 }
 
 const FALLBACK_TIMESTAMP = "2026-05-21T00:00:00.000Z";
@@ -155,6 +180,21 @@ function buildFallbackFileTabs(filePath?: string): WorkspaceFileTab[] {
   }];
 }
 
+function resolveMobileActionSection(params: {
+  activeView: WorkspaceSearch["view"] | undefined;
+  panel: WorkspaceSearch["panel"] | undefined;
+}): "chat" | "files" | "git" | "more" {
+  if (params.activeView === "automations") {
+    return "more";
+  }
+
+  if (params.panel === "git") {
+    return "git";
+  }
+
+  return "chat";
+}
+
 function renderBottomPanelShell(snapshot: StartupShellSnapshot) {
   return (
     <div className="hidden lg:block">
@@ -170,6 +210,44 @@ function renderBottomPanelShell(snapshot: StartupShellSnapshot) {
         runScriptActive={false}
         runScriptSessionId={null}
       />
+    </div>
+  );
+}
+
+function renderMobileTopBarShell(params: {
+  mobileTitle: string;
+  mobileSubtitle: string;
+  runScriptDisabled: boolean;
+}) {
+  return (
+    <div
+      className="flex items-center gap-2.5 px-1.5 pb-1.5 pt-1.5 lg:hidden sm:px-2.5 sm:pt-2.5"
+      data-testid="workspace-mobile-top-bar-shell"
+    >
+      <button
+        type="button"
+        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-secondary/35 text-foreground transition-colors active:bg-secondary/60"
+        aria-label="Open repositories"
+      >
+        <Menu className="h-4 w-4" />
+      </button>
+      <div className="min-w-0 flex-1">
+        <h1 className="truncate text-[13px] font-semibold leading-5 tracking-wide text-foreground animate-pulse">
+          {params.mobileTitle}
+        </h1>
+        <p className="truncate text-[10px] leading-4 text-muted-foreground animate-pulse">
+          {params.mobileSubtitle}
+        </p>
+      </div>
+      <button
+        type="button"
+        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-secondary/35 text-foreground transition-colors active:bg-secondary/60 disabled:opacity-40"
+        aria-label="Run script"
+        title="Run script"
+        disabled={params.runScriptDisabled}
+      >
+        <FilledPlayIcon className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
@@ -394,6 +472,12 @@ export function WorkspacePageShellFallback({
     filePath,
     snapshot,
   });
+  const mobileTitle = resolveMobileTitle({
+    activeView,
+    filePath,
+    snapshot,
+  });
+  const mobileSubtitle = resolveMobileSubtitle(snapshot);
 
   return (
     <div className="h-full min-h-screen bg-background text-foreground">
@@ -431,6 +515,12 @@ export function WorkspacePageShellFallback({
             mobileReposOverlayOpen: false,
           })}
         >
+          {!desktopApp ? renderMobileTopBarShell({
+            mobileTitle,
+            mobileSubtitle,
+            runScriptDisabled: !snapshot.worktreeId,
+          }) : null}
+
           <div className={getWorkspaceHeaderContainerClassName({ activeView: activeView ?? "chat" })}>
             <WorkspaceHeader
               desktopApp={desktopApp}
@@ -479,6 +569,18 @@ export function WorkspacePageShellFallback({
                 selectedTabLabel,
               })}
             </section>
+
+            {!desktopApp && activeView !== "automations" ? (
+              <MobileActionBar
+                hasWorktree={!!snapshot.worktreeId}
+                gitChangeCount={0}
+                activeSection={resolveMobileActionSection({ activeView, panel })}
+                onShowChat={() => {}}
+                onOpenFiles={() => {}}
+                onOpenGit={() => {}}
+                onOpenMore={() => {}}
+              />
+            ) : null}
 
             {renderBottomPanelShell(snapshot)}
           </div>

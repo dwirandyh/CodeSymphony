@@ -2,7 +2,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 
-const distAssetsDir = path.resolve(process.cwd(), "dist/assets");
+const distDir = path.resolve(process.cwd(), "dist");
+const distAssetsDir = path.join(distDir, "assets");
 
 function findWorkspaceEntryAsset() {
   const assetFiles = readdirSync(distAssetsDir).filter((file) => file.endsWith(".js"));
@@ -11,9 +12,18 @@ function findWorkspaceEntryAsset() {
     return namedChunk;
   }
 
+  const indexHtmlPath = path.join(distDir, "index.html");
+  if (readdirSync(distDir).includes("index.html")) {
+    const indexHtml = readFileSync(indexHtmlPath, "utf-8");
+    const entryMatch = indexHtml.match(/<script[^>]+src="\/assets\/([^"]+\.js)"/u);
+    if (entryMatch?.[1]) {
+      return entryMatch[1];
+    }
+  }
+
   return assetFiles.find((file) => {
     const source = readFileSync(path.join(distAssetsDir, file), "utf-8");
-    return source.includes("Loading workspace shell...");
+    return source.includes("WorkspacePageShellFallback");
   }) ?? null;
 }
 

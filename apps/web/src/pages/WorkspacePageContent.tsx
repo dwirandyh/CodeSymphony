@@ -54,7 +54,7 @@ const ResourceMonitor = lazy(() =>
   import("../components/workspace/ResourceMonitor").then(m => ({ default: m.ResourceMonitor }))
 );
 const MobileActionBar = lazy(() =>
-  import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileActionBar }))
+  import("../components/workspace/MobileActionBar").then(m => ({ default: m.MobileActionBar }))
 );
 const MobileFilesSheet = lazy(() =>
   import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileFilesSheet }))

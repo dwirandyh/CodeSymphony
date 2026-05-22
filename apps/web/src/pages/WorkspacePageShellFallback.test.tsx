@@ -63,6 +63,16 @@ describe("WorkspacePageShellFallback", () => {
     expect(container.querySelector('[aria-label="Attach files"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Select permission mode"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Send message"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workspace-mobile-top-bar-shell"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Open repositories"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Run script"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Add session"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Choose session type"]')).not.toBeNull();
+    expect(container.querySelector('[data-mobile-action-bar="true"]')).not.toBeNull();
+    expect(container.textContent).toContain("Chat");
+    expect(container.textContent).toContain("Files");
+    expect(container.textContent).toContain("Git");
+    expect(container.textContent).toContain("More");
     expect(container.querySelector('[data-testid="bottom-panel-resize-handle"]')).not.toBeNull();
     expect(container.textContent).toContain("No setup output yet.");
     expect(container.querySelector('[title="Collapse panel"]')).not.toBeNull();
