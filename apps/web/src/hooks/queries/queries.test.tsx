@@ -21,6 +21,7 @@ import { useFileIndexQuery } from "./useFileIndexQuery";
 import { useWorktreeStatuses } from "./useWorktreeStatuses";
 import { useRepositoryBranches } from "./useRepositoryBranches";
 import { useRepositoryReviews } from "./useRepositoryReviews";
+import { useClaudeModels } from "./useClaudeModels";
 import { useCodexModels } from "./useCodexModels";
 import { useCursorModels } from "./useCursorModels";
 import { useOpencodeModels } from "./useOpencodeModels";
@@ -63,6 +64,7 @@ vi.mock("../../lib/api", () => ({
     getGitDiff: vi.fn().mockResolvedValue({ diff: "", summary: "" }),
     browseFilesystem: vi.fn().mockResolvedValue({ entries: [] }),
     getInstalledApps: vi.fn().mockResolvedValue([]),
+    listClaudeModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
     listCodexModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
     listCursorModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
     listOpencodeModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
@@ -150,8 +152,8 @@ function ThreadsToggleHarness({ worktreeId }: { worktreeId: string | null }) {
   );
 }
 
-function GitStatusToggleHarness({ worktreeId }: { worktreeId: string | null }) {
-  const gitStatus = useGitStatus(worktreeId);
+function GitStatusToggleHarness({ worktreeId, enabled = true }: { worktreeId: string | null; enabled?: boolean }) {
+  const gitStatus = useGitStatus(worktreeId, { enabled });
   return (
     <div data-testid="result">
       branch:{gitStatus.data?.branch ?? "none"}
@@ -180,6 +182,7 @@ function SharedThreadSnapshotHarness({ enabled = true }: { enabled?: boolean }) 
 
 function DeferredNonCriticalHooksHarness() {
   useInstalledApps({ enabled: false });
+  useClaudeModels({ enabled: false });
   useCodexModels({ enabled: false });
   useCursorModels({ enabled: false });
   useOpencodeModels({ enabled: false });
@@ -1021,6 +1024,52 @@ describe("query hooks", () => {
     expect(container.textContent).toContain("branch:main");
   });
 
+  it("useGitStatus reuses cached query data for the same worktree while live refresh is disabled", async () => {
+    queryClient.setQueryData(queryKeys.worktrees.gitStatus("wt-1"), [{
+      worktreeId: "wt-1",
+      branch: "cached-branch",
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+      entries: [{
+        path: "src/cached.ts",
+        status: "modified",
+        insertions: 1,
+        deletions: 0,
+      }],
+    }]);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <GitStatusToggleHarness worktreeId="wt-1" enabled={false} />
+        </QueryClientProvider>
+      );
+    });
+
+    expect(container.textContent).toContain("branch:cached-branch");
+    expect(container.textContent).toContain("loading:false");
+    expect(vi.mocked(api.getGitStatus)).not.toHaveBeenCalled();
+
+    act(() => {
+      queryClient.setQueryData(queryKeys.worktrees.gitStatus("wt-1"), [{
+        worktreeId: "wt-1",
+        branch: "fresh-branch",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        entries: [{
+          path: "src/fresh.ts",
+          status: "modified",
+          insertions: 2,
+          deletions: 0,
+        }],
+      }]);
+    });
+
+    expect(container.textContent).toContain("branch:fresh-branch");
+  });
+
   it("useGitBranchDiffSummary renders", () => {
     renderHook(useGitBranchDiffSummary as (...a: unknown[]) => unknown, ["wt-1", "main"]);
     expect(container.textContent).toBe("ok");
@@ -1057,6 +1106,7 @@ describe("query hooks", () => {
 
     expect(container.textContent).toBe("ok");
     expect(api.getInstalledApps).not.toHaveBeenCalled();
+    expect(api.listClaudeModels).not.toHaveBeenCalled();
     expect(api.listCodexModels).not.toHaveBeenCalled();
     expect(api.listCursorModels).not.toHaveBeenCalled();
     expect(api.listOpencodeModels).not.toHaveBeenCalled();

@@ -3,7 +3,7 @@ import type { FileEntry, SaveAutomationConfig } from "@codesymphony/shared-types
 import { useQueryClient } from "@tanstack/react-query";
 import type { WorkspaceFileTab } from "../../../components/workspace/WorkspaceHeader";
 import { buildQuickFileItems, filterQuickFileItems } from "../../../components/workspace/quickFilePickerUtils";
-import { requestGitStatusLiveRefresh } from "../../../hooks/queries/useGitStatus";
+import { markWorktreeGitStatusChanged } from "../../../hooks/queries/useGitStatus";
 import { api } from "../../../lib/api";
 import { parseFileLocation, resolveWorktreeRelativePath } from "../../../lib/worktree";
 import type { WorkspaceSearch } from "../../../routes/index";
@@ -955,8 +955,10 @@ export function useWorkspaceFileEditor({
         loaded: true,
         error: null,
       }));
-      requestGitStatusLiveRefresh(queryClient, selectedWorktreeId);
-      void queryClient.invalidateQueries({ queryKey: ["worktrees", selectedWorktreeId, "gitBranchDiffSummary"] });
+      markWorktreeGitStatusChanged(queryClient, selectedWorktreeId, {
+        cause: "file_saved",
+        invalidateBranchDiffSummary: true,
+      });
       scheduleSaveAutomation(selectedWorktreeId, activeFilePath, selectedWorktreePath);
       onError(null);
     } catch (error) {

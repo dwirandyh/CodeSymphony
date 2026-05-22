@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Repository, ScriptResult, Worktree } from "@codesymphony/shared-types";
 import { useQueryClient } from "@tanstack/react-query";
-import { requestGitStatusLiveRefresh } from "../../../hooks/queries/useGitStatus";
+import { markWorktreeGitStatusChanged } from "../../../hooks/queries/useGitStatus";
 import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { measureStartupMetricSinceBoot } from "../../../lib/startupPerf";
@@ -96,7 +96,9 @@ export function useRepositoryManager(
 ) {
   const queryClient = useQueryClient();
   const invalidateGitStatus = (worktreeId: string) => {
-    requestGitStatusLiveRefresh(queryClient, worktreeId);
+    markWorktreeGitStatusChanged(queryClient, worktreeId, {
+      cause: "repository_script_activity",
+    });
   };
   const {
     data: repositories = [],

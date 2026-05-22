@@ -24,10 +24,10 @@ const invalidateQueriesMock = vi.fn();
 const cancelQueriesMock = vi.fn();
 
 const {
-  requestGitStatusLiveRefreshMock,
+  markWorktreeGitStatusChangedMock,
   requestRepositoryReviewsLiveRefreshMock,
 } = vi.hoisted(() => ({
-  requestGitStatusLiveRefreshMock: vi.fn(),
+  markWorktreeGitStatusChangedMock: vi.fn(),
   requestRepositoryReviewsLiveRefreshMock: vi.fn(),
 }));
 
@@ -101,7 +101,7 @@ vi.mock("../../../../lib/api", () => ({
 }));
 
 vi.mock("../../../../hooks/queries/useGitStatus", () => ({
-  requestGitStatusLiveRefresh: requestGitStatusLiveRefreshMock,
+  markWorktreeGitStatusChanged: markWorktreeGitStatusChangedMock,
 }));
 
 vi.mock("../../../../hooks/queries/useRepositoryReviews", () => ({
@@ -265,7 +265,7 @@ beforeEach(() => {
   invalidateQueriesMock.mockReset();
   cancelQueriesMock.mockReset();
   cancelQueriesMock.mockResolvedValue(undefined);
-  requestGitStatusLiveRefreshMock.mockReset();
+  markWorktreeGitStatusChangedMock.mockReset();
   requestRepositoryReviewsLiveRefreshMock.mockReset();
   getThreadStatusSnapshotMock.mockReset();
   getThreadStatusSnapshotMock.mockResolvedValue({ status: "idle", newestIdx: null });
@@ -700,7 +700,9 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(requestGitStatusLiveRefreshMock).toHaveBeenCalledWith(queryClient, "wt-1");
+    expect(markWorktreeGitStatusChangedMock).toHaveBeenCalledWith(queryClient, "wt-1", {
+      cause: "thread_activity",
+    });
     expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitStatus("wt-1") });
   });
 

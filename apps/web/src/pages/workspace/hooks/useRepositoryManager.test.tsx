@@ -6,7 +6,7 @@ import type { Repository } from "@codesymphony/shared-types";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useRepositoryManager } from "./useRepositoryManager";
 
-const mockRequestGitStatusLiveRefresh = vi.fn();
+const mockMarkWorktreeGitStatusChanged = vi.fn();
 const mockCreateRepoMutateAsync = vi.fn();
 const mockCreateWorktreeMutateAsync = vi.fn().mockResolvedValue({
   worktree: {
@@ -107,7 +107,7 @@ vi.mock("../../../hooks/mutations/useUpdateWorktreeBaseBranch", () => ({
 }));
 
 vi.mock("../../../hooks/queries/useGitStatus", () => ({
-  requestGitStatusLiveRefresh: (...args: unknown[]) => mockRequestGitStatusLiveRefresh(...args),
+  markWorktreeGitStatusChanged: (...args: unknown[]) => mockMarkWorktreeGitStatusChanged(...args),
 }));
 
 vi.mock("../../../lib/startupPerf", () => ({
@@ -701,7 +701,9 @@ describe("useRepositoryManager", () => {
         await hookResult.stopSetup();
       });
       expect(api.stopSetupScript).toHaveBeenCalledWith("wt-feat");
-      expect(mockRequestGitStatusLiveRefresh).toHaveBeenCalledWith(queryClient, "wt-feat");
+      expect(mockMarkWorktreeGitStatusChanged).toHaveBeenCalledWith(queryClient, "wt-feat", {
+        cause: "repository_script_activity",
+      });
       expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
         { queryKey: ["worktrees", "wt-feat", "gitStatus"] },
       ]);
@@ -764,7 +766,9 @@ describe("useRepositoryManager", () => {
       expect(mockOptions.onScriptUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ worktreeId: "wt-feat", type: "setup", status: "completed" })
       );
-      expect(mockRequestGitStatusLiveRefresh).toHaveBeenCalledWith(queryClient, "wt-feat");
+      expect(mockMarkWorktreeGitStatusChanged).toHaveBeenCalledWith(queryClient, "wt-feat", {
+        cause: "repository_script_activity",
+      });
       expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
         { queryKey: ["worktrees", "wt-feat", "gitStatus"] },
       ]);
@@ -792,7 +796,9 @@ describe("useRepositoryManager", () => {
       });
       expect(mockClose).toHaveBeenCalled();
       expect(hookResult.setupRunning).toBe(false);
-      expect(mockRequestGitStatusLiveRefresh).toHaveBeenCalledWith(queryClient, "wt-feat");
+      expect(mockMarkWorktreeGitStatusChanged).toHaveBeenCalledWith(queryClient, "wt-feat", {
+        cause: "repository_script_activity",
+      });
       expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
         { queryKey: ["worktrees", "wt-feat", "gitStatus"] },
       ]);

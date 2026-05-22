@@ -56,7 +56,7 @@ import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "../snapshotInvalidationEventTypes";
 import { reduceStatusSnapshotWithEvent } from "../threadStatusSnapshotCache";
 import type { ThreadCompletionAttentionEvent } from "../useCompletionAttention";
-import { requestGitStatusLiveRefresh } from "../../../../hooks/queries/useGitStatus";
+import { markWorktreeGitStatusChanged } from "../../../../hooks/queries/useGitStatus";
 import { requestRepositoryReviewsLiveRefresh } from "../../../../hooks/queries/useRepositoryReviews";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
@@ -692,7 +692,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       if (selectedWorktreeId && GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {
-        requestGitStatusLiveRefresh(queryClient, selectedWorktreeId);
+        markWorktreeGitStatusChanged(queryClient, selectedWorktreeId, {
+          cause: "thread_activity",
+        });
       }
 
       if (payload.type === "chat.completed" || payload.type === "chat.failed") {

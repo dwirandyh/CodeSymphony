@@ -4,10 +4,22 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent, ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { queryKeys } from "../../../lib/queryKeys";
+import * as gitStatusQueryModule from "../../../hooks/queries/useGitStatus";
+import type { ThreadsByWorktreeSnapshot } from "../../../hooks/queries/useThreads";
 import { useBackgroundWorktreeStatusStream } from "./useBackgroundWorktreeStatusStream";
 
 const invalidateQueriesMock = vi.fn();
-const requestRepositoryReviewsLiveRefreshMock = vi.fn();
+const {
+  markWorktreeGitStatusChangedMock,
+  requestRepositoryReviewsLiveRefreshMock,
+  patchThreadInCollectionMock,
+  refetchThreadsCollectionMock,
+} = vi.hoisted(() => ({
+  markWorktreeGitStatusChangedMock: vi.fn(),
+  requestRepositoryReviewsLiveRefreshMock: vi.fn(),
+  patchThreadInCollectionMock: vi.fn(),
+  refetchThreadsCollectionMock: vi.fn(),
+}));
 
 
 class MockEventSource {
@@ -79,6 +91,27 @@ vi.mock("../../../hooks/queries/useRepositoryReviews", () => ({
   requestRepositoryReviewsLiveRefresh: (...args: unknown[]) => requestRepositoryReviewsLiveRefreshMock(...args),
 }));
 
+vi.mock("../../../collections/threads", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../collections/threads")>();
+
+  return {
+    ...actual,
+    patchThreadInCollection: (
+      client: QueryClient,
+      worktreeId: string,
+      threadId: string,
+      patch: Partial<ChatThread>,
+    ) => {
+      patchThreadInCollectionMock(client, worktreeId, threadId, patch);
+      client.setQueryData<ChatThread[]>(
+        queryKeys.threads.list(worktreeId),
+        (current = []) => current.map((thread) => thread.id === threadId ? { ...thread, ...patch } : thread),
+      );
+    },
+    refetchThreadsCollection: (...args: unknown[]) => refetchThreadsCollectionMock(...args),
+  };
+});
+
 let originalEventSource: typeof EventSource | undefined;
 let container: HTMLDivElement;
 let root: Root;
@@ -148,12 +181,44 @@ function makeEvent(overrides: Partial<ChatEvent> & Pick<ChatEvent, "id" | "threa
   };
 }
 
-function HookHarness({ repositories, selectedWorktreeId, selectedThreadId }: { repositories: Repository[]; selectedWorktreeId: string | null; selectedThreadId: string | null }) {
-  useBackgroundWorktreeStatusStream(repositories, selectedWorktreeId, selectedThreadId);
+function buildThreadSnapshot(repositories: Repository[]): ThreadsByWorktreeSnapshot {
+  const threadsByWorktreeId: Record<string, ChatThread[]> = {};
+  const threadIds: string[] = [];
+
+  for (const repository of repositories) {
+    for (const worktree of repository.worktrees) {
+      const threads = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list(worktree.id)) ?? [];
+      threadsByWorktreeId[worktree.id] = threads;
+      for (const thread of threads) {
+        threadIds.push(thread.id);
+      }
+    }
+  }
+
+  return {
+    threadsByWorktreeId,
+    threadIds,
+    isLoading: false,
+  };
+}
+
+function HookHarness({
+  repositories,
+  selectedWorktreeId,
+  selectedThreadId,
+  threadSnapshot,
+}: {
+  repositories: Repository[];
+  selectedWorktreeId: string | null;
+  selectedThreadId: string | null;
+  threadSnapshot: ThreadsByWorktreeSnapshot;
+}) {
+  useBackgroundWorktreeStatusStream(repositories, selectedWorktreeId, selectedThreadId, threadSnapshot);
   return null;
 }
 
 function renderHook(repositories: Repository[], selectedWorktreeId: string | null, selectedThreadId: string | null) {
+  const threadSnapshot = buildThreadSnapshot(repositories);
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -161,6 +226,7 @@ function renderHook(repositories: Repository[], selectedWorktreeId: string | nul
           repositories={repositories}
           selectedWorktreeId={selectedWorktreeId}
           selectedThreadId={selectedThreadId}
+          threadSnapshot={threadSnapshot}
         />
       </QueryClientProvider>,
     );
@@ -175,7 +241,10 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false } },
   });
   invalidateQueriesMock.mockReset();
+  markWorktreeGitStatusChangedMock.mockReset();
   requestRepositoryReviewsLiveRefreshMock.mockReset();
+  patchThreadInCollectionMock.mockReset();
+  refetchThreadsCollectionMock.mockReset();
   originalEventSource = globalThis.EventSource;
   vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
   MockEventSource.instances = [];
@@ -184,6 +253,9 @@ beforeEach(() => {
   listThreadsMock.mockResolvedValue([]);
   getThreadStatusSnapshotMock.mockResolvedValue(makeStatusSnapshot());
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
+  vi.spyOn(gitStatusQueryModule, "markWorktreeGitStatusChanged").mockImplementation((...args) => {
+    markWorktreeGitStatusChangedMock(...args);
+  });
 });
 
 afterEach(() => {
@@ -193,6 +265,7 @@ afterEach(() => {
   if (originalEventSource) {
     globalThis.EventSource = originalEventSource;
   }
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 

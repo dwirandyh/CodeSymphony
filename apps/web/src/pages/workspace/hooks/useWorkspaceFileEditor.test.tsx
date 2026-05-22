@@ -6,7 +6,7 @@ import type { SaveAutomationConfig } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
 import { useWorkspaceFileEditor } from "./useWorkspaceFileEditor";
 
-const mockRequestGitStatusLiveRefresh = vi.fn();
+const mockMarkWorktreeGitStatusChanged = vi.fn();
 
 vi.mock("../../../lib/api", () => ({
   api: {
@@ -18,7 +18,7 @@ vi.mock("../../../lib/api", () => ({
 }));
 
 vi.mock("../../../hooks/queries/useGitStatus", () => ({
-  requestGitStatusLiveRefresh: (...args: unknown[]) => mockRequestGitStatusLiveRefresh(...args),
+  markWorktreeGitStatusChanged: (...args: unknown[]) => mockMarkWorktreeGitStatusChanged(...args),
 }));
 
 let container: HTMLDivElement;
@@ -228,7 +228,7 @@ describe("useWorkspaceFileEditor", () => {
     }
   });
 
-  it("requests git status live refresh instead of invalidating git status directly after saving", async () => {
+  it("marks worktree git status changed instead of invalidating git status directly after saving", async () => {
     vi.mocked(api.getWorktreeFileContent).mockResolvedValue({
       path: "src/example.ts",
       content: "export const value = 1;\n",
@@ -258,7 +258,10 @@ describe("useWorkspaceFileEditor", () => {
       await hookResult.handleSaveActiveFile();
     });
 
-    expect(mockRequestGitStatusLiveRefresh).toHaveBeenCalledWith(queryClient, "worktree-1");
+    expect(mockMarkWorktreeGitStatusChanged).toHaveBeenCalledWith(queryClient, "worktree-1", {
+      cause: "file_saved",
+      invalidateBranchDiffSummary: true,
+    });
     expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
       { queryKey: ["worktrees", "worktree-1", "gitStatus"] },
     ]);

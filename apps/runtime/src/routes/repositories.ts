@@ -23,6 +23,7 @@ import {
   getCachedWorktreeGitStatus,
   invalidateCachedWorktreeGitData,
 } from "../services/worktreeGitQueryCache.js";
+import { publishWorktreeActivity, WORKTREE_ACTIVITY } from "../services/worktreeActivity.js";
 import { appendRuntimeDebugLog } from "./debug.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
@@ -580,10 +581,10 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     try {
       const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, input.path);
       await writeFile(canonicalTargetPath, input.content, "utf8");
-      invalidateCachedWorktreeGitData(worktree.id);
-      app.workspaceEventHub.emit("worktree.updated", {
-        repositoryId: worktree.repositoryId,
-        worktreeId: worktree.id,
+      publishWorktreeActivity({
+        workspaceEventHub: app.workspaceEventHub,
+        worktree,
+        activity: WORKTREE_ACTIVITY.FILE_SAVED,
       });
       return {
         data: {
@@ -727,10 +728,10 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       }
 
       const result = await gitCommitAll(worktree.path, finalMessage);
-      invalidateCachedWorktreeGitData(worktree.id);
-      app.workspaceEventHub.emit("worktree.updated", {
-        repositoryId: worktree.repositoryId,
-        worktreeId: worktree.id,
+      publishWorktreeActivity({
+        workspaceEventHub: app.workspaceEventHub,
+        worktree,
+        activity: WORKTREE_ACTIVITY.GIT_COMMITTED,
       });
       return { data: { result } };
     } catch (error) {
@@ -752,10 +753,10 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       const result = await syncCurrentBranch(worktree.path);
-      invalidateCachedWorktreeGitData(worktree.id);
-      app.workspaceEventHub.emit("worktree.updated", {
-        repositoryId: worktree.repositoryId,
-        worktreeId: worktree.id,
+      publishWorktreeActivity({
+        workspaceEventHub: app.workspaceEventHub,
+        worktree,
+        activity: WORKTREE_ACTIVITY.GIT_SYNCED,
       });
       return { data: result };
     } catch (error) {
@@ -781,10 +782,10 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       await discardGitChange(worktree.path, filePath);
-      invalidateCachedWorktreeGitData(worktree.id);
-      app.workspaceEventHub.emit("worktree.updated", {
-        repositoryId: worktree.repositoryId,
-        worktreeId: worktree.id,
+      publishWorktreeActivity({
+        workspaceEventHub: app.workspaceEventHub,
+        worktree,
+        activity: WORKTREE_ACTIVITY.GIT_DISCARDED,
       });
       return reply.code(204).send();
     } catch (error) {

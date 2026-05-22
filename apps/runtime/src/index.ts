@@ -30,7 +30,6 @@ import { createWorktreeDeletionService } from "./services/worktreeDeletionServic
 import { createAutomationService } from "./services/automationService.js";
 import { createResourceMonitorService } from "./services/resourceMonitorService.js";
 import { createResourceMonitorSessionTracker } from "./services/resourceMonitorSessionTracker.js";
-import { invalidateCachedWorktreeGitData } from "./services/worktreeGitQueryCache.js";
 import { createWorktreeWatchService } from "./services/worktreeWatchService.js";
 import { createWorkspaceLiveUpdateService } from "./services/workspaceLiveUpdateService.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
@@ -139,9 +138,6 @@ function createApp() {
     }),
     onFilesChanged(worktree) {
       fileService.invalidateCache(worktree.path);
-    },
-    onGitChanged(worktree) {
-      invalidateCachedWorktreeGitData(worktree.id);
     },
   });
   worktreeWatchService.start();

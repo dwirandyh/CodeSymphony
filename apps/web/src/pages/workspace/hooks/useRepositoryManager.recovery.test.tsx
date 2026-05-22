@@ -23,7 +23,7 @@ vi.mock("../../../lib/api", () => ({
 }));
 
 vi.mock("../../../hooks/queries/useGitStatus", () => ({
-  requestGitStatusLiveRefresh: vi.fn(),
+  markWorktreeGitStatusChanged: vi.fn(),
 }));
 
 vi.mock("../../../hooks/mutations/useCreateRepository", () => ({

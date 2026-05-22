@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { WorktreeStatus } from "@codesymphony/shared-types";
 import type { WorkspaceSyncEventHub } from "../types.js";
+import { publishWorktreeActivity, WORKTREE_ACTIVITY } from "./worktreeActivity.js";
 
 const execFile = promisify(execFileRaw);
 
@@ -111,18 +112,28 @@ export function createWorktreeWatchService(options: {
     }
 
     if (pending.filesDirty) {
-      options.onFilesChanged?.(activeWatch.worktree);
-      options.workspaceEventHub.emit("worktree.files.updated", {
-        repositoryId: activeWatch.worktree.repositoryId,
-        worktreeId: activeWatch.worktree.id,
+      publishWorktreeActivity({
+        workspaceEventHub: options.workspaceEventHub,
+        worktree: activeWatch.worktree,
+        activity: WORKTREE_ACTIVITY.WATCHER_FILES_CHANGED,
+        onFilesChanged: () => {
+          options.onFilesChanged?.(activeWatch.worktree);
+        },
+        onGitChanged: () => {
+          options.onGitChanged?.(activeWatch.worktree);
+        },
       });
+      return;
     }
 
     if (pending.gitDirty) {
-      options.onGitChanged?.(activeWatch.worktree);
-      options.workspaceEventHub.emit("worktree.git.updated", {
-        repositoryId: activeWatch.worktree.repositoryId,
-        worktreeId: activeWatch.worktree.id,
+      publishWorktreeActivity({
+        workspaceEventHub: options.workspaceEventHub,
+        worktree: activeWatch.worktree,
+        activity: WORKTREE_ACTIVITY.WATCHER_GIT_CHANGED,
+        onGitChanged: () => {
+          options.onGitChanged?.(activeWatch.worktree);
+        },
       });
     }
   }
