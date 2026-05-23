@@ -193,4 +193,20 @@ describe("workspacePersistence", () => {
     expect(collection.toArray).toHaveLength(1);
     expect(collection.toArray[0]).toMatchObject({ id: "workspace-shell" });
   });
+
+  it("preserves initialData for local-only collections when persistence is disabled", async () => {
+    const { createCollection } = await import("@tanstack/db");
+    const { withWorkspaceCollectionPersistence } = await import("./workspacePersistence");
+
+    const collection = createCollection(withWorkspaceCollectionPersistence({
+      id: "workspace-shell-state",
+      getKey: (row: { id: string }) => row.id,
+      initialData: [{ id: "workspace-shell", title: "Restored" }],
+    }, {
+      schemaVersion: 1,
+    }));
+
+    expect(collection.toArray).toHaveLength(1);
+    expect(collection.toArray[0]).toMatchObject({ id: "workspace-shell", title: "Restored" });
+  });
 });

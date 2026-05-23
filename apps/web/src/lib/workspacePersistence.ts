@@ -1,4 +1,9 @@
-import { localOnlyCollectionOptions, type CollectionConfig, type UtilsRecord } from "@tanstack/db";
+import {
+  localOnlyCollectionOptions,
+  type CollectionConfig,
+  type LocalOnlyCollectionConfig,
+  type UtilsRecord,
+} from "@tanstack/db";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import { isTauriDesktop } from "./openExternalUrl";
 
@@ -16,12 +21,9 @@ type PersistedCollectionOptionsFn = (...args: any[]) => unknown;
 
 type WorkspaceLocalOnlyCollectionOptions<
   TItem extends object = Record<string, unknown>,
-  TKey extends string | number = string | number,
   TSchema extends StandardSchemaV1 = never,
-> = Omit<CollectionConfig<TItem, TKey, TSchema, UtilsRecord>, "sync" | "utils"> & {
-  sync?: never;
-  utils?: never;
-};
+  TKey extends string | number = string | number,
+> = LocalOnlyCollectionConfig<TItem, TSchema, TKey>;
 
 type WorkspacePersistenceMode = "browser" | "desktop" | "disabled";
 
@@ -157,18 +159,18 @@ export async function initializeWorkspacePersistence(options?: InitializeWorkspa
   return await workspacePersistenceInitPromise;
 }
 
+export function withWorkspaceCollectionPersistence<
+  TItem extends object,
+  TSchema extends StandardSchemaV1 = never,
+  TKey extends string | number = string | number,
+>(
+  options: WorkspaceLocalOnlyCollectionOptions<TItem, TSchema, TKey>,
+  params: { schemaVersion: number },
+): CollectionConfig<TItem, TKey, TSchema, UtilsRecord> & { id: string };
 export function withWorkspaceCollectionPersistence<TOptions extends CollectionConfig<any, any, any, any>>(
   options: TOptions,
   params: { schemaVersion: number },
 ): TOptions;
-export function withWorkspaceCollectionPersistence<
-  TItem extends object,
-  TKey extends string | number,
-  TSchema extends StandardSchemaV1 = never,
->(
-  options: WorkspaceLocalOnlyCollectionOptions<TItem, TKey, TSchema>,
-  params: { schemaVersion: number },
-): CollectionConfig<TItem, TKey, TSchema, UtilsRecord> & { id: string };
 export function withWorkspaceCollectionPersistence<TOptions extends WorkspacePersistableCollectionOptions>(
   options: TOptions,
   params: { schemaVersion: number },
@@ -178,10 +180,7 @@ export function withWorkspaceCollectionPersistence<TOptions extends WorkspacePer
   }
 
   if (!options.sync) {
-    return localOnlyCollectionOptions({
-      ...(options as WorkspaceLocalOnlyCollectionOptions),
-      initialData: [],
-    });
+    return localOnlyCollectionOptions(options as any);
   }
 
   return options;

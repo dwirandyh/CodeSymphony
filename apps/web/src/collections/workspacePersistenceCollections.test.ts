@@ -168,12 +168,13 @@ describe("workspace-persisted collections", () => {
       toArray: [],
       update: vi.fn(),
     }));
+    const localStorageCollectionOptions = vi.fn((options) => options);
     const withWorkspaceCollectionPersistence = vi.fn((options) => ({
       ...options,
       persisted: true,
     }));
 
-    vi.doMock("@tanstack/db", () => ({ createCollection }));
+    vi.doMock("@tanstack/db", () => ({ createCollection, localStorageCollectionOptions }));
     vi.doMock("../lib/workspacePersistence", () => ({ withWorkspaceCollectionPersistence }));
 
     const { getWorkspaceShellStateCollection, resetWorkspaceShellStateCollectionForTest } = await import("./workspaceShellState");

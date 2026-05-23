@@ -1724,8 +1724,11 @@ export function useChatSession(
       selectedThreadId != null
       && (sendingMessage || waitingAssistant?.threadId === selectedThreadId);
     const shouldPreferAuthoritativeRunningStatus =
-      localPendingPlanAwaitingDecision
-      && authoritativeStatusSnapshotUiStatus === "running";
+      authoritativeStatusSnapshotUiStatus === "running"
+      && (
+        localPendingPlanAwaitingDecision
+        || shouldPreferAuthoritativePendingStatus
+      );
 
     if (hasPendingPermissionRequests || hasPendingQuestionRequests) {
       return "waiting_approval";

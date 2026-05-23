@@ -1,5 +1,6 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DevicePanel } from "./DevicePanel";
 
@@ -50,11 +51,27 @@ vi.mock("../../pages/workspace/hooks/useDevices", () => ({
 
 let container: HTMLDivElement;
 let root: Root;
+let queryClient: QueryClient;
+
+function renderDevicePanel(onClose: () => void) {
+  root.render(
+    <QueryClientProvider client={queryClient}>
+      <DevicePanel onClose={onClose} />
+    </QueryClientProvider>,
+  );
+}
 
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  });
   vi.clearAllMocks();
   supportsAndroidNativeViewerMock.mockReturnValue(true);
   useDevicesMock.mockImplementation(() => ({
@@ -108,13 +125,14 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  queryClient.clear();
   container.remove();
 });
 
 describe("DevicePanel", () => {
   it("renders the selected device summary and opens the custom device picker overlay", async () => {
     act(() => {
-      root.render(<DevicePanel onClose={() => {}} />);
+      renderDevicePanel(() => {});
     });
 
     expect(container.textContent).toContain("Devices");
@@ -138,7 +156,7 @@ describe("DevicePanel", () => {
     supportsAndroidNativeViewerMock.mockReturnValue(false);
 
     act(() => {
-      root.render(<DevicePanel onClose={() => {}} />);
+      renderDevicePanel(() => {});
     });
 
     const iframe = container.querySelector("iframe");
@@ -151,7 +169,7 @@ describe("DevicePanel", () => {
     const onClose = vi.fn();
 
     act(() => {
-      root.render(<DevicePanel onClose={onClose} />);
+      renderDevicePanel(onClose);
     });
 
     const button = container.querySelector('button[aria-label="Close Devices"]');
@@ -180,7 +198,7 @@ describe("DevicePanel", () => {
     });
 
     act(() => {
-      root.render(<DevicePanel onClose={() => {}} />);
+      renderDevicePanel(() => {});
     });
 
     expect(container.textContent).toContain("Scanning devices");
@@ -226,7 +244,7 @@ describe("DevicePanel", () => {
     }));
 
     await act(async () => {
-      root.render(<DevicePanel onClose={() => {}} />);
+      renderDevicePanel(() => {});
       await Promise.resolve();
     });
 
@@ -267,7 +285,7 @@ describe("DevicePanel", () => {
     }));
 
     await act(async () => {
-      root.render(<DevicePanel onClose={() => {}} />);
+      renderDevicePanel(() => {});
       await Promise.resolve();
     });
 
@@ -336,7 +354,7 @@ describe("DevicePanel", () => {
     }));
 
     await act(async () => {
-      root.render(<DevicePanel onClose={() => {}} />);
+      renderDevicePanel(() => {});
       await Promise.resolve();
     });
 
@@ -391,7 +409,7 @@ describe("DevicePanel", () => {
     }));
 
     await act(async () => {
-      root.render(<DevicePanel onClose={() => {}} />);
+      renderDevicePanel(() => {});
       await Promise.resolve();
     });
 
@@ -447,7 +465,7 @@ describe("DevicePanel", () => {
     }));
 
     await act(async () => {
-      root.render(<DevicePanel onClose={() => {}} />);
+      renderDevicePanel(() => {});
       await Promise.resolve();
     });
 

@@ -1,11 +1,11 @@
-import { createCollection, localStorageCollectionOptions } from "@tanstack/db";
+import { createCollection } from "@tanstack/db";
 import {
   readPersistedStartupShellSnapshot,
   saveStartupShellSnapshot,
-  STARTUP_SHELL_SNAPSHOT_STORAGE_KEY,
   WORKSPACE_SHELL_STATE_ROW_ID,
   type StartupShellSnapshot,
 } from "../lib/startupShellSnapshot";
+import { withWorkspaceCollectionPersistence } from "../lib/workspacePersistence";
 
 const WORKSPACE_SHELL_STATE_COLLECTION_ID = "workspace-shell-state";
 
@@ -21,11 +21,15 @@ function toWorkspaceShellStateRow(snapshot: StartupShellSnapshot): WorkspaceShel
 }
 
 function createWorkspaceShellStateCollection() {
+  const persistedSnapshot = readPersistedStartupShellSnapshot();
+
   return createCollection(
-    localStorageCollectionOptions<WorkspaceShellStateRow>({
+    withWorkspaceCollectionPersistence({
       id: WORKSPACE_SHELL_STATE_COLLECTION_ID,
-      storageKey: STARTUP_SHELL_SNAPSHOT_STORAGE_KEY,
-      getKey: (row) => row.id,
+      getKey: (row: WorkspaceShellStateRow) => row.id,
+      initialData: persistedSnapshot ? [toWorkspaceShellStateRow(persistedSnapshot)] : [],
+    }, {
+      schemaVersion: 1,
     }),
   );
 }
@@ -58,7 +62,6 @@ export function writeWorkspaceShellStateSnapshot(snapshot: StartupShellSnapshot 
   if (!snapshot) {
     if (existing) {
       collection.delete(existing.id);
-      return;
     }
     saveStartupShellSnapshot(null);
     return;
@@ -68,12 +71,14 @@ export function writeWorkspaceShellStateSnapshot(snapshot: StartupShellSnapshot 
 
   if (!existing) {
     collection.insert(nextRow);
+    saveStartupShellSnapshot(snapshot);
     return;
   }
 
   collection.update(existing.id, (draft) => {
     Object.assign(draft, nextRow);
   });
+  saveStartupShellSnapshot(snapshot);
 }
 
 export async function resetWorkspaceShellStateCollectionForTest() {

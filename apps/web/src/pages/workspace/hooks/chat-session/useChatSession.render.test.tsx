@@ -2683,6 +2683,28 @@ describe("useChatSession", () => {
     expect(hookResult.authoritativeThreadStatus).toBe("running");
   });
 
+  it("prefers authoritative running status while loading a background thread with no local activity", async () => {
+    threadsState.data = [{ ...makeThread("thread-a", false), title: "Background thread" }];
+    snapshotState.data = null;
+    snapshotState.isLoading = true;
+    snapshotState.isFetching = true;
+    statusSnapshotState.data = {
+      status: "running",
+      newestIdx: 4,
+    };
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadUiStatus).toBe("running");
+    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+    expect(hookResult.showStopAction).toBe(true);
+  });
+
   it("replaces stale local messages and events when the latest snapshot for the same thread is empty", () => {
     snapshotState.data = makeSnapshot({
       newestSeq: 1,
