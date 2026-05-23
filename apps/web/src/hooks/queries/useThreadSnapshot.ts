@@ -8,12 +8,14 @@ export function useThreadSnapshot(
   threadId: string | null,
   options?: {
     enabled?: boolean;
+    mode?: "full" | "compact";
   },
 ) {
   const enabled = options?.enabled ?? true;
+  const mode = options?.mode ?? "full";
   return useQuery({
-    queryKey: queryKeys.threads.timelineSnapshot(threadId!),
-    queryFn: () => api.getTimelineSnapshot(threadId!),
+    queryKey: queryKeys.threads.timelineSnapshot(threadId!, mode),
+    queryFn: () => api.getTimelineSnapshot(threadId!, { mode }),
     enabled: !!threadId && enabled,
     staleTime: THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS,
   });

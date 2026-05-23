@@ -11,6 +11,7 @@ export function createWorkspaceEventHub(): WorkspaceSyncEventHub {
     type: WorkspaceSyncEventType,
     payload: {
       repositoryId?: string | null;
+      automationId?: string | null;
       worktreeId?: string | null;
       threadId?: string | null;
     } = {},
@@ -21,6 +22,7 @@ export function createWorkspaceEventHub(): WorkspaceSyncEventHub {
       id: `workspace-${Date.now()}-${nextId}`,
       type,
       repositoryId: payload.repositoryId ?? null,
+      automationId: payload.automationId ?? null,
       worktreeId: payload.worktreeId ?? null,
       threadId: payload.threadId ?? null,
       createdAt: new Date().toISOString(),

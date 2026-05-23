@@ -4,6 +4,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../../lib/api";
 import { debugLog } from "../../../lib/debugLog";
 import { queryKeys } from "../../../lib/queryKeys";
+import { measureStartupMetricSinceBoot } from "../../../lib/startupPerf";
+import { startWorkspaceStartupBootstrap } from "../../../lib/workspaceStartupBootstrap";
+import { subscribeToWorkspaceSyncSocket } from "../../../lib/workspaceLiveSocket";
 import { refetchRepositoriesCollection } from "../../../collections/repositories";
 import {
   disposeThreadCollections,
@@ -15,10 +18,6 @@ import {
   removeThreadFromCollection,
 } from "../../../collections/threads";
 import { clearThreadStreamState } from "../../../collections/threadStreamState";
-
-const MAX_RECONNECT_ATTEMPTS = 8;
-const BASE_RECONNECT_DELAY_MS = 1000;
-
 function isDocumentForegrounded() {
   if (typeof document === "undefined") {
     return true;
@@ -83,18 +82,68 @@ async function refreshKnownThreadCaches(
   });
 }
 
-function revalidateWorkspaceState(queryClient: ReturnType<typeof useQueryClient>) {
+async function revalidateWorkspaceState(queryClient: ReturnType<typeof useQueryClient>) {
+  void startWorkspaceStartupBootstrap(queryClient).catch(() => {
+    // Recovery revalidation should still continue even when startup bootstrap cannot be refreshed.
+  });
+
   void refetchRepositoriesCollection(queryClient);
   void refetchAllThreadsCollections(queryClient);
+  void queryClient.invalidateQueries({ queryKey: ["automations"] });
   void queryClient.invalidateQueries({ queryKey: ["threads"] });
   void queryClient.invalidateQueries({ queryKey: ["worktrees"] });
 }
 
+function handleAutomationWorkspaceEvent(
+  queryClient: ReturnType<typeof useQueryClient>,
+  event: WorkspaceSyncEvent,
+) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.automations.lists });
+
+  if (!event.automationId) {
+    return;
+  }
+
+  if (event.type === "automation.deleted") {
+    queryClient.removeQueries({ queryKey: queryKeys.automations.detail(event.automationId) });
+    queryClient.removeQueries({ queryKey: queryKeys.automations.runs(event.automationId) });
+    queryClient.removeQueries({ queryKey: queryKeys.automations.versions(event.automationId) });
+    return;
+  }
+
+  void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(event.automationId) });
+
+  if (event.type === "automation.updated") {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.automations.versions(event.automationId) });
+    return;
+  }
+
+  if (event.type === "automation.run.updated") {
+    return;
+  }
+}
+
+function invalidateWorktreeFileQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  worktreeId: string,
+) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileIndex(worktreeId) });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileTreeScope(worktreeId) });
+  void queryClient.invalidateQueries({ queryKey: ["worktrees", worktreeId, "slashCommands"] });
+}
+
 function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, event: WorkspaceSyncEvent) {
   debugLog("thread.workspace.event", event.type, event);
+  // Hot domains with dedicated live owners refresh from their own streams.
+  // This coarse sync hook only maintains metadata and non-live derived queries.
 
-  if (event.repositoryId) {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(event.repositoryId) });
+  if (
+    event.type === "automation.created"
+    || event.type === "automation.updated"
+    || event.type === "automation.deleted"
+    || event.type === "automation.run.updated"
+  ) {
+    handleAutomationWorkspaceEvent(queryClient, event);
   }
 
   if (event.type === "repository.created" || event.type === "repository.updated" || event.type === "repository.deleted") {
@@ -118,15 +167,38 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
   if (
     event.worktreeId
     && (
+      event.type === "worktree.git.updated"
+      || event.type === "worktree.files.updated"
+    )
+  ) {
+    if (event.type === "worktree.git.updated") {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitDiffScope(event.worktreeId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitBranchDiffSummary(event.worktreeId, "__all__"), exact: false });
+    }
+  }
+
+  if (
+    event.worktreeId
+    && (
+      event.type === "worktree.updated"
+      || event.type === "worktree.files.updated"
+      || event.type === "worktree.deletion_started"
+      || event.type === "worktree.deletion_failed"
+    )
+  ) {
+    invalidateWorktreeFileQueries(queryClient, event.worktreeId);
+  }
+
+  if (
+    event.worktreeId
+    && (
       event.type === "worktree.updated"
       || event.type === "worktree.deletion_started"
       || event.type === "worktree.deletion_failed"
     )
   ) {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(event.worktreeId) });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileIndex(event.worktreeId) });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileTreeScope(event.worktreeId) });
-    void queryClient.invalidateQueries({ queryKey: ["worktrees", event.worktreeId, "slashCommands"] });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitDiffScope(event.worktreeId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitBranchDiffSummary(event.worktreeId, "__all__"), exact: false });
   }
 
   if (!event.threadId) {
@@ -160,99 +232,18 @@ export function useWorkspaceSyncStream() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    let disposed = false;
-    let stream: EventSource | null = null;
-    let reconnectAttempts = 0;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const clearReconnectTimer = () => {
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-    };
-
-    const closeStream = () => {
-      if (!stream) {
-        return;
-      }
-
-      stream.onopen = null;
-      stream.onmessage = null;
-      stream.onerror = null;
-      stream.close();
-      stream = null;
-    };
-
-    const scheduleReconnect = () => {
-      if (disposed || reconnectTimer !== null) {
-        return;
-      }
-
-      const attempt = reconnectAttempts + 1;
-      reconnectAttempts = attempt;
-
-      if (attempt > MAX_RECONNECT_ATTEMPTS) {
-        logWorkspaceSync("stream.reconnect.exhausted", {
-          attempt,
+    const unsubscribe = subscribeToWorkspaceSyncSocket({
+      onOpen() {
+        measureStartupMetricSinceBoot("startup.live_connected_ms", {
+          source: "workspace-sync-socket",
         });
-        return;
-      }
-
-      const delayMs = BASE_RECONNECT_DELAY_MS * Math.pow(2, Math.min(attempt - 1, 5));
-      logWorkspaceSync("stream.reconnect.scheduled", {
-        attempt,
-        delayMs,
-      });
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        startStream();
-      }, delayMs);
-    };
-
-    const startStream = () => {
-      if (disposed) {
-        return;
-      }
-
-      closeStream();
-      clearReconnectTimer();
-
-      const streamUrl = new URL(`${api.runtimeBaseUrl}/api/workspace/events/stream`);
-      const nextStream = new EventSource(streamUrl.toString());
-      stream = nextStream;
-      logWorkspaceSync("stream.connecting", {
-        reconnectAttempts,
-        url: streamUrl.toString(),
-      });
-
-      nextStream.onopen = () => {
-        reconnectAttempts = 0;
         logWorkspaceSync("stream.open", {});
-        revalidateWorkspaceState(queryClient);
-      };
-
-      nextStream.onmessage = (rawEvent) => {
-        try {
-          const payload = JSON.parse(rawEvent.data) as WorkspaceSyncEvent;
-          handleWorkspaceEvent(queryClient, payload);
-        } catch {
-          // Ignore malformed workspace sync events.
-        }
-      };
-
-      nextStream.onerror = () => {
-        if (disposed) {
-          return;
-        }
-
-        logWorkspaceSync("stream.error", {
-          readyState: nextStream.readyState,
-        });
-        closeStream();
-        scheduleReconnect();
-      };
-    };
+        void revalidateWorkspaceState(queryClient);
+      },
+      onEvent(payload) {
+        handleWorkspaceEvent(queryClient, payload);
+      },
+    });
 
     const handleVisibilityChange = () => {
       if (!isDocumentForegrounded()) {
@@ -265,15 +256,14 @@ export function useWorkspaceSyncStream() {
           ? null
           : document.hasFocus(),
       });
-      revalidateWorkspaceState(queryClient);
+      void revalidateWorkspaceState(queryClient);
     };
 
     const handleFocus = () => {
       logWorkspaceSync("foreground.revalidate.focus", {});
-      revalidateWorkspaceState(queryClient);
+      void revalidateWorkspaceState(queryClient);
     };
 
-    startStream();
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", handleVisibilityChange);
     }
@@ -282,9 +272,7 @@ export function useWorkspaceSyncStream() {
     }
 
     return () => {
-      disposed = true;
-      clearReconnectTimer();
-      closeStream();
+      unsubscribe();
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", handleVisibilityChange);
       }

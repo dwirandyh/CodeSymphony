@@ -2,7 +2,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { listCodexSkills, normalizeCodexSkillSlashCommandsForPrompt } from "../src/services/chat/codexSkills.js";
+import {
+  listCodexSkills,
+  normalizeCodexSkillSlashCommandsForPrompt,
+  resolveCodexSkillCatalogCacheVersion,
+} from "../src/services/chat/codexSkills.js";
 
 describe("listCodexSkills", () => {
   let tempRoot: string | null = null;
@@ -49,6 +53,30 @@ describe("listCodexSkills", () => {
     expect(skills.some((skill) => skill.name === "dogfood")).toBe(true);
     expect(skills.some((skill) => skill.name === "Excel")).toBe(true);
     expect(skills.filter((skill) => skill.name.toLowerCase() === "vercel-react-best-practices")).toHaveLength(1);
+  });
+
+  it("changes the cache version when a tracked skill file changes", () => {
+    tempRoot = mkdtempSync(join(tmpdir(), "codex-skills-"));
+    const worktreePath = join(tempRoot, "repo");
+    const homePath = join(tempRoot, "home");
+    vi.stubEnv("HOME", homePath);
+
+    mkdirSync(join(worktreePath, ".agents/skills/dogfood"), { recursive: true });
+    const skillFilePath = join(worktreePath, ".agents/skills/dogfood/SKILL.md");
+    writeFileSync(
+      skillFilePath,
+      "---\nname: dogfood\ndescription: QA a web app.\n---\n",
+    );
+
+    const firstVersion = resolveCodexSkillCatalogCacheVersion(worktreePath);
+    writeFileSync(
+      skillFilePath,
+      "---\nname: dogfood\ndescription: QA the settings page.\n---\n",
+    );
+
+    const secondVersion = resolveCodexSkillCatalogCacheVersion(worktreePath);
+
+    expect(secondVersion).not.toBe(firstVersion);
   });
 });
 

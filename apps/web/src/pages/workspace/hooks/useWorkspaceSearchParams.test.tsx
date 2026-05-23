@@ -62,6 +62,21 @@ describe("useWorkspaceSearchParams", () => {
     expect(mockNav).toHaveBeenCalled();
   });
 
+  it("skips navigate when updateSearch resolves to the current search", async () => {
+    const mockNav = vi.fn();
+    vi.mocked(useNavigate).mockReturnValue(mockNav);
+    act(() => {
+      root.render(<TestComponent />);
+    });
+    act(() => {
+      hookResult.updateSearch({ repoId: "r1" });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(mockNav).not.toHaveBeenCalled();
+  });
+
   it("batches multiple updateSearch calls", async () => {
     const mockNav = vi.fn();
     vi.mocked(useNavigate).mockReturnValue(mockNav);

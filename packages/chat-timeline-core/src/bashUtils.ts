@@ -2,6 +2,10 @@ import type { ChatEvent } from "@codesymphony/shared-types";
 import { isBashPayload, isBashToolEvent, isRecord, payloadStringOrNull } from "./eventUtils.js";
 import type { BashRun } from "./types.js";
 
+type ExtractBashRunsOptions = {
+  eventsAreSorted?: boolean;
+};
+
 function getBashCommand(event: ChatEvent): string | null {
   const directCommand = payloadStringOrNull(event.payload.command);
   if (directCommand) {
@@ -12,8 +16,8 @@ function getBashCommand(event: ChatEvent): string | null {
   return toolInput ? payloadStringOrNull(toolInput.command) : null;
 }
 
-export function extractBashRuns(context: ChatEvent[]): BashRun[] {
-  const ordered = [...context].sort((a, b) => a.idx - b.idx);
+export function extractBashRuns(context: ChatEvent[], options?: ExtractBashRunsOptions): BashRun[] {
+  const ordered = options?.eventsAreSorted ? context : [...context].sort((a, b) => a.idx - b.idx);
   const byToolUseId = new Map<string, BashRun>();
   const knownBashToolUseIds = new Set<string>();
   const hasBashToolLifecycleEvents = ordered.some((event) => isBashToolEvent(event));

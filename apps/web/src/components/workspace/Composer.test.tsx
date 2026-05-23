@@ -78,6 +78,18 @@ const defaultProps = {
   slashCommands: sampleSlashCommands,
   slashCommandsLoading: false,
   providers: [],
+  claudeModels: [
+    {
+      id: "claude-sonnet-4-6",
+      name: "Sonnet 4.6",
+      description: "Built-in Claude model.",
+    },
+    {
+      id: "claude-opus-4-6",
+      name: "Opus 4.6",
+      description: "Most capable for complex work.",
+    },
+  ],
   opencodeModels: [
     {
       id: "opencode/minimax-m2.5-free",
@@ -333,6 +345,30 @@ describe("Composer", () => {
     const buttons = container.querySelectorAll("button[data-index]");
     expect(buttons.length).toBeGreaterThan(0);
     expect(container.textContent).toContain("Create a commit");
+  });
+
+  it("defers slash command fetching until the user actually types a slash trigger", async () => {
+    const getSlashCommandsSpy = vi.spyOn(api, "getSlashCommands").mockResolvedValue({
+      commands: sampleSlashCommands,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    renderComposer({
+      slashCommands: undefined,
+      slashCommandsLoading: undefined,
+      agent: "cursor",
+      model: "default[]",
+    });
+
+    await flushMicrotasks();
+    expect(getSlashCommandsSpy).not.toHaveBeenCalled();
+
+    const editor = getEditor();
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(getSlashCommandsSpy).toHaveBeenCalledWith("wt-1", "cursor");
   });
 
   it("shows Codex skill suggestions when the active agent is codex", async () => {
@@ -635,6 +671,15 @@ describe("Composer", () => {
     expect(leftActionRow).not.toBeNull();
     expect(leftActionRow?.className).toContain("bottom-2 left-2.5");
     expect(leftActionRow?.contains(modelButton)).toBe(true);
+  });
+
+  it("uses the same responsive outer gutter rhythm as the workspace header", () => {
+    renderComposer();
+
+    const composerSection = getEditor().closest("section");
+    expect(composerSection?.className).toContain("px-1.5");
+    expect(composerSection?.className).toContain("sm:px-2.5");
+    expect(composerSection?.className).toContain("lg:px-3");
   });
 
   it("keeps permission selector next to the model selector in the left action row", () => {

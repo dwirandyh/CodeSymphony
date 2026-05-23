@@ -1,8 +1,8 @@
 import { type SVGProps, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Loader2 } from "lucide-react";
 import {
-  BUILTIN_CHAT_MODELS_BY_AGENT,
+  type ClaudeModelCatalogEntry,
   supportsModelProviderCompatibility,
   type CliAgent,
   type CodexModelCatalogEntry,
@@ -10,7 +10,6 @@ import {
   type ModelProvider,
   type OpencodeModelCatalogEntry,
 } from "@codesymphony/shared-types";
-import { FALLBACK_CODEX_MODELS } from "../../../lib/agentModelDefaults";
 import { cn } from "../../../lib/utils";
 
 export type AgentModelSelection = {
@@ -30,10 +29,12 @@ type AgentModelSelectorProps = {
   disabled?: boolean;
   selection: AgentModelSelection;
   providers: ModelProvider[];
+  claudeModels?: readonly ClaudeModelCatalogEntry[];
   codexModels?: readonly CodexModelCatalogEntry[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
   codexBuiltinModelOverride?: string | null;
+  modelCatalogReadyByAgent?: Partial<Record<CliAgent, boolean>>;
   showAgentList: boolean;
   selectionLockedReason?: string | null;
   ariaLabel?: string;
@@ -41,6 +42,7 @@ type AgentModelSelectorProps = {
   popoverContainer?: HTMLElement | null;
   triggerVariant?: "pill" | "picker";
   triggerClassName?: string;
+  onOpen?: () => void;
   onSelectionChange: (selection: AgentModelSelection) => void;
 };
 
@@ -187,12 +189,7 @@ function buildCodexBuiltinOptionSeeds(params: {
   const normalizedCodexBuiltinModelOverride = typeof params.codexBuiltinModelOverride === "string"
     ? params.codexBuiltinModelOverride.trim()
     : "";
-  const catalogEntries = params.codexModels.length > 0
-    ? params.codexModels.map((entry) => ({
-      id: entry.id,
-      name: entry.name.trim() || formatFriendlyModelName("codex", entry.id),
-    }))
-    : FALLBACK_CODEX_MODELS.map((entry) => ({
+  const catalogEntries = params.codexModels.map((entry) => ({
       id: entry.id,
       name: entry.name.trim() || formatFriendlyModelName("codex", entry.id),
     }));
@@ -224,11 +221,13 @@ function buildCodexBuiltinOptionSeeds(params: {
 
 export function buildAgentSelectionOptions(params: {
   providers: ModelProvider[];
+  claudeModels?: readonly ClaudeModelCatalogEntry[];
   codexModels?: readonly CodexModelCatalogEntry[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
   codexBuiltinModelOverride?: string | null;
 }): Record<CliAgent, AgentSelectionOption[]> {
+  const claudeModels = params.claudeModels ?? [];
   const cursorModels = params.cursorModels ?? [];
   const codexBuiltinModels = buildCodexBuiltinOptionSeeds({
     codexModels: params.codexModels ?? [],
@@ -237,12 +236,12 @@ export function buildAgentSelectionOptions(params: {
 
   return {
     claude: [
-      ...BUILTIN_CHAT_MODELS_BY_AGENT.claude.map((entry) => ({
-        id: `claude:${entry}:builtin`,
+      ...claudeModels.map((entry) => ({
+        id: `claude:${entry.id}:builtin`,
         agent: "claude" as const,
-        model: entry,
+        model: entry.id,
         modelProviderId: null,
-        label: formatFriendlyModelName("claude", entry),
+        label: entry.name.trim() || formatFriendlyModelName("claude", entry.id),
         detail: "Built-in",
         source: "builtin" as const,
       })),
@@ -328,11 +327,8 @@ export function findAgentSelectionOption(
   )) ?? null;
 }
 
-export function getCurrentAgentSelectionOption(
-  agentOptions: Record<CliAgent, AgentSelectionOption[]>,
-  selection: AgentModelSelection,
-): AgentSelectionOption {
-  return findAgentSelectionOption(agentOptions, selection) ?? {
+export function buildAdhocAgentSelectionOption(selection: AgentModelSelection): AgentSelectionOption {
+  return {
     id: selection.modelProviderId ?? `${selection.agent}:${selection.model}:adhoc`,
     agent: selection.agent,
     model: selection.model,
@@ -341,6 +337,27 @@ export function getCurrentAgentSelectionOption(
     detail: selection.modelProviderId ? "Custom" : "Built-in",
     source: selection.modelProviderId ? "custom" : "builtin",
   };
+}
+
+export function ensureAgentSelectionOptionVisible(
+  options: AgentSelectionOption[],
+  selection: AgentModelSelection,
+): AgentSelectionOption[] {
+  if (options.some((option) => (
+    option.model === selection.model
+    && option.modelProviderId === selection.modelProviderId
+  ))) {
+    return options;
+  }
+
+  return [buildAdhocAgentSelectionOption(selection), ...options];
+}
+
+export function getCurrentAgentSelectionOption(
+  agentOptions: Record<CliAgent, AgentSelectionOption[]>,
+  selection: AgentModelSelection,
+): AgentSelectionOption {
+  return findAgentSelectionOption(agentOptions, selection) ?? buildAdhocAgentSelectionOption(selection);
 }
 
 export function isFirstCustomModelOption(
@@ -491,10 +508,12 @@ export function AgentModelSelector({
   disabled = false,
   selection,
   providers,
+  claudeModels = [],
   codexModels = [],
   cursorModels = [],
   opencodeModels,
   codexBuiltinModelOverride = null,
+  modelCatalogReadyByAgent,
   showAgentList,
   selectionLockedReason = null,
   ariaLabel,
@@ -502,6 +521,7 @@ export function AgentModelSelector({
   popoverContainer = null,
   triggerVariant = "pill",
   triggerClassName: customTriggerClassName,
+  onOpen,
   onSelectionChange,
 }: AgentModelSelectorProps) {
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
@@ -544,11 +564,12 @@ export function AgentModelSelector({
 
   const agentOptions = useMemo(() => buildAgentSelectionOptions({
     providers,
+    claudeModels,
     codexModels,
     cursorModels,
     opencodeModels,
     codexBuiltinModelOverride,
-  }), [codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
+  }), [claudeModels, codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
   const currentSelection = useMemo(
     () => getCurrentAgentSelectionOption(agentOptions, selection),
     [agentOptions, selection],
@@ -556,16 +577,28 @@ export function AgentModelSelector({
   const modelPreviewTargetAgent = showAgentList ? modelPreviewAgent : selection.agent;
   const modelPreviewOptions = useMemo(() => {
     const options = agentOptions[modelPreviewTargetAgent];
-    if (showAgentList) {
-      return options;
+    const nextOptions = showAgentList
+      ? options
+      : options.filter((option) => option.modelProviderId === selection.modelProviderId);
+
+    if (modelPreviewTargetAgent !== selection.agent) {
+      return nextOptions;
     }
 
-    return options.filter((option) => option.modelProviderId === selection.modelProviderId);
-  }, [agentOptions, modelPreviewTargetAgent, selection.modelProviderId, showAgentList]);
+    return ensureAgentSelectionOptionVisible(nextOptions, selection);
+  }, [agentOptions, modelPreviewTargetAgent, selection, showAgentList]);
+  const modelPreviewCatalogReady = modelCatalogReadyByAgent?.[modelPreviewTargetAgent] ?? true;
+  const modelPreviewLoading = !modelPreviewCatalogReady;
   const modelLabel = `${AGENT_LABELS[selection.agent]} · ${currentSelection.label}`;
   const modelScrollerVisibleMaxHeight = useMemo(
-    () => calculateModelScrollerVisibleMaxHeight(modelPreviewOptions),
-    [modelPreviewOptions],
+    () => {
+      if (modelPreviewLoading || modelPreviewOptions.length === 0) {
+        return MODEL_POPOVER_MIN_SCROLLER_HEIGHT;
+      }
+
+      return calculateModelScrollerVisibleMaxHeight(modelPreviewOptions);
+    },
+    [modelPreviewLoading, modelPreviewOptions],
   );
   const resolvedAriaLabel = ariaLabel ?? (
     showAgentList
@@ -677,7 +710,20 @@ export function AgentModelSelector({
           : `${modelScrollerVisibleMaxHeight}px`,
       }}
     >
-      {modelPreviewOptions.map((option, index) => {
+      {modelPreviewLoading ? (
+        <div className="flex min-h-24 items-center justify-center px-3 py-6 text-xs text-muted-foreground">
+          <span className="flex items-center gap-2">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Loading models...
+          </span>
+        </div>
+      ) : null}
+      {!modelPreviewLoading && modelPreviewOptions.length === 0 ? (
+        <div className="flex min-h-24 items-center justify-center px-3 py-6 text-center text-xs text-muted-foreground">
+          No models available.
+        </div>
+      ) : null}
+      {!modelPreviewLoading ? modelPreviewOptions.map((option, index) => {
         const selected = option.agent === selection.agent
           && option.model === selection.model
           && option.modelProviderId === selection.modelProviderId;
@@ -720,7 +766,7 @@ export function AgentModelSelector({
             </button>
           </div>
         );
-      })}
+      }) : null}
     </div>
   );
 
@@ -814,6 +860,7 @@ export function AgentModelSelector({
           }
           if (!modelPopoverOpen) {
             setModelPreviewAgent(selection.agent);
+            onOpen?.();
           }
           setModelPopoverOpen(!modelPopoverOpen);
         }}

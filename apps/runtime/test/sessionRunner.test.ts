@@ -3722,10 +3722,10 @@ describe("thinking_delta", () => {
       .find((payload) => payload.precedingToolUseIds.includes("tool-mcp-finished"));
 
     expect(startedPayload).toBeDefined();
-    expect(startedPayload?.toolName).toBe("mcp__filesystem__read_file");
+    expect(startedPayload?.toolName).toBe("filesystem.read_file");
     expect(startedPayload?.toolKind).toBe("mcp");
     expect(finishedPayload).toBeDefined();
-    expect(finishedPayload?.toolName).toBe("mcp__filesystem__read_file");
+    expect(finishedPayload?.toolName).toBe("filesystem.read_file");
     expect(finishedPayload?.toolKind).toBe("mcp");
     expect(finishedPayload?.output).toBe("# README");
     expect(finishedPayload?.truncated).toBe(false);

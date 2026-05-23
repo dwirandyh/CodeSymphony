@@ -3,11 +3,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Automation, AutomationPromptVersion, AutomationRun, Repository } from "@codesymphony/shared-types";
+import { queryKeys } from "../../lib/queryKeys";
 import { AutomationDetailPage, AutomationsListPage, WorkspaceAutomationsPanel } from "./AutomationsPage";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const apiMocks = vi.hoisted(() => ({
   listAutomations: vi.fn(),
+  listClaudeModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
+  listCodexModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
+  listCursorModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
+  listOpencodeModels: vi.fn().mockResolvedValue({ models: [], fetchedAt: "2026-01-01T00:00:00.000Z" }),
   createAutomation: vi.fn(),
   getAutomation: vi.fn(),
   getFileIndex: vi.fn(),
@@ -28,6 +33,11 @@ const useModelProvidersMock = vi.hoisted(() => ({
   useModelProviders: vi.fn(),
 }));
 
+const automationRunsHooksMock = vi.hoisted(() => ({
+  useAutomationRuns: vi.fn(),
+  requestAutomationRunsLiveRefresh: vi.fn(),
+}));
+
 vi.mock("@tanstack/react-router", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-router")>("@tanstack/react-router");
   return {
@@ -40,6 +50,10 @@ vi.mock("@tanstack/react-router", async () => {
 vi.mock("../../lib/api", () => ({
   api: {
     listAutomations: apiMocks.listAutomations,
+    listClaudeModels: apiMocks.listClaudeModels,
+    listCodexModels: apiMocks.listCodexModels,
+    listCursorModels: apiMocks.listCursorModels,
+    listOpencodeModels: apiMocks.listOpencodeModels,
     createAutomation: apiMocks.createAutomation,
     getAutomation: apiMocks.getAutomation,
     getFileIndex: apiMocks.getFileIndex,
@@ -63,6 +77,11 @@ vi.mock("../workspace/hooks/useModelProviders", () => ({
 
 vi.mock("../workspace/hooks/useWorkspaceSyncStream", () => ({
   useWorkspaceSyncStream: () => undefined,
+}));
+
+vi.mock("../../hooks/queries/useAutomationRuns", () => ({
+  useAutomationRuns: automationRunsHooksMock.useAutomationRuns,
+  requestAutomationRunsLiveRefresh: automationRunsHooksMock.requestAutomationRunsLiveRefresh,
 }));
 
 vi.mock("../../components/ui/dialog", () => ({
@@ -264,7 +283,80 @@ function findButtonByAriaLabel(label: string): HTMLButtonElement {
   return button;
 }
 
+function findInputByPlaceholder(placeholder: string): HTMLInputElement {
+  const input = Array.from(document.body.querySelectorAll("input")).find(
+    (entry) => entry.getAttribute("placeholder") === placeholder,
+  );
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`Input not found: ${placeholder}`);
+  }
+  return input;
+}
+
+function findSelectOption(label: string): HTMLElement {
+  const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
+    (entry) => entry.textContent?.trim() === label,
+  );
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`Select option not found: ${label}`);
+  }
+  return option;
+}
+
+async function chooseSelectOption(ariaLabel: string, optionLabel: string) {
+  const PointerEventCtor = globalThis.PointerEvent ?? MouseEvent;
+  const trigger = findButtonByAriaLabel(ariaLabel);
+  await act(async () => {
+    trigger.dispatchEvent(new PointerEventCtor("pointerdown", {
+      bubbles: true,
+      button: 0,
+      ctrlKey: false,
+      pointerId: 1,
+    }));
+    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+
+  if (!document.body.querySelector('[role="option"]')) {
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    await flushEffects();
+  }
+
+  await act(async () => {
+    findSelectOption(optionLabel).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+}
+
 beforeEach(() => {
+  if (!HTMLElement.prototype.hasPointerCapture) {
+    Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+      configurable: true,
+      value: () => false,
+    });
+  }
+  if (!HTMLElement.prototype.setPointerCapture) {
+    Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+      configurable: true,
+      value: () => undefined,
+    });
+  }
+  if (!HTMLElement.prototype.releasePointerCapture) {
+    Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+      configurable: true,
+      value: () => undefined,
+    });
+  }
+  if (!HTMLElement.prototype.scrollIntoView) {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: () => undefined,
+    });
+  }
+
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -284,6 +376,15 @@ beforeEach(() => {
     updatedAt: "2026-05-10T10:00:00.000Z",
   });
   apiMocks.listAutomationRuns.mockResolvedValue([makeRun()]);
+  automationRunsHooksMock.useAutomationRuns.mockReturnValue({
+    data: [makeRun()],
+    isLoading: false,
+    isFetching: false,
+    connectionState: "healthy",
+    error: null,
+    refetch: vi.fn(),
+  });
+  automationRunsHooksMock.requestAutomationRunsLiveRefresh.mockReset();
   apiMocks.listAutomationPromptVersions.mockResolvedValue([makeVersion()]);
   apiMocks.restoreAutomationPromptVersion.mockResolvedValue(makeAutomation());
   apiMocks.updateAutomation.mockResolvedValue(makeAutomation());
@@ -495,6 +596,79 @@ describe("AutomationsListPage", () => {
     expect(document.body.textContent).toContain("Add a prompt so the automation knows what to do.");
   });
 
+  it("uses the repository root worktree when creating a root automation from a feature-worktree context", async () => {
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [
+        makeRepository({
+          worktrees: [
+            {
+              id: "wt-1",
+              repositoryId: "repo-1",
+              branch: "main",
+              path: "/tmp/codesymphony",
+              status: "active",
+              baseBranch: "main",
+              branchRenamed: false,
+              lastCreateError: null,
+              lastDeleteError: null,
+              createdAt: "2026-05-10T10:00:00.000Z",
+              updatedAt: "2026-05-10T10:00:00.000Z",
+            },
+            {
+              id: "wt-2",
+              repositoryId: "repo-1",
+              branch: "feature/live-updates",
+              path: "/tmp/codesymphony-feature",
+              status: "active",
+              baseBranch: "main",
+              branchRenamed: false,
+              lastCreateError: null,
+              lastDeleteError: null,
+              createdAt: "2026-05-10T10:00:00.000Z",
+              updatedAt: "2026-05-10T10:00:00.000Z",
+            },
+          ],
+        }),
+      ],
+      isLoading: false,
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage
+            prefills={{ create: true, repositoryId: "repo-1", worktreeId: "wt-2", agent: "codex", model: "gpt-5.4" }}
+            layout="panel"
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+
+    const textboxes = Array.from(document.body.querySelectorAll("input"));
+    const prompt = document.body.querySelector('[data-testid="automation-create-prompt-editor"]');
+    if (!(textboxes[0] instanceof HTMLInputElement) || !(prompt instanceof HTMLElement)) {
+      throw new Error("Create form inputs not found");
+    }
+
+    await setInputValue(textboxes[0], "Root automation");
+    await setEditorValue(prompt, "Summarize root repo changes.");
+
+    await act(async () => {
+      findButton("Create").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(apiMocks.createAutomation).toHaveBeenCalledOnce();
+    expect(apiMocks.createAutomation.mock.calls[0]?.[0]).toMatchObject({
+      repositoryId: "repo-1",
+      targetMode: "repo_root",
+      targetWorktreeId: "wt-1",
+    });
+  });
+
   it("clears transient list search params when create succeeds and opens the detail route", async () => {
     act(() => {
       root.render(
@@ -593,6 +767,49 @@ describe("AutomationsListPage", () => {
     expect(findButtonByAriaLabel("Run now Nightly audit").disabled).toBe(true);
   });
 
+  it("disables Run now in the list when a root automation has no active root worktree", async () => {
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [makeRepository({
+        worktrees: [
+          {
+            id: "wt-feature",
+            repositoryId: "repo-1",
+            branch: "feat/runtime-live",
+            path: "/tmp/codesymphony-worktrees/feat-runtime-live",
+            status: "active",
+            baseBranch: "main",
+            branchRenamed: false,
+            lastCreateError: null,
+            lastDeleteError: null,
+            createdAt: "2026-05-10T10:00:00.000Z",
+            updatedAt: "2026-05-10T10:00:00.000Z",
+          },
+        ],
+      })],
+      isLoading: false,
+    });
+    apiMocks.listAutomations.mockResolvedValue([
+      makeAutomation({
+        latestRun: null,
+        targetMode: "repo_root",
+        targetWorktreeId: "wt-feature",
+      }),
+    ]);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    expect(findButtonByAriaLabel("Run now Nightly audit").disabled).toBe(true);
+  });
+
   it("updates the list row immediately after a manual run starts", async () => {
     apiMocks.listAutomations.mockResolvedValue([makeAutomation()]);
     apiMocks.runAutomationNow.mockResolvedValue(
@@ -626,6 +843,133 @@ describe("AutomationsListPage", () => {
     expect(document.body.textContent).toContain("Running");
     expect(findButtonByAriaLabel("Run now Nightly audit").disabled).toBe(true);
   });
+
+  it("does not invalidate automation runs directly after a list manual run succeeds", async () => {
+    apiMocks.listAutomations.mockResolvedValue([makeAutomation()]);
+    apiMocks.runAutomationNow.mockResolvedValue(
+      makeRun({
+        status: "running",
+        scheduledFor: "2026-05-10T02:00:00.000Z",
+        startedAt: "2026-05-10T02:00:10.000Z",
+        finishedAt: null,
+      }),
+    );
+
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    await act(async () => {
+      findButtonByAriaLabel("Run now Nightly audit").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({ queryKey: queryKeys.automations.detail("automation-1") });
+    expect(automationRunsHooksMock.requestAutomationRunsLiveRefresh).toHaveBeenCalledWith(queryClient, "automation-1");
+    expect(invalidateQueriesSpy).not.toHaveBeenCalledWith({ queryKey: queryKeys.automations.runs("automation-1") });
+  });
+
+  it("preserves the selected project filter after the list refreshes from an external create", async () => {
+    const repoOne = makeRepository();
+    const repoTwo = makeRepository({
+      id: "repo-2",
+      name: "other-repo",
+      rootPath: "/tmp/other-repo",
+      worktrees: [
+        {
+          id: "wt-2",
+          repositoryId: "repo-2",
+          branch: "main",
+          path: "/tmp/other-repo",
+          status: "active",
+          baseBranch: "main",
+          branchRenamed: false,
+          lastCreateError: null,
+          lastDeleteError: null,
+          createdAt: "2026-05-10T10:00:00.000Z",
+          updatedAt: "2026-05-10T10:00:00.000Z",
+        },
+      ],
+    });
+
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [repoOne, repoTwo],
+      isLoading: false,
+    });
+    apiMocks.listAutomations.mockImplementation(async (filters?: { repositoryId?: string; enabled?: boolean }) => {
+      if (filters?.repositoryId === "repo-2") {
+        return [
+          makeAutomation({
+            id: "automation-2",
+            repositoryId: "repo-2",
+            targetWorktreeId: "wt-2",
+            name: "Other repo audit",
+          }),
+        ];
+      }
+      return [];
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    await chooseSelectOption("Project filter", "other-repo");
+
+    expect(findButtonByAriaLabel("Project filter").textContent).toContain("other-repo");
+
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [],
+      isLoading: true,
+    });
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushEffects();
+
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [repoOne, repoTwo],
+      isLoading: false,
+    });
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushEffects();
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.automations.lists });
+    });
+    await flushEffects();
+    await flushEffects();
+
+    expect(findButtonByAriaLabel("Project filter").textContent).toContain("other-repo");
+    expect(document.body.textContent).toContain("Other repo audit");
+  });
 });
 
 describe("AutomationDetailPage", () => {
@@ -652,6 +996,128 @@ describe("AutomationDetailPage", () => {
     expect(findButtonByAriaLabel("Select schedule").textContent).toContain("Daily at 9:00 AM");
     expect(findButtonByAriaLabel("Select automation session").textContent).toContain("Codex");
     expect(document.body.textContent).not.toContain("Access");
+    expect(document.body.querySelector('[data-testid="automation-runs-live-status"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="workspace-live-error-toast"]')).toBeNull();
+  });
+
+  it("shows a global live update toast only when automation runs live updates fail", async () => {
+    automationRunsHooksMock.useAutomationRuns.mockReturnValue({
+      data: [makeRun()],
+      isLoading: false,
+      isFetching: false,
+      connectionState: "exhausted",
+      error: new Error("Automation runs live stream exhausted"),
+      refetch: vi.fn(),
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    const liveErrorToast = document.body.querySelector<HTMLElement>('[data-testid="workspace-live-error-toast"]');
+    if (!liveErrorToast) {
+      throw new Error("Expected live update error toast");
+    }
+
+    expect(liveErrorToast.textContent).toContain("Live updates unavailable");
+    expect(liveErrorToast.textContent).toContain("Automation runs");
+    expect(liveErrorToast.textContent).toContain("Automation runs live stream exhausted");
+  });
+
+  it("disables Run now and explains the problem when a root automation has no active root worktree", async () => {
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [makeRepository({
+        worktrees: [
+          {
+            id: "wt-feature",
+            repositoryId: "repo-1",
+            branch: "feat/runtime-live",
+            path: "/tmp/codesymphony-worktrees/feat-runtime-live",
+            status: "active",
+            baseBranch: "main",
+            branchRenamed: false,
+            lastCreateError: null,
+            lastDeleteError: null,
+            createdAt: "2026-05-10T10:00:00.000Z",
+            updatedAt: "2026-05-10T10:00:00.000Z",
+          },
+        ],
+      })],
+      isLoading: false,
+    });
+    apiMocks.getAutomation.mockResolvedValue(makeAutomation({
+      latestRun: null,
+      targetMode: "repo_root",
+      targetWorktreeId: "wt-feature",
+    }));
+    automationRunsHooksMock.useAutomationRuns.mockReturnValue({
+      data: [],
+      isLoading: false,
+      isFetching: false,
+      connectionState: "healthy",
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    expect(findButton("Run now").disabled).toBe(true);
+    expect(document.body.textContent).toContain("Repository root worktree is not available");
+  });
+
+  it("disables Run now after the latest root run fails because the worktree path is gone", async () => {
+    const failedRun = makeRun({
+      status: "failed",
+      error: "Worktree path not found: /tmp/codesymphony. Create a new worktree from Repository panel.",
+      summary: null,
+      finishedAt: "2026-05-10T02:00:20.000Z",
+    });
+
+    apiMocks.getAutomation.mockResolvedValue(makeAutomation({
+      latestRun: failedRun,
+      targetMode: "repo_root",
+    }));
+    automationRunsHooksMock.useAutomationRuns.mockReturnValue({
+      data: [failedRun],
+      isLoading: false,
+      isFetching: false,
+      connectionState: "healthy",
+      error: null,
+      refetch: vi.fn(),
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    expect(findButton("Run now").disabled).toBe(true);
+    expect(document.body.textContent).toContain("Repository root worktree is not available");
   });
 
   it("saves the latest prompt text from the detail editor", async () => {
@@ -758,6 +1224,81 @@ describe("AutomationDetailPage", () => {
     expect(getEditorText(promptField)).toContain(restoredAutomation.prompt);
   });
 
+  it("refreshes the editable fields after an external automation update when there are no unsaved edits", async () => {
+    const currentAutomation = makeAutomation({
+      name: "Nightly audit",
+      prompt: "Inspect the repository root and summarize the next action.",
+      latestRun: makeRun(),
+    });
+    const updatedAutomation = makeAutomation({
+      name: "Nightly audit v2",
+      prompt: "List one obvious file and the branch name.",
+      latestRun: makeRun(),
+    });
+
+    apiMocks.getAutomation.mockResolvedValue(currentAutomation);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" layout="panel" onBack={vi.fn()} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    const titleInput = findInputByPlaceholder("Automation title");
+    const promptField = document.body.querySelector('[data-testid="automation-detail-prompt-editor"]');
+    if (!(promptField instanceof HTMLElement)) {
+      throw new Error("Prompt field not found");
+    }
+
+    expect(titleInput.value).toBe(currentAutomation.name);
+    expect(getEditorText(promptField)).toContain(currentAutomation.prompt);
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.automations.detail("automation-1"), updatedAutomation);
+    });
+    await flushEffects();
+    await flushEffects();
+
+    expect(titleInput.value).toBe(updatedAutomation.name);
+    expect(getEditorText(promptField)).toContain(updatedAutomation.prompt);
+  });
+
+  it("returns to the automation list after an external delete removes the current detail", async () => {
+    const onBack = vi.fn();
+    apiMocks.getAutomation
+      .mockResolvedValueOnce(makeAutomation({ latestRun: makeRun() }))
+      .mockRejectedValue(new Error("Automation not found"));
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" layout="panel" onBack={onBack} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Nightly audit");
+
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: queryKeys.automations.detail("automation-1"), type: "active" });
+    });
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
   it("opens a run through the workspace callback instead of router navigation in panel mode", async () => {
     const onOpenRun = vi.fn();
 
@@ -774,6 +1315,7 @@ describe("AutomationDetailPage", () => {
       );
     });
 
+    await flushEffects();
     await flushEffects();
     await flushEffects();
     await flushEffects();

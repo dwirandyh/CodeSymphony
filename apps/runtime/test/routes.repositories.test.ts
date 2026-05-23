@@ -525,6 +525,10 @@ describe("repository routes", () => {
         payload: { message: "fix: bug" },
       });
       expect(res.statusCode).toBe(200);
+      expect(mockWorkspaceEventHub.emit).toHaveBeenCalledWith("worktree.updated", {
+        repositoryId: "r1",
+        worktreeId: "w1",
+      });
     });
 
     it("generates commit message when empty", async () => {
@@ -559,6 +563,10 @@ describe("repository routes", () => {
       });
       expect(res.statusCode).toBe(200);
       expect(res.json().data.result).toContain("Synced");
+      expect(mockWorkspaceEventHub.emit).toHaveBeenCalledWith("worktree.updated", {
+        repositoryId: "r1",
+        worktreeId: "w1",
+      });
     });
 
     it("returns 404 when worktree not found", async () => {
@@ -580,6 +588,10 @@ describe("repository routes", () => {
         payload: { filePath: "src/test.ts" },
       });
       expect(res.statusCode).toBe(204);
+      expect(mockWorkspaceEventHub.emit).toHaveBeenCalledWith("worktree.updated", {
+        repositoryId: "r1",
+        worktreeId: "w1",
+      });
     });
 
     it("returns 404 when worktree not found", async () => {

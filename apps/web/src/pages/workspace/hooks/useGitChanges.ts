@@ -7,7 +7,6 @@ import { useDiscardGitChange } from "../../../hooks/mutations/useDiscardGitChang
 import { useGitSync } from "../../../hooks/mutations/useGitSync";
 import { api } from "../../../lib/api";
 import { loadAgentDefaults } from "../agentDefaults";
-import { getCachedGitStatus } from "../../../collections/gitStatus";
 import { queryKeys } from "../../../lib/queryKeys";
 
 const STATUS_PRIORITY: Record<GitChangeStatus, number> = {
@@ -20,35 +19,17 @@ const STATUS_PRIORITY: Record<GitChangeStatus, number> = {
 
 export function useGitChanges(worktreeId: string | null, enabled: boolean) {
   const queryClient = useQueryClient();
-  const { data, isLoading, refetch } = useGitStatus(enabled ? worktreeId : null);
+  const { data, isLoading, refetch, connectionState, error: gitStatusError } = useGitStatus(worktreeId, { enabled });
   const commitMutation = useGitCommit(worktreeId);
   const discardMutation = useDiscardGitChange(worktreeId);
   const syncMutation = useGitSync(worktreeId);
   const lastKnownStatusByWorktreeRef = useRef<Map<string, GitStatus>>(new Map());
-  const cachedData = useMemo(
-    () => worktreeId ? getCachedGitStatus(queryClient, worktreeId) : undefined,
-    [queryClient, worktreeId],
-  );
-  const effectiveData = useMemo(
-    () => {
-      if (!worktreeId) {
-        return data;
-      }
-
-      if (!enabled) {
-        return cachedData;
-      }
-
-      return data ?? cachedData;
-    },
-    [cachedData, data, enabled, worktreeId],
-  );
-  if (worktreeId && effectiveData) {
-    lastKnownStatusByWorktreeRef.current.set(worktreeId, effectiveData);
+  if (worktreeId && data) {
+    lastKnownStatusByWorktreeRef.current.set(worktreeId, data);
   }
   const stableData = useMemo(
-    () => worktreeId ? (effectiveData ?? lastKnownStatusByWorktreeRef.current.get(worktreeId)) : effectiveData,
-    [effectiveData, worktreeId],
+    () => worktreeId ? (data ?? lastKnownStatusByWorktreeRef.current.get(worktreeId)) : data,
+    [data, worktreeId],
   );
 
   useEffect(() => {
@@ -57,7 +38,7 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     }
 
     const nextBranch = stableData?.branch?.trim();
-    if (!nextBranch) {
+    if (!nextBranch || nextBranch === "HEAD") {
       return;
     }
 
@@ -148,10 +129,14 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     ahead,
     behind,
     canSync,
+    connectionState,
     loading: enabled ? isLoading && stableData == null : false,
     committing: commitMutation.isPending,
     syncing: syncMutation.isPending,
-    error: commitMutation.error?.message ?? syncMutation.error?.message ?? discardMutation.error?.message ?? null,
+    error: commitMutation.error?.message
+      ?? syncMutation.error?.message
+      ?? discardMutation.error?.message
+      ?? (gitStatusError instanceof Error ? gitStatusError.message : gitStatusError ? String(gitStatusError) : null),
     commit,
     sync,
     discardChange,

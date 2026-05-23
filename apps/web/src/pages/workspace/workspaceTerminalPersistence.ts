@@ -247,10 +247,12 @@ export function restoreWorkspaceTerminalUiState(input: {
 
     bottomPanelStateByWorktreeId[worktreeId] = {
       activeTab: !runSession && state.activeTab === "run" ? DEFAULT_BOTTOM_PANEL_TAB : state.activeTab,
-      openSignal: state.openSignal,
+      // Treat startup restore as a fresh frame: do not replay stale "open panel" signals
+      // or reopen the bottom panel before the live workspace has settled.
+      openSignal: 0,
       runScriptActive: runSession?.active ?? false,
       runScriptSessionId: runSession?.sessionId ?? null,
-      collapsed: state.collapsed,
+      collapsed: true,
     };
   }
 

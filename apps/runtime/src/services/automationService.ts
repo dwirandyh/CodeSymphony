@@ -1,12 +1,15 @@
+import { statSync } from "node:fs";
 import { z } from "zod";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   CreateAutomationInputSchema,
   UpdateAutomationInputSchema,
   type ChatEventType,
+  type WorkspaceSyncEventType,
 } from "@codesymphony/shared-types";
 import type { RuntimeEventHub, WorkspaceSyncEventHub } from "../types.js";
 import { buildAutomationBranchName } from "./worktreeService.js";
+import { areLikelySameFsPath } from "./repositoryService.js";
 type AutomationCreateInput = z.infer<typeof CreateAutomationInputSchema>;
 type AutomationUpdateInput = z.infer<typeof UpdateAutomationInputSchema>;
 
@@ -87,6 +90,11 @@ const AUTOMATION_CATCH_UP_GRACE_MS = 90_000;
 const AUTOMATION_DUE_OCCURRENCE_LIMIT = 100_000;
 const MISSED_DUE_TO_RUNTIME_SUMMARY = "Missed while the local automation runtime was unavailable. A newer slot will be replayed.";
 const MISSED_DUE_TO_ACTIVE_RUN_SUMMARY = "Missed because another automation run was still active at the scheduled time.";
+type AutomationWorkspaceSyncEventType =
+  Extract<
+    WorkspaceSyncEventType,
+    "automation.created" | "automation.updated" | "automation.deleted" | "automation.run.updated"
+  >;
 
 function ensureValidTimezone(timezone: string): string {
   try {
@@ -464,6 +472,12 @@ export function createAutomationService(deps: {
     });
   }
 
+  function emitAutomationRefresh(type: AutomationWorkspaceSyncEventType, automationId: string) {
+    deps.workspaceEventHub.emit(type, {
+      automationId,
+    });
+  }
+
   async function findAutomationWithSummary(id: string) {
     const automation = await deps.prisma.automation.findUnique({
       where: { id },
@@ -489,22 +503,102 @@ export function createAutomationService(deps: {
   async function assertRepositoryAndWorktree(input: {
     repositoryId: string;
     targetWorktreeId: string;
+    targetMode: "repo_root" | "worktree";
   }) {
     const repository = await deps.prisma.repository.findUnique({
       where: { id: input.repositoryId },
-      select: { id: true },
+      select: {
+        id: true,
+        rootPath: true,
+        worktrees: {
+          select: {
+            id: true,
+            repositoryId: true,
+            path: true,
+            status: true,
+          },
+        },
+      },
     });
     if (!repository) {
       throw new Error("Repository not found");
     }
 
-    const worktree = await deps.prisma.worktree.findUnique({
-      where: { id: input.targetWorktreeId },
-      select: { id: true, repositoryId: true },
-    });
+    const worktree = repository.worktrees.find((candidate) => candidate.id === input.targetWorktreeId) ?? null;
     if (!worktree || worktree.repositoryId !== input.repositoryId) {
       throw new Error("Target worktree not found");
     }
+
+    if (input.targetMode === "repo_root") {
+      const rootWorktree = repository.worktrees.find((candidate) => (
+        candidate.status === "active"
+        && areLikelySameFsPath(candidate.path, repository.rootPath)
+      )) ?? null;
+
+      if (!rootWorktree) {
+        throw new Error("Repository root worktree is not available");
+      }
+
+      return {
+        repositoryId: repository.id,
+        targetWorktreeId: rootWorktree.id,
+      };
+    }
+
+    return {
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+    };
+  }
+
+  function assertRunnableDirectory(path: string, unavailableMessage: string) {
+    try {
+      if (!statSync(path).isDirectory()) {
+        throw new Error(unavailableMessage);
+      }
+    } catch {
+      throw new Error(unavailableMessage);
+    }
+  }
+
+  async function resolveRunnableAutomationTarget(
+    automation: NonNullable<AutomationRecord>,
+  ): Promise<NonNullable<AutomationRecord>> {
+    if (automation.targetMode !== "repo_root") {
+      return automation;
+    }
+
+    const resolvedTarget = await assertRepositoryAndWorktree({
+      repositoryId: automation.repositoryId,
+      targetWorktreeId: automation.targetWorktreeId,
+      targetMode: automation.targetMode,
+    });
+
+    const rootWorktree = await deps.prisma.worktree.findUnique({
+      where: { id: resolvedTarget.targetWorktreeId },
+      select: { path: true },
+    });
+
+    if (!rootWorktree) {
+      throw new Error("Repository root worktree is not available");
+    }
+
+    assertRunnableDirectory(rootWorktree.path, "Repository root worktree is not available");
+
+    if (resolvedTarget.targetWorktreeId === automation.targetWorktreeId) {
+      return automation;
+    }
+
+    const updated = await deps.prisma.automation.update({
+      where: { id: automation.id },
+      data: {
+        targetWorktreeId: resolvedTarget.targetWorktreeId,
+      },
+    });
+
+    emitRepositoryRefresh(updated.repositoryId, updated.targetWorktreeId);
+    emitAutomationRefresh("automation.updated", updated.id);
+    return updated;
   }
 
   function clearThreadBinding(runId: string) {
@@ -536,6 +630,7 @@ export function createAutomationService(deps: {
     });
 
     emitRepositoryRefresh(updated.repositoryId, updated.worktreeId, updated.threadId);
+    emitAutomationRefresh("automation.run.updated", updated.automationId);
     if (updated.status === "succeeded" || updated.status === "failed" || updated.status === "canceled") {
       clearThreadBinding(updated.id);
     }
@@ -641,6 +736,7 @@ export function createAutomationService(deps: {
             },
           });
           emitRepositoryRefresh(updatedRun.repositoryId, updatedRun.worktreeId, updatedRun.threadId);
+          emitAutomationRefresh("automation.run.updated", updatedRun.automationId);
           return updatedRun;
         } catch (error) {
           if (canRetryAutomationWorktreeCreate(error)) {
@@ -654,7 +750,20 @@ export function createAutomationService(deps: {
     }
 
     try {
+      let currentAutomation = await resolveRunnableAutomationTarget(automation);
       let currentRun = run;
+
+      if (currentRun.worktreeId !== currentAutomation.targetWorktreeId) {
+        currentRun = await deps.prisma.automationRun.update({
+          where: { id: currentRun.id },
+          data: {
+            worktreeId: currentAutomation.targetWorktreeId,
+          },
+        });
+        emitRepositoryRefresh(currentRun.repositoryId, currentRun.worktreeId, currentRun.threadId);
+        emitAutomationRefresh("automation.run.updated", currentRun.automationId);
+      }
+
       if (currentRun.status !== "dispatching" || currentRun.startedAt === null) {
         currentRun = await deps.prisma.automationRun.update({
           where: { id: currentRun.id },
@@ -664,35 +773,36 @@ export function createAutomationService(deps: {
           },
         });
         emitRepositoryRefresh(currentRun.repositoryId, currentRun.worktreeId, currentRun.threadId);
+        emitAutomationRefresh("automation.run.updated", currentRun.automationId);
       }
 
       currentRun = await ensureAutomationWorktree(currentRun);
 
-      if (automation.targetMode === "worktree") {
+      if (currentAutomation.targetMode === "worktree") {
         await deps.worktreeService.waitUntilReady(currentRun.worktreeId);
       }
 
       const thread = await deps.chatService.createThread(currentRun.worktreeId, {
-        title: automation.name,
+        title: currentAutomation.name,
         isAutomation: true,
-        agent: automation.agent,
-        model: automation.model,
-        modelProviderId: automation.modelProviderId,
+        agent: currentAutomation.agent,
+        model: currentAutomation.model,
+        modelProviderId: currentAutomation.modelProviderId,
         permissionMode: AUTOMATION_PERMISSION_MODE,
-        mode: automation.chatMode,
+        mode: currentAutomation.chatMode,
       });
 
-      if (automation.chatMode !== "default") {
+      if (currentAutomation.chatMode !== "default") {
         await deps.prisma.chatThread.update({
           where: { id: thread.id },
-          data: { mode: automation.chatMode },
+          data: { mode: currentAutomation.chatMode },
         });
       }
 
       subscribeToThreadLifecycle({
         id: run.id,
-        automationId: automation.id,
-        repositoryId: automation.repositoryId,
+        automationId: currentAutomation.id,
+        repositoryId: currentAutomation.repositoryId,
         worktreeId: currentRun.worktreeId,
         threadId: thread.id,
       });
@@ -706,14 +816,15 @@ export function createAutomationService(deps: {
       });
 
       emitRepositoryRefresh(updatedRun.repositoryId, updatedRun.worktreeId, thread.id);
+      emitAutomationRefresh("automation.run.updated", updatedRun.automationId);
 
       await deps.chatService.sendMessage(thread.id, {
-        content: automation.prompt,
-        mode: automation.chatMode,
+        content: currentAutomation.prompt,
+        mode: currentAutomation.chatMode,
       });
 
       await deps.prisma.automation.update({
-        where: { id: automation.id },
+        where: { id: currentAutomation.id },
         data: {
           lastRunAt: run.scheduledFor,
         },
@@ -731,6 +842,7 @@ export function createAutomationService(deps: {
         },
       });
       emitRepositoryRefresh(failedRun.repositoryId, failedRun.worktreeId, failedRun.threadId);
+      emitAutomationRefresh("automation.run.updated", failedRun.automationId);
       return mapRun(failedRun);
     }
   }
@@ -779,6 +891,7 @@ export function createAutomationService(deps: {
     ));
 
     emitRepositoryRefresh(createdRun.repositoryId, createdRun.worktreeId, createdRun.threadId);
+    emitAutomationRefresh("automation.run.updated", createdRun.automationId);
     return dispatchAutomationRun(automation, createdRun);
   }
 
@@ -901,13 +1014,13 @@ export function createAutomationService(deps: {
       const input = CreateAutomationInputSchema.parse(rawInput);
       ensureValidTimezone(input.timezone);
       parseRrule(input.rrule);
-      await assertRepositoryAndWorktree(input);
+      const resolvedTarget = await assertRepositoryAndWorktree(input);
 
       const now = new Date();
       const created = await deps.prisma.automation.create({
         data: {
           repositoryId: input.repositoryId,
-          targetWorktreeId: input.targetWorktreeId,
+          targetWorktreeId: resolvedTarget.targetWorktreeId,
           targetMode: input.targetMode,
           name: input.name,
           prompt: input.prompt,
@@ -932,6 +1045,7 @@ export function createAutomationService(deps: {
       });
 
       emitRepositoryRefresh(created.repositoryId, created.targetWorktreeId);
+      emitAutomationRefresh("automation.created", created.id);
       return mapAutomation(created);
     },
 
@@ -987,12 +1101,16 @@ export function createAutomationService(deps: {
         parseRrule(input.rrule);
       }
 
-      const nextTargetWorktreeId = input.targetWorktreeId ?? existing.targetWorktreeId;
-      if (nextTargetWorktreeId !== existing.targetWorktreeId) {
-        await assertRepositoryAndWorktree({
+      const nextTargetMode = input.targetMode ?? existing.targetMode;
+      let nextTargetWorktreeId = input.targetWorktreeId ?? existing.targetWorktreeId;
+
+      if (input.targetMode !== undefined || input.targetWorktreeId !== undefined) {
+        const resolvedTarget = await assertRepositoryAndWorktree({
           repositoryId: existing.repositoryId,
           targetWorktreeId: nextTargetWorktreeId,
+          targetMode: nextTargetMode,
         });
+        nextTargetWorktreeId = resolvedTarget.targetWorktreeId;
       }
 
       const nextRrule = input.rrule ?? existing.rrule;
@@ -1001,7 +1119,7 @@ export function createAutomationService(deps: {
       const updated = await deps.prisma.automation.update({
         where: { id: automationId },
         data: {
-          ...(input.targetWorktreeId ? { targetWorktreeId: input.targetWorktreeId } : {}),
+          ...(nextTargetWorktreeId !== existing.targetWorktreeId ? { targetWorktreeId: nextTargetWorktreeId } : {}),
           ...(input.targetMode ? { targetMode: input.targetMode } : {}),
           ...(input.name ? { name: input.name } : {}),
           ...(input.prompt ? { prompt: input.prompt } : {}),
@@ -1030,6 +1148,7 @@ export function createAutomationService(deps: {
       }
 
       emitRepositoryRefresh(updated.repositoryId, updated.targetWorktreeId);
+      emitAutomationRefresh("automation.updated", updated.id);
       return findAutomationWithSummary(updated.id);
     },
 
@@ -1045,6 +1164,7 @@ export function createAutomationService(deps: {
         where: { id: automationId },
       });
       emitRepositoryRefresh(automation.repositoryId, automation.targetWorktreeId);
+      emitAutomationRefresh("automation.deleted", automationId);
     },
 
     async setAutomationEnabled(automationId: string, enabled: boolean) {
@@ -1068,11 +1188,12 @@ export function createAutomationService(deps: {
       });
 
       emitRepositoryRefresh(updated.repositoryId, updated.targetWorktreeId);
+      emitAutomationRefresh("automation.updated", updated.id);
       return mapAutomation(updated);
     },
 
     async runAutomationNow(automationId: string) {
-      const automation = await deps.prisma.automation.findUnique({
+      let automation = await deps.prisma.automation.findUnique({
         where: { id: automationId },
       });
       if (!automation) {
@@ -1084,6 +1205,7 @@ export function createAutomationService(deps: {
         throw new Error("Automation already has an active run");
       }
 
+      automation = await resolveRunnableAutomationTarget(automation);
       return createRunAndDispatch(automation, {
         triggerKind: "manual",
         scheduledFor: new Date(),
@@ -1114,6 +1236,7 @@ export function createAutomationService(deps: {
         }
         if (shouldRefresh) {
           emitRepositoryRefresh(dueAutomation.repositoryId, dueAutomation.targetWorktreeId);
+          emitAutomationRefresh("automation.run.updated", dueAutomation.id);
         }
 
         if (!runToDispatch) {
@@ -1187,6 +1310,7 @@ export function createAutomationService(deps: {
       ]);
 
       emitRepositoryRefresh(automation.repositoryId, automation.targetWorktreeId);
+      emitAutomationRefresh("automation.updated", automationId);
       return findAutomationWithSummary(automationId);
     },
 

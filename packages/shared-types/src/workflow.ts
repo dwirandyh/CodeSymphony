@@ -212,20 +212,10 @@ export function supportsModelProviderCompatibility(
 }
 
 export const BUILTIN_CHAT_MODELS_BY_AGENT = {
-  claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+  claude: [],
   codex: [],
-  cursor: [
-    "default[]",
-    "composer-2[fast=true]",
-    "composer-1.5[]",
-    "gpt-5.4[context=272k,reasoning=medium,fast=false]",
-    "gpt-5.4-mini[reasoning=medium]",
-    "gpt-5.3-codex[reasoning=medium,fast=false]",
-    "gpt-5.3-codex-spark[reasoning=medium]",
-    "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
-    "claude-opus-4-7[thinking=true,context=200k,effort=high]",
-  ],
-  opencode: ["opencode/minimax-m2.5-free", "opencode/ling-2.6-flash-free", "opencode/nemotron-3-super-free"],
+  cursor: [],
+  opencode: [],
 } as const satisfies Record<CliAgent, readonly string[]>;
 
 export const DEFAULT_CHAT_MODEL_BY_AGENT = {
@@ -362,7 +352,13 @@ export const WorkspaceSyncEventTypeSchema = z.enum([
   "repository.created",
   "repository.updated",
   "repository.deleted",
+  "automation.created",
+  "automation.updated",
+  "automation.deleted",
+  "automation.run.updated",
   "worktree.created",
+  "worktree.files.updated",
+  "worktree.git.updated",
   "worktree.updated",
   "worktree.deletion_started",
   "worktree.deletion_failed",
@@ -377,10 +373,93 @@ export const WorkspaceSyncEventSchema = z.object({
   id: z.string(),
   type: WorkspaceSyncEventTypeSchema,
   repositoryId: z.string().nullable().optional(),
+  automationId: z.string().nullable().optional(),
   worktreeId: z.string().nullable().optional(),
   threadId: z.string().nullable().optional(),
   createdAt: z.string().datetime(),
 });
+
+export type WorkspaceLiveConnectionState = "connecting" | "healthy" | "reconnecting" | "stale" | "exhausted";
+
+export type WorkspaceLiveResourceKind =
+  | "git_status"
+  | "repository_branches"
+  | "repository_reviews"
+  | "automation_runs";
+
+export type GitStatusLiveEvent = {
+  resource: "git_status";
+  scopeId: string;
+  seq: number;
+  snapshot: GitStatus;
+  emittedAt: string;
+};
+
+export type RepositoryBranchesLiveEvent = {
+  resource: "repository_branches";
+  scopeId: string;
+  seq: number;
+  snapshot: string[];
+  emittedAt: string;
+};
+
+export type RepositoryReviewsLiveEvent = {
+  resource: "repository_reviews";
+  scopeId: string;
+  seq: number;
+  snapshot: RepositoryReviewState;
+  emittedAt: string;
+};
+
+export type AutomationRunsLiveEvent = {
+  resource: "automation_runs";
+  scopeId: string;
+  seq: number;
+  snapshot: AutomationRun[];
+  emittedAt: string;
+};
+
+export type WorkspaceLiveResourceEvent =
+  | GitStatusLiveEvent
+  | RepositoryBranchesLiveEvent
+  | RepositoryReviewsLiveEvent
+  | AutomationRunsLiveEvent;
+
+export type WorkspaceLiveSocketSubscription =
+  | {
+    type: "workspace_sync";
+  }
+  | {
+    type: "live_resource";
+    resource: WorkspaceLiveResourceKind;
+    scopeId: string;
+    afterSeq?: number;
+  };
+
+export type WorkspaceLiveSocketClientMessage = {
+  type: "subscribe" | "unsubscribe";
+  subscriptions: WorkspaceLiveSocketSubscription[];
+};
+
+export type WorkspaceLiveSocketServerMessage =
+  | {
+    type: "workspace_sync";
+    event: WorkspaceSyncEvent;
+  }
+  | {
+    type: "live_resource";
+    event: WorkspaceLiveResourceEvent;
+  }
+  | {
+    type: "live_resource_error";
+    resource: WorkspaceLiveResourceKind;
+    scopeId: string;
+    message: string;
+  }
+  | {
+    type: "heartbeat";
+    ts: string;
+  };
 
 export const DevicePlatformSchema = z.enum(["android", "ios-simulator"]);
 export type DevicePlatform = z.infer<typeof DevicePlatformSchema>;
@@ -1047,6 +1126,33 @@ export const GitStatusSchema = z.object({
 });
 export type GitStatus = z.infer<typeof GitStatusSchema>;
 
+export const WorkspaceStartupBootstrapQuerySchema = z.object({
+  repositoryId: z.string().trim().min(1).optional(),
+  worktreeId: z.string().trim().min(1).optional(),
+  threadId: z.string().trim().min(1).optional(),
+}).strict();
+export type WorkspaceStartupBootstrapQuery = z.infer<typeof WorkspaceStartupBootstrapQuerySchema>;
+
+export const WorkspaceStartupBootstrapSelectionSchema = z.object({
+  repositoryId: z.string().nullable(),
+  worktreeId: z.string().nullable(),
+  threadId: z.string().nullable(),
+});
+export type WorkspaceStartupBootstrapSelection = z.infer<typeof WorkspaceStartupBootstrapSelectionSchema>;
+
+export const WorkspaceStartupBootstrapDataSchema = z.object({
+  selection: WorkspaceStartupBootstrapSelectionSchema,
+  repositories: z.array(RepositorySchema).optional(),
+  repository: RepositorySchema.nullable(),
+  worktree: WorktreeSchema.nullable(),
+  threads: z.array(ChatThreadSchema),
+  threadsLoaded: z.boolean(),
+  thread: ChatThreadSchema.nullable(),
+  gitStatus: GitStatusSchema.nullable(),
+  capturedAt: z.string().datetime(),
+});
+export type WorkspaceStartupBootstrapData = z.infer<typeof WorkspaceStartupBootstrapDataSchema>;
+
 export const GitBranchDiffSummarySchema = z.object({
   branch: z.string(),
   baseBranch: z.string(),
@@ -1244,6 +1350,19 @@ export const CodexModelCatalogSchema = z.object({
   fetchedAt: z.string().datetime(),
 });
 export type CodexModelCatalog = z.infer<typeof CodexModelCatalogSchema>;
+
+export const ClaudeModelCatalogEntrySchema = z.object({
+  id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  description: z.string(),
+});
+export type ClaudeModelCatalogEntry = z.infer<typeof ClaudeModelCatalogEntrySchema>;
+
+export const ClaudeModelCatalogSchema = z.object({
+  models: z.array(ClaudeModelCatalogEntrySchema),
+  fetchedAt: z.string().datetime(),
+});
+export type ClaudeModelCatalog = z.infer<typeof ClaudeModelCatalogSchema>;
 
 export const OpencodeModelCatalogEntrySchema = z.object({
   id: z.string().trim().min(1),

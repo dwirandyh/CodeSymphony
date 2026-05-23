@@ -188,7 +188,9 @@ export function isUnavailableWorktreeErrorMessage(message: string): boolean {
   return message === WORKTREE_PREPARING_ERROR_MESSAGE
     || message === WORKTREE_DELETING_ERROR_MESSAGE
     || message === WORKTREE_ARCHIVED_ERROR_MESSAGE
-    || message.startsWith(WORKTREE_CREATE_FAILED_ERROR_MESSAGE);
+    || message.startsWith(WORKTREE_CREATE_FAILED_ERROR_MESSAGE)
+    || message.startsWith("Worktree path not found:")
+    || message.startsWith("Worktree path is not a directory:");
 }
 
 export function createWorktreeService(

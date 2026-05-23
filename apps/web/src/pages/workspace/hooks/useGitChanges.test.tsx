@@ -151,27 +151,57 @@ describe("useGitChanges", () => {
     expect(container.textContent).toContain("entries:4");
   });
 
-  it("keeps cached git status visible while an enabled query is still loading", () => {
+  it("keeps source control projection visible while worktree git status is still loading", () => {
     vi.mocked(useGitStatus).mockReturnValue({
-      data: undefined,
+      data: {
+        branch: "cached-branch",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        entries: [{
+          path: "src/cached.ts",
+          status: "modified",
+          insertions: 1,
+          deletions: 0,
+        }],
+      },
+      isLoading: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useGitStatus>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <TestComponent worktreeId="w1" enabled={true} />
+        </QueryClientProvider>
+      );
+    });
+
+    expect(container.textContent).toContain("entries:1");
+    expect(container.textContent).toContain("branch:cached-branch");
+    expect(container.textContent).toContain("loading:false");
+  });
+
+  it("reacts to updated worktree git status snapshots for the same worktree", () => {
+    const mockedUseGitStatus = vi.mocked(useGitStatus);
+    mockedUseGitStatus.mockReturnValue({
+      data: {
+        branch: "cached-branch",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        entries: [{
+          path: "src/cached.ts",
+          status: "modified",
+          insertions: 1,
+          deletions: 0,
+        }],
+      },
       isLoading: true,
       refetch: vi.fn(),
     } as unknown as ReturnType<typeof useGitStatus>);
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    qc.setQueryData(queryKeys.worktrees.gitStatus("w1"), [{
-      worktreeId: "w1",
-      branch: "cached-branch",
-      upstream: null,
-      ahead: 0,
-      behind: 0,
-      entries: [{
-        path: "src/cached.ts",
-        status: "modified",
-        insertions: 1,
-        deletions: 0,
-      }],
-    }]);
 
     act(() => {
       root.render(
@@ -183,7 +213,34 @@ describe("useGitChanges", () => {
 
     expect(container.textContent).toContain("entries:1");
     expect(container.textContent).toContain("branch:cached-branch");
-    expect(container.textContent).toContain("loading:false");
+
+    mockedUseGitStatus.mockReturnValue({
+      data: {
+        branch: "fresh-branch",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        entries: [{
+          path: "src/fresh.ts",
+          status: "modified",
+          insertions: 2,
+          deletions: 0,
+        }],
+      },
+      isLoading: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useGitStatus>);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <TestComponent worktreeId="w1" enabled={true} />
+        </QueryClientProvider>
+      );
+    });
+
+    expect(container.textContent).toContain("entries:1");
+    expect(container.textContent).toContain("branch:fresh-branch");
   });
 
   it("keeps the last known worktree status visible when live git data temporarily disappears", () => {
@@ -286,5 +343,81 @@ describe("useGitChanges", () => {
     const repositories = qc.getQueryData<Repository[]>(queryKeys.repositories.all);
     expect(repositories?.[0]?.worktrees[0]?.branch).toBe("feature/from-terminal");
     expect(container.textContent).toContain("branch:feature/from-terminal");
+  });
+
+  it("does not overwrite the repositories cache branch label with HEAD", () => {
+    vi.mocked(useGitStatus).mockReturnValue({
+      data: {
+        branch: "HEAD",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        entries: [],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useGitStatus>);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData<Repository[]>(queryKeys.repositories.all, [{
+      id: "repo-1",
+      name: "Repo",
+      rootPath: "/repo",
+      defaultBranch: "main",
+      setupScript: null,
+      teardownScript: null,
+      runScript: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      worktrees: [{
+        id: "w1",
+        repositoryId: "repo-1",
+        branch: "main",
+        path: "/repo",
+        baseBranch: "main",
+        status: "active",
+        branchRenamed: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }],
+    }]);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <TestComponent worktreeId="w1" enabled={true} />
+        </QueryClientProvider>
+      );
+    });
+
+    const repositories = qc.getQueryData<Repository[]>(queryKeys.repositories.all);
+    expect(repositories?.[0]?.worktrees[0]?.branch).toBe("main");
+    expect(container.textContent).toContain("branch:HEAD");
+  });
+
+  it("surfaces live git status errors so unavailable worktrees are visible in the UI", () => {
+    vi.mocked(useGitStatus).mockReturnValue({
+      data: {
+        branch: "main",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        entries: [],
+      },
+      error: new Error("Worktree path not found: /tmp/codesymphony. Create a new worktree from Repository panel."),
+      isLoading: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useGitStatus>);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    act(() => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <TestComponent worktreeId="w1" enabled={true} />
+        </QueryClientProvider>
+      );
+    });
+
+    expect(hookResult.error).toContain("Worktree path not found");
   });
 });

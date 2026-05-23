@@ -852,17 +852,61 @@ async function createCursorConnection(params: {
     extMethod: params.client.extMethod,
   }), stream);
 
-  const initializeResponse = await connection.initialize({
-    protocolVersion: 1,
-    clientCapabilities: {
-      elicitation: {
-        form: {},
+  const initializeResponse = await new Promise<Awaited<ReturnType<ClientSideConnection["initialize"]>>>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      child.off("error", handleError);
+      child.off("exit", handleExit);
+    };
+
+    const fail = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const handleError = (error: Error) => {
+      fail(error);
+    };
+
+    const handleExit = (code: number | null) => {
+      const stderr = stderrChunks.join("").trim();
+      fail(new Error(
+        stderr.length > 0
+          ? stderr
+          : `Cursor Agent CLI exited before ACP initialization (code ${code ?? "null"}).`,
+      ));
+    };
+
+    child.once("error", handleError);
+    child.once("exit", handleExit);
+
+    void connection.initialize({
+      protocolVersion: 1,
+      clientCapabilities: {
+        elicitation: {
+          form: {},
+        },
       },
-    },
-    clientInfo: {
-      name: "codesymphony-runtime",
-      version: "0.1.0",
-    },
+      clientInfo: {
+        name: "codesymphony-runtime",
+        version: "0.1.0",
+      },
+    }).then((response) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve(response);
+    }, (error) => {
+      fail(error instanceof Error ? error : new Error(String(error)));
+    });
   });
 
   return {
@@ -1070,34 +1114,36 @@ async function listCursorCatalog(cwd: string): Promise<CursorCatalogSnapshot> {
   let resolveCommands: (() => void) | null = null;
   let commandTimer: ReturnType<typeof setTimeout> | null = null;
   const mcpServers = loadCursorAcpMcpServers();
+  let child: ChildProcessWithoutNullStreams | null = null;
+  let connection: ClientSideConnection | null = null;
 
   const commandsReady = new Promise<void>((resolve) => {
     resolveCommands = resolve;
     commandTimer = setTimeout(resolve, CURSOR_CATALOG_TIMEOUT_MS);
   });
 
-  const { child, connection } = await createCursorConnection({
-    cwd,
-    client: {
-      sessionUpdate: async ({ update }) => {
-        if (update.sessionUpdate === "available_commands_update") {
-          availableCommands = Array.isArray(update.availableCommands) ? update.availableCommands : [];
-          resolveCommands?.();
-        }
-      },
-      requestPermission: async () => ({
-        outcome: {
-          outcome: "cancelled",
-        },
-      }),
-      unstable_createElicitation: async () => ({
-        action: "cancel",
-      }),
-      extMethod: async () => ({}),
-    },
-  });
-
   try {
+    ({ child, connection } = await createCursorConnection({
+      cwd,
+      client: {
+        sessionUpdate: async ({ update }) => {
+          if (update.sessionUpdate === "available_commands_update") {
+            availableCommands = Array.isArray(update.availableCommands) ? update.availableCommands : [];
+            resolveCommands?.();
+          }
+        },
+        requestPermission: async () => ({
+          outcome: {
+            outcome: "cancelled",
+          },
+        }),
+        unstable_createElicitation: async () => ({
+          action: "cancel",
+        }),
+        extMethod: async () => ({}),
+      },
+    }));
+
     const session = await connection.newSession({
       cwd,
       mcpServers,
@@ -1117,7 +1163,9 @@ async function listCursorCatalog(cwd: string): Promise<CursorCatalogSnapshot> {
     if (commandTimer) {
       clearTimeout(commandTimer);
     }
-    await terminateCursorChild(child);
+    if (child) {
+      await terminateCursorChild(child);
+    }
   }
 }
 

@@ -46,6 +46,7 @@ type WorkspaceHeaderProps = {
   targetBranchOptions?: string[];
   targetBranchLoading?: boolean;
   targetBranchDisabled?: boolean;
+  enableInstalledAppsQuery?: boolean;
   worktreePath: string | null;
   threads: ChatThread[];
   terminalTabs?: WorkspaceTerminalTab[];
@@ -123,6 +124,7 @@ export function WorkspaceHeader({
   targetBranchOptions = [],
   targetBranchLoading = false,
   targetBranchDisabled = false,
+  enableInstalledAppsQuery = true,
   worktreePath,
   threads,
   terminalTabs = [],
@@ -158,11 +160,14 @@ export function WorkspaceHeader({
   onToggleLeftPanel,
   resourceMonitor,
 }: WorkspaceHeaderProps) {
+  const SESSION_TAB_EDGE_INSET_PX = 64;
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
   const [targetBranchFilter, setTargetBranchFilter] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const targetBranchFilterInputRef = useRef<HTMLInputElement | null>(null);
+  const sessionTabsScrollRef = useRef<HTMLDivElement | null>(null);
+  const selectedThreadTabRef = useRef<HTMLButtonElement | null>(null);
 
   const branchContextLabel = selectedWorktreeBranch
     ?? (selectedIsRootWorkspace ? "Root worktree" : "Worktree");
@@ -217,6 +222,34 @@ export function WorkspaceHeader({
 
     return () => window.clearTimeout(timeoutId);
   }, [targetBranchSelectorOpen]);
+
+  useEffect(() => {
+    if (reviewTabActive || terminalTabActive || activeFilePath) {
+      return;
+    }
+
+    const scrollRegion = sessionTabsScrollRef.current;
+    const selectedThreadTab = selectedThreadTabRef.current;
+    if (!scrollRegion || !selectedThreadTab) {
+      return;
+    }
+    if (typeof selectedThreadTab.scrollIntoView !== "function") {
+      return;
+    }
+
+    const scrollRegionRect = scrollRegion.getBoundingClientRect();
+    const selectedThreadRect = selectedThreadTab.getBoundingClientRect();
+    const tooCloseToLeftEdge = selectedThreadRect.left < scrollRegionRect.left + SESSION_TAB_EDGE_INSET_PX;
+    const tooCloseToRightEdge = selectedThreadRect.right > scrollRegionRect.right - SESSION_TAB_EDGE_INSET_PX;
+    if (!tooCloseToLeftEdge && !tooCloseToRightEdge) {
+      return;
+    }
+
+    selectedThreadTab.scrollIntoView({
+      block: "nearest",
+      inline: "center",
+    });
+  }, [activeFilePath, reviewTabActive, selectedThreadId, terminalTabActive, threads]);
 
   function startThreadRename(threadId: string, isSelected: boolean) {
     if (!isSelected || disabled) {
@@ -364,7 +397,11 @@ export function WorkspaceHeader({
           {resourceMonitor}
 
           {worktreePath && (
-            <OpenInAppButton key={worktreePath} targetPath={worktreePath} />
+            <OpenInAppButton
+              key={worktreePath}
+              targetPath={worktreePath}
+              enableInstalledAppsQuery={enableInstalledAppsQuery}
+            />
           )}
 
           {onToggleRunScript && (
@@ -390,8 +427,9 @@ export function WorkspaceHeader({
 
       <div className="flex items-center gap-1">
         <div
+          ref={sessionTabsScrollRef}
           className={cn(
-            "min-w-0 flex-1 overflow-x-auto overscroll-x-contain [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
+            "min-w-0 flex-1 overflow-x-auto overscroll-x-contain scroll-px-16 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
           )}
           role="tablist"
           aria-label="Sessions"
@@ -434,6 +472,7 @@ export function WorkspaceHeader({
                     />
                   ) : (
                     <button
+                      ref={isSelected ? selectedThreadTabRef : null}
                       type="button"
                       role="tab"
                       aria-selected={isSelected}

@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PrismaClient, type ChatEventType } from "@prisma/client";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
@@ -172,6 +175,85 @@ describe("chatService snapshot", () => {
     expect(snapshot.timeline.newestIdx).toBe(3);
   });
 
+  it("can omit canonical collections while keeping timeline items for compact startup snapshots", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { threadId, messageIdBySeq } = await seedThreadWithMessages(2);
+    await insertEvents(threadId, [
+      { idx: 1, type: "chat_completed", payload: { messageId: messageIdBySeq.get(1) } },
+      { idx: 2, type: "chat_completed", payload: { messageId: messageIdBySeq.get(2) } },
+    ]);
+
+    const snapshot = await chatService.listThreadSnapshot(threadId, {
+      includeCollections: false,
+    });
+
+    expect(snapshot.messages).toEqual([]);
+    expect(snapshot.events).toEqual([]);
+    expect(snapshot.timeline.collectionsIncluded).toBe(false);
+    expect(snapshot.timeline.messages).toEqual([]);
+    expect(snapshot.timeline.events).toEqual([]);
+    expect(snapshot.timeline.timelineItems).toHaveLength(2);
+    expect(snapshot.timeline.newestSeq).toBe(2);
+    expect(snapshot.timeline.newestIdx).toBe(2);
+  });
+
+  it("skips storage-backed image hydration for compact startup snapshots", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { threadId } = await seedThreadWithMessages(1);
+    const message = await prisma.chatMessage.findFirstOrThrow({
+      where: { threadId, seq: 1 },
+    });
+    const tempDir = mkdtempSync(join(tmpdir(), "codesymphony-compact-snapshot-"));
+    const imagePath = join(tempDir, "diagram.png");
+    const imageBytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
+    writeFileSync(imagePath, imageBytes);
+
+    await prisma.chatAttachment.create({
+      data: {
+        messageId: message.id,
+        filename: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: imageBytes.length,
+        content: "",
+        storagePath: imagePath,
+        source: "clipboard_image",
+      },
+    });
+
+    const snapshot = await chatService.listThreadSnapshot(threadId, {
+      includeCollections: false,
+    });
+
+    const messageItem = snapshot.timeline.timelineItems.find((item) => item.kind === "message");
+    expect(messageItem?.kind).toBe("message");
+    if (messageItem?.kind !== "message") {
+      return;
+    }
+
+    expect(messageItem.message.attachments).toEqual([
+      expect.objectContaining({
+        filename: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: imageBytes.length,
+        storagePath: imagePath,
+        content: "",
+      }),
+    ]);
+  });
+
   it("returns all events even with many events", async () => {
     const chatService = createChatService({
       prisma,
@@ -192,6 +274,35 @@ describe("chatService snapshot", () => {
 
     expect(snapshot.events).toHaveLength(100);
     expect(snapshot.timeline.newestIdx).toBe(100);
+  });
+
+  it("drops duplicate tool error output copies in snapshot events", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { threadId } = await seedThreadWithMessages(1);
+    await insertEvents(threadId, [
+      {
+        idx: 1,
+        type: "tool_finished",
+        payload: {
+          toolName: "Bash",
+          summary: "Command failed: rtk pnpm test",
+          output: "same giant failure blob",
+          error: "same giant failure blob",
+        },
+      },
+    ]);
+
+    const snapshot = await chatService.listThreadSnapshot(threadId);
+    const eventPayload = snapshot.events[0]?.payload ?? {};
+
+    expect(eventPayload.error).toBe("same giant failure blob");
+    expect("output" in eventPayload).toBe(false);
   });
 
   it("does not mark hydration pending when the thread fits entirely in the snapshot", async () => {

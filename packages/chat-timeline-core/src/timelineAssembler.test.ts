@@ -30,6 +30,55 @@ function makeEvent(
 }
 
 describe("buildTimelineFromSeed", () => {
+  it("produces the same timeline for sorted and unsorted seed data", () => {
+    const sortedMessages = [
+      makeMessage("m1", 0, "user", "Find last updated in README."),
+      makeMessage("m2", 1, "assistant", "**Results:**\n- found it"),
+    ];
+    const sortedEvents = [
+      makeEvent(1, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-rg",
+        messageId: "m2",
+      }),
+      makeEvent(2, "tool.output", {
+        toolName: "Bash",
+        toolUseId: "bash-rg",
+        messageId: "m2",
+      }),
+      makeEvent(3, "tool.finished", {
+        toolName: "Bash",
+        precedingToolUseIds: ["bash-rg"],
+        command: 'rtk rg -n "last updated" README.md',
+        summary: 'Search for "last updated" in README.md',
+        messageId: "m2",
+      }),
+      makeEvent(4, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "**Results:**\n- found it",
+      }),
+      makeEvent(5, "chat.completed", {
+        messageId: "m2",
+      }),
+    ];
+
+    const sortedResult = buildTimelineFromSeed({
+      messages: sortedMessages,
+      events: sortedEvents,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+    const unsortedResult = buildTimelineFromSeed({
+      messages: [...sortedMessages].reverse(),
+      events: [...sortedEvents].reverse(),
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(unsortedResult).toEqual(sortedResult);
+  });
+
   it("suppresses raw bash cards for explore-like runs when the command only appears on tool.finished", () => {
     const messages = [
       makeMessage("m1", 0, "user", "Find last updated in README."),

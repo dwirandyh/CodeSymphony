@@ -235,6 +235,72 @@ describe("WorkspaceHeader", () => {
     expect(onCreateThread).toHaveBeenCalledTimes(1);
   });
 
+  it("recenters the selected thread tab when it renders too close to the tab-strip edge", async () => {
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    const scrollIntoView = vi.fn();
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function getBoundingClientRect(this: HTMLElement) {
+      if (this instanceof HTMLDivElement && this.dataset.testid === "session-tabs-scroll") {
+        return {
+          x: 0,
+          y: 0,
+          width: 320,
+          height: 40,
+          top: 0,
+          right: 320,
+          bottom: 40,
+          left: 0,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+
+      if (
+        this instanceof HTMLButtonElement
+        && this.getAttribute("role") === "tab"
+        && this.getAttribute("aria-selected") === "true"
+      ) {
+        return {
+          x: 260,
+          y: 0,
+          width: 140,
+          height: 32,
+          top: 0,
+          right: 400,
+          bottom: 32,
+          left: 260,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+
+      return originalGetBoundingClientRect.call(this);
+    });
+
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      renderHeader();
+      await Promise.resolve();
+
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        block: "nearest",
+        inline: "center",
+      });
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "scrollIntoView", scrollIntoViewDescriptor);
+      } else {
+        // Match the pre-test environment when scrollIntoView is not defined.
+        // @ts-expect-error -- test cleanup for environments without scrollIntoView
+        delete HTMLElement.prototype.scrollIntoView;
+      }
+    }
+  });
+
   it("remembers the last selected create action for the main add session button", () => {
     const onCreateThread = vi.fn();
     const onCreateTerminal = vi.fn();

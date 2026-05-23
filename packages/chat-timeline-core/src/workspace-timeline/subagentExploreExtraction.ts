@@ -17,7 +17,9 @@ export function extractSubagentExploreGroups(
   contextWithAgentBoundaries: ChatEvent[],
   options?: { previousClaimedContextEventIds?: Set<string> },
 ): SubagentExploreExtractionResult {
-  const subagentGroups = extractSubagentGroups(contextWithAgentBoundaries);
+  const subagentGroups = extractSubagentGroups(contextWithAgentBoundaries, {
+    eventsAreSorted: true,
+  });
   const subagentEventIds = new Set<string>();
   for (const group of subagentGroups) {
     group.eventIds.forEach((eventId) => subagentEventIds.add(eventId));
@@ -34,6 +36,9 @@ export function extractSubagentExploreGroups(
     contextWithAgentBoundaries.filter(
       (event) => !subagentEventIds.has(event.id) && !overlapUnclaimedEventIds.has(event.id),
     ),
+    {
+      eventsAreSorted: true,
+    },
   );
   const exploreEventIds = new Set<string>();
   for (const group of exploreActivityGroups) {

@@ -5,12 +5,18 @@ import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 import { ensureBrowserCryptoRandomUUID } from "./lib/browserCrypto";
 import { createQueryClient } from "./lib/queryClient";
+import { isTauriDesktop } from "./lib/openExternalUrl";
+import { bootstrapWorkspaceStartup } from "./lib/startupBoot";
+import { initializeStartupPerfSession } from "./lib/startupPerf";
 import { installDesktopShellVitePreloadGuard } from "./lib/vitePreloadGuard";
 import { AppCrashFallback } from "./components/error/AppCrashFallback";
 import "./styles.css";
 
 ensureBrowserCryptoRandomUUID();
 installDesktopShellVitePreloadGuard();
+initializeStartupPerfSession({
+  target: isTauriDesktop() ? "desktop" : "web",
+});
 
 const queryClient = createQueryClient();
 
@@ -52,6 +58,8 @@ class RootErrorBoundary extends React.Component<React.PropsWithChildren, RootErr
 }
 
 const RootMode = import.meta.env.DEV ? React.Fragment : React.StrictMode;
+
+void bootstrapWorkspaceStartup(queryClient);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <RootMode>

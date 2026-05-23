@@ -18,6 +18,8 @@ libc = "0.2"
 notify-rust = "4.11"
 tauri-plugin-notification = "2.2.0"
 tauri-plugin-opener = "2.2.0"
+tauri-plugin-sql = { version = "2.0.0", features = ["sqlite"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3.2", features = ["NSButton", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSButton", "NSView", "NSWindow", "NSWindowRestoration"] }
+objc2-foundation = { version = "0.3.2", features = ["NSString", "NSUserDefaults"] }

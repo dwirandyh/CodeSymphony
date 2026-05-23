@@ -48,3 +48,19 @@ function ensureStorageApi(name: "localStorage" | "sessionStorage"): void {
 
 ensureStorageApi("localStorage");
 ensureStorageApi("sessionStorage");
+
+if (typeof globalThis.ResizeObserver !== "function") {
+  class MockResizeObserver implements ResizeObserver {
+    observe() {}
+
+    unobserve() {}
+
+    disconnect() {}
+  }
+
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    configurable: true,
+    writable: true,
+    value: MockResizeObserver,
+  });
+}

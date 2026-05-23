@@ -30,6 +30,7 @@ import {
   clearThreadReconnectTimer,
   getThreadLastEventIdx,
   getThreadLastMessageSeq,
+  getThreadStreamConnectionState,
   getThreadReconnectAttempts,
   hasSeenThreadEvent,
   incrementThreadReconnectAttempts,
@@ -39,6 +40,7 @@ import {
   resetThreadReconnectAttempts,
   setThreadLastEventIdx,
   setThreadLastMessageSeq,
+  setThreadStreamConnectionState,
   setThreadReconnectTimer,
 } from "../../../../collections/threadStreamState";
 import { EVENT_TYPES } from "../../constants";
@@ -54,6 +56,8 @@ import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "../snapshotInvalidationEventTypes";
 import { reduceStatusSnapshotWithEvent } from "../threadStatusSnapshotCache";
 import type { ThreadCompletionAttentionEvent } from "../useCompletionAttention";
+import { markWorktreeGitStatusChanged } from "../../../../hooks/queries/useGitStatus";
+import { requestRepositoryReviewsLiveRefresh } from "../../../../hooks/queries/useRepositoryReviews";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
@@ -397,6 +401,27 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }, { threadId: selectedThreadId, worktreeId: selectedWorktreeId });
     };
 
+    const updateConnectionState = (
+      nextState: "connecting" | "healthy" | "reconnecting" | "exhausted" | "stale",
+      message?: string,
+      reason?: string,
+      data?: Record<string, unknown>,
+    ) => {
+      const previousState = getThreadStreamConnectionState(selectedThreadId);
+      if (previousState !== nextState) {
+        debugLog("thread.stream.state", reason ?? "state.changed", {
+          threadId: selectedThreadId,
+          worktreeId: selectedWorktreeId,
+          from: previousState,
+          to: nextState,
+          reconnectAttempts: getThreadReconnectAttempts(selectedThreadId),
+          ...(message ? { errorMessage: message } : {}),
+          ...(data ?? {}),
+        }, { threadId: selectedThreadId, worktreeId: selectedWorktreeId, force: true });
+      }
+      setThreadStreamConnectionState(selectedThreadId, nextState, message);
+    };
+
     const markStreamActivity = () => {
       lastStreamActivityAtMs = getNowMs();
     };
@@ -667,7 +692,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       if (selectedWorktreeId && GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(selectedWorktreeId) });
+        markWorktreeGitStatusChanged(queryClient, selectedWorktreeId, {
+          cause: "thread_activity",
+        });
       }
 
       if (payload.type === "chat.completed" || payload.type === "chat.failed") {
@@ -711,7 +738,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           );
         }
         if (repositoryIdRef.current && selectedThreadIsPrMrRef.current) {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryIdRef.current) });
+          requestRepositoryReviewsLiveRefresh(queryClient, repositoryIdRef.current);
         }
       }
 
@@ -776,6 +803,11 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       closeStream();
+      updateConnectionState(
+        getThreadReconnectAttempts(selectedThreadId) > 0 ? "reconnecting" : "connecting",
+        undefined,
+        "stream.start",
+      );
 
       const cachedSnapshot = queryClient.getQueryData<ChatTimelineSnapshot>(
         queryKeys.threads.timelineSnapshot(selectedThreadId),
@@ -810,6 +842,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         markStreamActivity();
         resetThreadReconnectAttempts(selectedThreadId);
         clearThreadReconnectTimer(selectedThreadId);
+        updateConnectionState("healthy", undefined, "stream.open");
         onError(null);
         logLifecycle("stream.open", {
           afterIdx: lastEventIdx,
@@ -829,6 +862,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
           if (getThreadReconnectAttempts(selectedThreadId) < MAX_RECONNECT_ATTEMPTS) {
             const attempt = incrementThreadReconnectAttempts(selectedThreadId);
+            updateConnectionState("reconnecting", undefined, "stream.error.reconnect-scheduled", {
+              attempt,
+            });
             const delay = BASE_RECONNECT_DELAY_MS * Math.pow(2, attempt - 1);
             logLifecycle("stream.reconnect.scheduled", {
               attempt,
@@ -840,6 +876,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             }, delay);
             setThreadReconnectTimer(selectedThreadId, reconnectTimer);
           } else {
+            updateConnectionState("exhausted", "Lost connection to chat stream", "stream.error.exhausted");
             onError("Lost connection to chat stream");
           }
         }
@@ -917,6 +954,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             return;
           }
 
+          updateConnectionState("stale", undefined, "watchdog.stale", {
+            staleForMs,
+          });
           logWatchdog("stale.detected", {
             staleForMs,
             streamReadyState: stream?.readyState ?? null,

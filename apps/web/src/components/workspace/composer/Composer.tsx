@@ -16,6 +16,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  type ClaudeModelCatalogEntry,
   type ChatQueuedMessage,
   type ChatThreadKind,
   type CodexModelCatalogEntry,
@@ -59,6 +60,7 @@ import {
 import { useComposerMention } from "./useComposerMention";
 import { useComposerAttachments } from "./useComposerAttachments";
 import { useComposerSlashCommand } from "./useComposerSlashCommand";
+import { useSlashCommandsQuery } from "../../../hooks/queries/useSlashCommandsQuery";
 import { useFileIndex } from "../../../pages/workspace/hooks/useFileIndex";
 import { resolveAgentDefaultModel } from "../../../lib/agentModelDefaults";
 import {
@@ -90,12 +92,14 @@ type ComposerProps = {
   modeLocked: boolean;
   fileIndex?: FileEntry[];
   fileIndexLoading?: boolean;
-  slashCommands: SlashCommand[];
-  slashCommandsLoading: boolean;
+  slashCommands?: SlashCommand[];
+  slashCommandsLoading?: boolean;
   providers: ModelProvider[];
+  claudeModels?: readonly ClaudeModelCatalogEntry[];
   codexModels?: readonly CodexModelCatalogEntry[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
+  modelCatalogReadyByAgent?: Partial<Record<CliAgent, boolean>>;
   agent?: CliAgent;
   model?: string;
   modelProviderId?: string | null;
@@ -111,6 +115,7 @@ type ComposerProps = {
   onQueueDraft?: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onModeChange: (mode: ChatMode) => void;
   onStop: () => void;
+  onAgentModelSelectorOpen?: () => void;
   onAgentSelectionChange?: (selection: UpdateChatThreadAgentSelectionInput) => void;
   onPermissionModeChange: (permissionMode: ChatThreadPermissionMode) => void;
   onDeleteQueuedMessage?: (queueMessageId: string) => void;
@@ -244,12 +249,14 @@ function ComposerContent({
   modeLocked,
   fileIndex,
   fileIndexLoading,
-  slashCommands,
-  slashCommandsLoading,
+  slashCommands: providedSlashCommands,
+  slashCommandsLoading: providedSlashCommandsLoading,
   providers,
+  claudeModels = [],
   codexModels = [],
   cursorModels = [],
   opencodeModels,
+  modelCatalogReadyByAgent,
   agent: providedAgent,
   model: providedModel,
   modelProviderId: providedModelProviderId,
@@ -265,6 +272,7 @@ function ComposerContent({
   onQueueDraft,
   onModeChange,
   onStop,
+  onAgentModelSelectorOpen,
   onAgentSelectionChange: onAgentSelectionChangeProp,
   onPermissionModeChange,
   onDeleteQueuedMessage,
@@ -284,6 +292,8 @@ function ComposerContent({
   const [permissionPreviewMode, setPermissionPreviewMode] = useState<ChatThreadPermissionMode | null>(null);
   const [mobileSessionSheetOpen, setMobileSessionSheetOpen] = useState(false);
   const [composerPopoverHost, setComposerPopoverHost] = useState<HTMLDivElement | null>(null);
+  const shouldUseProvidedSlashCommands = providedSlashCommands !== undefined || providedSlashCommandsLoading !== undefined;
+  const [slashCommandsRequested, setSlashCommandsRequested] = useState(() => shouldUseProvidedSlashCommands);
   const hasProvidedFileIndex = fileIndex !== undefined && typeof fileIndexLoading === "boolean";
   const [hasRequestedFileIndex, setHasRequestedFileIndex] = useState(() => hasProvidedFileIndex);
   const [isMobile, setIsMobile] = useState(() => {
@@ -339,6 +349,16 @@ function ComposerContent({
   }, [mobileSessionSheetOpen]);
 
   useEffect(() => {
+    if (shouldUseProvidedSlashCommands || slashCommandsRequested) {
+      return;
+    }
+
+    if (draftText.includes("/")) {
+      setSlashCommandsRequested(true);
+    }
+  }, [draftText, shouldUseProvidedSlashCommands, slashCommandsRequested]);
+
+  useEffect(() => {
     setHasRequestedFileIndex(hasProvidedFileIndex);
   }, [hasProvidedFileIndex, worktreeId]);
 
@@ -351,13 +371,22 @@ function ComposerContent({
     : null;
   const canRenderQueuedMessages = queuedMessages.length > 0 && queuedMessageHandlers !== null;
   const codexBuiltinModelOverride = runtimeInfo?.codexCliProviderOverride?.model ?? null;
+  const slashCommandsQuery = useSlashCommandsQuery(worktreeId, agent, {
+    enabled: !shouldUseProvidedSlashCommands && slashCommandsRequested,
+    refetchInterval: false,
+  });
+  const slashCommands = providedSlashCommands ?? slashCommandsQuery.data?.commands ?? [];
+  const slashCommandsLoading = providedSlashCommandsLoading ?? (
+    !shouldUseProvidedSlashCommands && slashCommandsRequested && slashCommandsQuery.isLoading
+  );
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => buildAgentSelectionOptions({
     providers,
+    claudeModels,
     codexModels,
     cursorModels,
     opencodeModels,
     codexBuiltinModelOverride,
-  }), [codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
+  }), [claudeModels, codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
   const currentProvider = useMemo(
     () => (modelProviderId ? providers.find((provider) => provider.id === modelProviderId) ?? null : null),
     [modelProviderId, providers],
@@ -627,9 +656,20 @@ function ComposerContent({
     prevContentLenRef.current = (editor.textContent ?? "").length;
     lastStableHTMLRef.current = editor.innerHTML;
     syncValueFromEditor();
+    if (!shouldUseProvidedSlashCommands && !slashCommandsRequested && currentText.includes("/")) {
+      setSlashCommandsRequested(true);
+    }
     detectMention();
     detectSlashCommand();
-  }, [autoConvertLongTextEnabled, syncValueFromEditor, applyAttachmentsChange, detectMention, detectSlashCommand]);
+  }, [
+    autoConvertLongTextEnabled,
+    syncValueFromEditor,
+    applyAttachmentsChange,
+    detectMention,
+    detectSlashCommand,
+    shouldUseProvidedSlashCommands,
+    slashCommandsRequested,
+  ]);
 
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;
@@ -1253,7 +1293,7 @@ function ComposerContent({
   );
 
   return (
-    <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
+    <section className="px-1.5 pb-1 pt-0.5 safe-bottom sm:px-2.5 lg:px-3 lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
         <div
           className={`relative border bg-background/35 px-3 pb-11 pt-2.5 shadow-sm backdrop-blur-sm lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
@@ -1522,13 +1562,16 @@ function ComposerContent({
                 <AgentModelSelector
                   selection={{ agent, model, modelProviderId }}
                   providers={providers}
+                  claudeModels={claudeModels}
                   codexModels={codexModels}
                   cursorModels={cursorModels}
                   opencodeModels={opencodeModels}
                   codexBuiltinModelOverride={codexBuiltinModelOverride}
+                  modelCatalogReadyByAgent={modelCatalogReadyByAgent}
                   showAgentList={showAgentList}
                   selectionLockedReason={selectionBlockedReason}
                   popoverContainer={composerPopoverHost}
+                  onOpen={onAgentModelSelectorOpen}
                   onSelectionChange={(nextSelection) => {
                     onAgentSelectionChange(nextSelection);
                   }}

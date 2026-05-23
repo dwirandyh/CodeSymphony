@@ -1,5 +1,9 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as claudeModelCatalog from "../src/claude/modelCatalog.js";
 import * as codexSessionRunner from "../src/codex/sessionRunner.js";
 import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
 import * as opencodeModelCatalog from "../src/opencode/modelCatalog.js";
@@ -7,6 +11,7 @@ import { registerModelRoutes } from "../src/routes/models";
 
 describe("model provider routes", () => {
   let app: FastifyInstance;
+  let modelCatalogCacheDir: string;
   const mockService = {
     listProviders: vi.fn(),
     createProvider: vi.fn(),
@@ -16,16 +21,25 @@ describe("model provider routes", () => {
     deactivateAll: vi.fn(),
   };
 
+  async function createTestApp(): Promise<FastifyInstance> {
+    const nextApp = Fastify({ logger: false });
+    nextApp.decorate("modelProviderService", mockService as never);
+    await nextApp.register(registerModelRoutes, { prefix: "/api" });
+    await nextApp.ready();
+    return nextApp;
+  }
+
   beforeEach(async () => {
     vi.resetAllMocks();
-    app = Fastify({ logger: false });
-    app.decorate("modelProviderService", mockService as never);
-    await app.register(registerModelRoutes, { prefix: "/api" });
-    await app.ready();
+    modelCatalogCacheDir = await mkdtemp(path.join(os.tmpdir(), "codesymphony-model-catalog-cache-"));
+    process.env.CODESYMPHONY_MODEL_CATALOG_CACHE_DIR = modelCatalogCacheDir;
+    app = await createTestApp();
   });
 
   afterEach(async () => {
     await app.close();
+    delete process.env.CODESYMPHONY_MODEL_CATALOG_CACHE_DIR;
+    await rm(modelCatalogCacheDir, { recursive: true, force: true });
   });
 
   it("GET /api/model-providers lists providers", async () => {
@@ -61,6 +75,37 @@ describe("model provider routes", () => {
         id: "zai/glm-4.7-flash",
         name: "GLM-4.7-Flash",
         providerId: "zai",
+      },
+    ]);
+    expect(typeof res.json().data.fetchedAt).toBe("string");
+  });
+
+  it("GET /api/claude/models lists the Claude catalog with display metadata", async () => {
+    vi.spyOn(claudeModelCatalog, "listClaudeModels")
+      .mockResolvedValue([
+        {
+          id: "default",
+          name: "Default (recommended)",
+          description: "Use the default model.",
+        },
+        {
+          id: "opus",
+          name: "Opus",
+          description: "Most capable for complex work.",
+        },
+      ]);
+    const res = await app.inject({ method: "GET", url: "/api/claude/models" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.models).toEqual([
+      {
+        id: "default",
+        name: "Default (recommended)",
+        description: "Use the default model.",
+      },
+      {
+        id: "opus",
+        name: "Opus",
+        description: "Most capable for complex work.",
       },
     ]);
     expect(typeof res.json().data.fetchedAt).toBe("string");
@@ -103,6 +148,63 @@ describe("model provider routes", () => {
       },
     ]);
     expect(typeof res.json().data.fetchedAt).toBe("string");
+  });
+
+  it("GET /api/codex/models reuses the cached catalog until it expires", async () => {
+    const listCodexModels = vi.spyOn(codexSessionRunner, "listCodexModels")
+      .mockResolvedValue([
+        {
+          id: "gpt-5.5",
+          name: "GPT-5.5",
+          description: "Frontier coding model",
+          hidden: false,
+          isDefault: true,
+        },
+      ]);
+
+    const first = await app.inject({ method: "GET", url: "/api/codex/models" });
+    const second = await app.inject({ method: "GET", url: "/api/codex/models" });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(listCodexModels).toHaveBeenCalledTimes(1);
+    expect(second.json().data).toEqual(first.json().data);
+  });
+
+  it("GET /api/codex/models reuses the persisted catalog after the runtime restarts", async () => {
+    const listCodexModels = vi.spyOn(codexSessionRunner, "listCodexModels")
+      .mockResolvedValue([
+        {
+          id: "gpt-5.5",
+          name: "GPT-5.5",
+          description: "Frontier coding model",
+          hidden: false,
+          isDefault: true,
+        },
+      ]);
+
+    const first = await app.inject({ method: "GET", url: "/api/codex/models" });
+    expect(first.statusCode).toBe(200);
+    expect(listCodexModels).toHaveBeenCalledTimes(1);
+
+    await app.close();
+    app = await createTestApp();
+
+    listCodexModels.mockResolvedValue([
+      {
+        id: "gpt-5.4",
+        name: "GPT-5.4",
+        description: "Fallback model",
+        hidden: false,
+        isDefault: false,
+      },
+    ]);
+
+    const second = await app.inject({ method: "GET", url: "/api/codex/models" });
+
+    expect(second.statusCode).toBe(200);
+    expect(listCodexModels).toHaveBeenCalledTimes(1);
+    expect(second.json().data).toEqual(first.json().data);
   });
 
   it("GET /api/cursor/models lists the Cursor model catalog with display metadata", async () => {

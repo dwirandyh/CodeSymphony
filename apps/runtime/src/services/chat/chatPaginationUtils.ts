@@ -2,6 +2,11 @@ import type { ChatEventType as DbChatEventType } from "@prisma/client";
 import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
 import { mapChatMessage } from "../mappers.js";
 import { buildTimelineFromSeed } from "./chatTimelineAssembler.js";
+import { normalizeChatEventPayload } from "./chatEventPayloadNormalization.js";
+
+type MapMessagesOptions = {
+  hydrateAttachmentContentFromStorage?: boolean;
+};
 
 const chatEventTypeFromDb: Partial<Record<DbChatEventType, ChatEvent["type"]>> = {
   message_delta: "message.delta",
@@ -24,8 +29,13 @@ const chatEventTypeFromDb: Partial<Record<DbChatEventType, ChatEvent["type"]>> =
   chat_failed: "chat.failed",
 };
 
-export function mapMessages(rows: Array<Parameters<typeof mapChatMessage>[0]>) {
-  return rows.map(mapChatMessage);
+export function mapMessages(
+  rows: Array<Parameters<typeof mapChatMessage>[0]>,
+  options?: MapMessagesOptions,
+) {
+  return rows.map((row) => mapChatMessage(row, {
+    hydrateContentFromStorage: options?.hydrateAttachmentContentFromStorage,
+  }));
 }
 
 export function mapEvents(
@@ -42,7 +52,7 @@ export function mapEvents(
       threadId: row.threadId,
       idx: row.idx,
       type,
-      payload: row.payload as Record<string, unknown>,
+      payload: normalizeChatEventPayload(type, row.payload),
       createdAt: row.createdAt.toISOString(),
     }];
   });
@@ -52,11 +62,13 @@ export function buildTimelineSnapshot(params: {
   messages: ReturnType<typeof mapChatMessage>[];
   events: ChatEvent[];
   threadId: string | null;
+  includeCollections?: boolean;
 }) {
   const {
     messages,
     events,
     threadId,
+    includeCollections = true,
   } = params;
 
   const assembly = buildTimelineFromSeed({
@@ -86,8 +98,8 @@ export function buildTimelineSnapshot(params: {
     },
     newestSeq,
     newestIdx,
-    collectionsIncluded: true,
-    messages,
-    events,
+    collectionsIncluded: includeCollections,
+    messages: includeCollections ? messages : [],
+    events: includeCollections ? events : [],
   };
 }

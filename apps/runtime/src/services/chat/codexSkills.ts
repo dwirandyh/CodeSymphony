@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -10,6 +11,14 @@ const SKILL_COMMAND_TOKEN_REGEX = /(?<!\S)(?:\/|\$)(\w[\w-]*)(?=$|[\s.,!?;:])/g;
 type CodexSkill = SlashCommand & {
   sortPriority: number;
 };
+
+function getCodexSkillCandidateRoots(worktreePath: string): string[] {
+  return [
+    join(worktreePath, ".agents/skills"),
+    join(homedir(), ".codex/skills"),
+    join(homedir(), ".agents/skills"),
+  ];
+}
 
 function parseFrontmatterValue(frontmatter: string, key: string): string | null {
   const match = frontmatter.match(new RegExp(`^${key}:\\s*(.+)$`, "im"));
@@ -82,11 +91,7 @@ function collectSkillFiles(rootPath: string, depth = 0): string[] {
 }
 
 export function listCodexSkills(worktreePath: string): SlashCommand[] {
-  const candidateRoots = [
-    join(worktreePath, ".agents/skills"),
-    join(homedir(), ".codex/skills"),
-    join(homedir(), ".agents/skills"),
-  ];
+  const candidateRoots = getCodexSkillCandidateRoots(worktreePath);
 
   const deduped = new Map<string, CodexSkill>();
 
@@ -108,6 +113,35 @@ export function listCodexSkills(worktreePath: string): SlashCommand[] {
   return Array.from(deduped.values())
     .sort((left, right) => left.name.localeCompare(right.name))
     .map(({ name, description, argumentHint }) => ({ name, description, argumentHint }));
+}
+
+export function resolveCodexSkillCatalogCacheVersion(worktreePath: string): string {
+  const hash = createHash("sha1");
+  const skillFiles = getCodexSkillCandidateRoots(worktreePath)
+    .flatMap((rootPath) => collectSkillFiles(rootPath))
+    .sort((left, right) => left.localeCompare(right));
+
+  if (skillFiles.length === 0) {
+    hash.update("no-skills");
+    return hash.digest("hex");
+  }
+
+  for (const skillFilePath of skillFiles) {
+    try {
+      const stats = statSync(skillFilePath);
+      hash.update(skillFilePath);
+      hash.update("\0");
+      hash.update(String(stats.size));
+      hash.update("\0");
+      hash.update(String(stats.mtimeMs));
+      hash.update("\0");
+    } catch {
+      hash.update(skillFilePath);
+      hash.update("\0missing\0");
+    }
+  }
+
+  return hash.digest("hex");
 }
 
 export function normalizeCodexSkillSlashCommandsForPrompt(content: string, skills: SlashCommand[]): string {

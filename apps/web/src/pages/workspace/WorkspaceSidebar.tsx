@@ -7,6 +7,17 @@ import { cn } from "../../lib/utils";
 import { useSidebarResize } from "./hooks/useSidebarResize";
 import type { RepositoryPanelDropPosition } from "./repositoryPanelPreferences";
 
+export function WorkspaceSidebarFallback() {
+  return (
+    <div
+      className="flex min-h-0 flex-1 items-center justify-center rounded-md border border-dashed border-border/40 bg-background/35 px-3 text-center text-xs text-muted-foreground"
+      data-testid="workspace-sidebar-fallback"
+    >
+      Loading repositories...
+    </div>
+  );
+}
+
 export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   desktopApp = false,
   repositories,
@@ -82,18 +93,21 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
           <p className="text-xs text-muted-foreground">Multi-agent orchestrator</p>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-hidden">
+        <div
+          className="flex min-h-0 flex-1 overflow-hidden"
+          data-testid="workspace-sidebar-repositories"
+        >
           <RepositoryPanel
             repositories={repositories}
             selectedRepositoryId={selectedRepositoryId}
             selectedWorktreeId={selectedWorktreeId}
-            enableMetadataQueries={enableRepositoryMetadata}
             threadSnapshot={threadSnapshot}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
             loadingRepos={loadingRepos}
             submittingRepo={submittingRepo}
             submittingWorktree={submittingWorktree}
+            enableMetadataQueries={enableRepositoryMetadata}
             onAttachRepository={onAttachRepository}
             onSelectRepository={onSelectRepository}
             onToggleRepositoryExpand={onToggleRepositoryExpand}

@@ -296,11 +296,8 @@ export const BottomPanel = memo(function BottomPanel({
     return (
         <div
             aria-hidden={hidden ? "true" : undefined}
-            className={`${hidden ? "hidden " : ""}-mx-1.5 flex flex-col border-t border-border/30 safe-bottom sm:-mx-2.5 lg:-mx-3 ${
-                activeTab === "terminal" || activeTab === "run"
-                    ? TERMINAL_SURFACE_CLASS
-                    : "bg-[hsl(220,18%,10%)]"
-            }`}
+            data-testid="bottom-panel-shell"
+            className={`${hidden ? "hidden " : ""}flex flex-col safe-bottom`}
         >
             <TabsRoot
                 value={activeTab}
@@ -308,7 +305,11 @@ export const BottomPanel = memo(function BottomPanel({
                     onTabChange(val);
                     if (collapsed) onCollapsedChange(false);
                 }}
-                className="flex min-h-0 flex-1 flex-col"
+                className={`flex min-h-0 flex-1 flex-col border-t border-border/30 ${
+                    activeTab === "terminal" || activeTab === "run"
+                        ? TERMINAL_SURFACE_CLASS
+                        : "bg-[hsl(220,18%,10%)]"
+                }`}
             >
                 {/* Resize handle — always visible, including collapsed state */}
                 <div

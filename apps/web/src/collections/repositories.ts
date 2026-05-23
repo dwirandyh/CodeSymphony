@@ -4,6 +4,11 @@ import type { QueryClient } from "@tanstack/react-query";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { api } from "../lib/api";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  readWorkspaceStartupBootstrapQueryData,
+  waitForWorkspaceStartupBootstrap,
+} from "../lib/workspaceStartupBootstrap";
+import { withWorkspaceCollectionPersistence } from "../lib/workspacePersistence";
 
 function compareRepositories(left: Repository, right: Repository) {
   return right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt);
@@ -42,17 +47,75 @@ export function toPlainRepository(repository: Repository): Repository {
 }
 
 function createRepositoriesCollection(queryClient: QueryClient) {
-  return createCollection(
-    queryCollectionOptions<Repository>({
-      id: "repositories",
-      queryKey: queryKeys.repositories.all,
-      queryFn: () => api.listRepositories(),
-      queryClient,
-      getKey: (repository) => repository.id,
-      compare: compareRepositories,
-      staleTime: 10_000,
-    }),
+  let readCurrentRows = (): Repository[] => [];
+  let seededFromLocalState = false;
+  let needsLiveRecoveryRefetch = false;
+  let liveRecoveryRefetchScheduled = false;
+
+  function scheduleLiveRecoveryRefetch() {
+    if (liveRecoveryRefetchScheduled) {
+      return;
+    }
+
+    liveRecoveryRefetchScheduled = true;
+    void Promise.resolve().then(() => {
+      liveRecoveryRefetchScheduled = false;
+
+      if (!needsLiveRecoveryRefetch) {
+        return;
+      }
+
+      void Promise.resolve(collection.utils.refetch()).catch(() => {});
+    });
+  }
+
+  const collection = createCollection(
+    withWorkspaceCollectionPersistence(
+      queryCollectionOptions<Repository>({
+        id: "repositories",
+        queryKey: queryKeys.repositories.all,
+        queryFn: async () => {
+          await waitForWorkspaceStartupBootstrap();
+
+          if (!seededFromLocalState) {
+            seededFromLocalState = true;
+
+            const currentRows = readCurrentRows();
+            if (currentRows.length > 0) {
+              needsLiveRecoveryRefetch = true;
+              scheduleLiveRecoveryRefetch();
+              return currentRows;
+            }
+
+            const cachedRows = readWorkspaceStartupBootstrapQueryData<Repository[] | undefined>(
+              queryClient,
+              queryKeys.repositories.all,
+            );
+            if (cachedRows !== undefined) {
+              needsLiveRecoveryRefetch = true;
+              scheduleLiveRecoveryRefetch();
+              return cachedRows;
+            }
+          }
+
+          const liveRepositories = await api.listRepositories();
+          needsLiveRecoveryRefetch = false;
+          return liveRepositories;
+        },
+        queryClient,
+        getKey: (repository) => repository.id,
+        compare: compareRepositories,
+        staleTime: 10_000,
+      }),
+      { schemaVersion: 1 },
+    ),
   );
+
+  readCurrentRows = () => ((collection.toArray as unknown as Repository[]).map((repository) => toPlainRepository(repository)));
+
+  return Object.assign(collection, {
+    hasPendingSeedRecoveryRefetch: () => needsLiveRecoveryRefetch,
+  });
 }
 
 type RepositoriesCollection = ReturnType<typeof createRepositoriesCollection>;
@@ -70,8 +133,31 @@ export function getRepositoriesCollection(queryClient: QueryClient): Repositorie
   return created;
 }
 
+export function getExistingRepositoriesCollection(queryClient: QueryClient): RepositoriesCollection | null {
+  return repositoriesCollectionRegistry.get(queryClient) ?? null;
+}
+
 export function refetchRepositoriesCollection(queryClient: QueryClient) {
   return getRepositoriesCollection(queryClient).utils.refetch();
+}
+
+export function upsertRepositoryInCollection(queryClient: QueryClient, repository: Repository) {
+  const collection = getRepositoriesCollection(queryClient);
+  const nextRepository = toPlainRepository(repository);
+
+  collection.utils.writeUpsert(nextRepository);
+  queryClient.setQueryData<Repository[] | undefined>(queryKeys.repositories.all, (current) => {
+    const next = [...(current ?? [])];
+    const existingIndex = next.findIndex((entry) => entry.id === nextRepository.id);
+
+    if (existingIndex === -1) {
+      next.push(nextRepository);
+    } else {
+      next[existingIndex] = nextRepository;
+    }
+
+    return [...next].sort(compareRepositories);
+  });
 }
 
 export async function resetRepositoriesCollectionRegistryForTest() {

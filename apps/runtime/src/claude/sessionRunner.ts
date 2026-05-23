@@ -9,7 +9,6 @@ import type {
   SpawnedProcess as ClaudeSpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
-  BUILTIN_CHAT_MODELS_BY_AGENT,
   type ChatMode,
   type ChatThreadPermissionMode,
   type SlashCommand,
@@ -75,9 +74,20 @@ function resolveNativeClaudeCliModel(model: string | undefined): string | undefi
 }
 
 const NATIVE_PROVIDERLESS_CLAUDE_MODELS = new Set<string>([
+  "default",
+  "sonnet",
+  "opus[1m]",
   ...Object.keys(NATIVE_CLAUDE_CLI_MODEL_ALIASES),
   ...Object.values(NATIVE_CLAUDE_CLI_MODEL_ALIASES),
 ]);
+
+function isNativeProviderlessClaudeModel(model: string): boolean {
+  if (NATIVE_PROVIDERLESS_CLAUDE_MODELS.has(model)) {
+    return true;
+  }
+
+  return /^claude-[a-z0-9-]+$/i.test(model);
+}
 
 function isFirstPartyAnthropicBaseUrl(baseUrl: string): boolean {
   try {
@@ -168,8 +178,7 @@ function isUnsupportedBuiltinClaudeModelWithoutProvider(params: {
     return false;
   }
 
-  const builtinClaudeModels = BUILTIN_CHAT_MODELS_BY_AGENT.claude as readonly string[];
-  return builtinClaudeModels.includes(normalizedModel) && !NATIVE_PROVIDERLESS_CLAUDE_MODELS.has(normalizedModel);
+  return !isNativeProviderlessClaudeModel(normalizedModel);
 }
 
 function assertSupportedBuiltinClaudeModelWithoutProvider(params: {
@@ -183,8 +192,8 @@ function assertSupportedBuiltinClaudeModelWithoutProvider(params: {
 
   throw new Error([
     `Selected Claude model "${normalizedModel}" requires an explicit model provider in CodeSymphony.`,
-    "Built-in Claude runs only support native Claude model ids unless the thread is bound to a configured provider.",
-    "Switch the thread to claude-sonnet-4-6, claude-opus-4-6, or claude-haiku-4-5, or activate a provider for this model in Settings -> Models.",
+    "Built-in Claude runs only support native Claude CLI aliases and Claude model ids unless the thread is bound to a configured provider.",
+    "Switch to a native Claude CLI model such as default, sonnet, opus, opus[1m], or a claude-* model id, or activate a provider for this model in Settings -> Models.",
   ].join("\n"));
 }
 

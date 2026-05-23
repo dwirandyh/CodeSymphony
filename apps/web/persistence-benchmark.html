@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Persistence Benchmark</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "IBM Plex Sans", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #0f1115;
+        color: #e6e9ef;
+        display: grid;
+        place-items: start center;
+        padding: 24px;
+      }
+
+      main {
+        width: min(960px, 100%);
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 20px;
+      }
+
+      p {
+        margin: 0 0 16px;
+        color: #9aa3b2;
+      }
+
+      pre {
+        margin: 0;
+        padding: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        background: #171a21;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font: 12px/1.5 "SFMono-Regular", ui-monospace, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Persistence Benchmark</h1>
+      <p>Measures first-usable startup read paths in the browser and emits the result to runtime debug log.</p>
+      <pre id="output">Running benchmark...</pre>
+    </main>
+    <script type="module" src="/src/dev/persistenceBenchmark.ts"></script>
+  </body>
+</html>

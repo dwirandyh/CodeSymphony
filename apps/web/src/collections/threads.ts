@@ -1,13 +1,26 @@
 import { createCollection } from "@tanstack/db";
-import type { ChatThread } from "@codesymphony/shared-types";
+import type { ChatThread, WorkspaceStartupBootstrapData } from "@codesymphony/shared-types";
 import type { QueryClient } from "@tanstack/react-query";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { api } from "../lib/api";
 import { resolveAgentDefaultModel } from "../lib/agentModelDefaults";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  readWorkspaceStartupBootstrapQueryData,
+  waitForWorkspaceStartupBootstrap,
+} from "../lib/workspaceStartupBootstrap";
+import { withWorkspaceCollectionPersistence } from "../lib/workspacePersistence";
 
 function compareThreads(left: ChatThread, right: ChatThread) {
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+}
+
+function didBootstrapResolveThreadsForWorktree(
+  startupBootstrapData: WorkspaceStartupBootstrapData | null,
+  worktreeId: string,
+) {
+  return startupBootstrapData?.selection.worktreeId === worktreeId
+    && startupBootstrapData.threadsLoaded === true;
 }
 
 export function toPlainChatThread(thread: ChatThread): ChatThread {
@@ -36,17 +49,51 @@ export function toPlainChatThread(thread: ChatThread): ChatThread {
 }
 
 function createThreadsCollection(queryClient: QueryClient, worktreeId: string) {
-  return createCollection(
-    queryCollectionOptions<ChatThread>({
-      id: `threads:${worktreeId}`,
-      queryKey: queryKeys.threads.list(worktreeId),
-      queryFn: () => api.listThreads(worktreeId),
-      queryClient,
-      getKey: (thread) => thread.id,
-      compare: compareThreads,
-      staleTime: 5_000,
-    }),
+  let readCurrentRows = (): ChatThread[] => [];
+  let seededFromLocalState = false;
+
+  const collection = createCollection(
+    withWorkspaceCollectionPersistence(
+      queryCollectionOptions<ChatThread>({
+        id: `threads:${worktreeId}`,
+        queryKey: queryKeys.threads.list(worktreeId),
+        queryFn: async () => {
+          const startupBootstrapData = await waitForWorkspaceStartupBootstrap();
+
+          if (!seededFromLocalState) {
+            seededFromLocalState = true;
+
+            const currentRows = readCurrentRows();
+            if (currentRows.length > 0) {
+              return currentRows;
+            }
+
+            const cachedRows = readWorkspaceStartupBootstrapQueryData<ChatThread[] | undefined>(
+              queryClient,
+              queryKeys.threads.list(worktreeId),
+            );
+            if (
+              cachedRows !== undefined
+              && (cachedRows.length > 0 || didBootstrapResolveThreadsForWorktree(startupBootstrapData, worktreeId))
+            ) {
+              return cachedRows;
+            }
+          }
+
+          return await api.listThreads(worktreeId);
+        },
+        queryClient,
+        getKey: (thread) => thread.id,
+        compare: compareThreads,
+        staleTime: 5_000,
+      }),
+      { schemaVersion: 1 },
+    ),
   );
+
+  readCurrentRows = () => ((collection.toArray as unknown as ChatThread[]).map((thread) => toPlainChatThread(thread)));
+
+  return collection;
 }
 
 type ThreadsCollection = ReturnType<typeof createThreadsCollection>;
@@ -132,6 +179,11 @@ export function replaceThreadsCollection(queryClient: QueryClient, worktreeId: s
       collection.utils.writeUpsert(thread);
     }
   });
+
+  queryClient.setQueryData(
+    queryKeys.threads.list(worktreeId),
+    nextThreads.map((thread) => toPlainChatThread(thread)),
+  );
 }
 
 export async function resetThreadsCollectionRegistryForTest() {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLiveQuery } from "@tanstack/react-db";
 import type { ChatThread } from "@codesymphony/shared-types";
@@ -74,10 +74,14 @@ export function useThreadsByWorktreeIds(
 ) {
   const queryClient = useQueryClient();
   const enabled = options?.enabled ?? true;
-  const [stableWorktreeIds, setStableWorktreeIds] = useState(worktreeIds);
+  const stableWorktreeIdsRef = useRef(worktreeIds);
+  const stableWorktreeIds = useMemo(() => {
+    if (sameIds(stableWorktreeIdsRef.current, worktreeIds)) {
+      return stableWorktreeIdsRef.current;
+    }
 
-  useEffect(() => {
-    setStableWorktreeIds((current) => sameIds(current, worktreeIds) ? current : worktreeIds);
+    stableWorktreeIdsRef.current = worktreeIds;
+    return worktreeIds;
   }, [worktreeIds]);
 
   const collections = useMemo(
@@ -108,8 +112,6 @@ export function useThreadsByWorktreeIds(
         },
       ),
     );
-
-    notify();
 
     return () => {
       subscriptions.forEach((subscription) => subscription.unsubscribe());

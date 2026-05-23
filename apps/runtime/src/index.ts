@@ -30,6 +30,8 @@ import { createWorktreeDeletionService } from "./services/worktreeDeletionServic
 import { createAutomationService } from "./services/automationService.js";
 import { createResourceMonitorService } from "./services/resourceMonitorService.js";
 import { createResourceMonitorSessionTracker } from "./services/resourceMonitorSessionTracker.js";
+import { createWorktreeWatchService } from "./services/worktreeWatchService.js";
+import { createWorkspaceLiveUpdateService } from "./services/workspaceLiveUpdateService.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -39,9 +41,12 @@ import { registerFilesystemRoutes } from "./routes/filesystem.js";
 import { registerDebugRoutes, resolveDatabaseInfo } from "./routes/debug.js";
 import { registerModelRoutes } from "./routes/models.js";
 import { registerWorkspaceEventRoutes } from "./routes/workspaceEvents.js";
+import { registerWorkspaceLiveSocketRoutes } from "./routes/workspaceLiveSocket.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
 import { registerAutomationRoutes } from "./routes/automations.js";
 import { registerResourceMonitorRoutes } from "./routes/resourceMonitor.js";
+import { registerWorkspaceLiveResourceRoutes } from "./routes/workspaceLiveResources.js";
+import { registerWorkspaceBootstrapRoutes } from "./routes/workspaceBootstrap.js";
 import type { PrismaMigrationExecutionPlan } from "./migrate.js";
 
 declare module "fastify" {
@@ -64,6 +69,7 @@ declare module "fastify" {
     worktreeDeletionService: ReturnType<typeof createWorktreeDeletionService>;
     automationService: ReturnType<typeof createAutomationService>;
     resourceMonitorService: ReturnType<typeof createResourceMonitorService>;
+    workspaceLiveUpdateService: ReturnType<typeof createWorkspaceLiveUpdateService>;
   }
 }
 
@@ -113,6 +119,28 @@ function createApp() {
     worktreeService,
     chatService,
   });
+  const workspaceLiveUpdateService = createWorkspaceLiveUpdateService({
+    prisma,
+    workspaceEventHub,
+    repositoryService,
+    reviewService,
+    automationService,
+  });
+  const worktreeWatchService = createWorktreeWatchService({
+    workspaceEventHub,
+    listWorktrees: async () => prisma.worktree.findMany({
+      select: {
+        id: true,
+        repositoryId: true,
+        path: true,
+        status: true,
+      },
+    }),
+    onFilesChanged(worktree) {
+      fileService.invalidateCache(worktree.path);
+    },
+  });
+  worktreeWatchService.start();
 
   app.decorate("prisma", prisma);
   app.decorate("eventHub", eventHub);
@@ -132,6 +160,7 @@ function createApp() {
   app.decorate("worktreeDeletionService", worktreeDeletionService);
   app.decorate("automationService", automationService);
   app.decorate("resourceMonitorService", resourceMonitorService);
+  app.decorate("workspaceLiveUpdateService", workspaceLiveUpdateService);
 
   app.register(cors, {
     origin: true,
@@ -173,12 +202,17 @@ function createApp() {
   app.register(registerDebugRoutes, { prefix: "/api" });
   app.register(registerModelRoutes, { prefix: "/api" });
   app.register(registerWorkspaceEventRoutes, { prefix: "/api" });
+  app.register(registerWorkspaceLiveSocketRoutes, { prefix: "/api" });
   app.register(registerDeviceRoutes, { prefix: "/api" });
   app.register(registerAutomationRoutes, { prefix: "/api" });
   app.register(registerResourceMonitorRoutes, { prefix: "/api" });
+  app.register(registerWorkspaceLiveResourceRoutes, { prefix: "/api" });
+  app.register(registerWorkspaceBootstrapRoutes, { prefix: "/api" });
 
   app.addHook("onClose", async () => {
+    worktreeWatchService.dispose();
     automationService.dispose();
+    workspaceLiveUpdateService.dispose();
     await deviceService.stopAll();
   });
 
@@ -310,6 +344,16 @@ function resolveFileDatabasePath(databaseUrl: string | undefined): string | null
   return path.resolve(process.cwd(), rawPath);
 }
 
+function resolveStartupReadyDelayMs() {
+  const rawValue = process.env.CODESYMPHONY_STARTUP_READY_DELAY_MS?.trim();
+  if (!rawValue) {
+    return 0;
+  }
+
+  const parsedValue = Number.parseInt(rawValue, 10);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : 0;
+}
+
 async function restoreBundledDatabaseFromTemplate(
   templateDatabasePath: string,
   databaseUrl: string | undefined,
@@ -374,9 +418,15 @@ async function main() {
 
     const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
     const port = Number(process.env.RUNTIME_PORT ?? "4331");
+    const startupReadyDelayMs = resolveStartupReadyDelayMs();
 
     const app = createApp();
     const database = resolveDatabaseInfo(process.env.DATABASE_URL);
+
+    if (startupReadyDelayMs > 0) {
+      app.log.info({ startupReadyDelayMs }, "Delaying runtime listen for startup measurement");
+      await new Promise((resolve) => setTimeout(resolve, startupReadyDelayMs));
+    }
 
     await app.listen({ host, port });
     app.log.info({

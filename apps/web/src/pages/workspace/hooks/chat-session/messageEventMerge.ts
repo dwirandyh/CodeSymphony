@@ -3,17 +3,17 @@ import type { PendingMessageMutation } from "./useChatSession.types";
 
 function keysMatchAtSameIndex<T>(
   prefix: T[],
-  superset: T[],
+  fullSequence: T[],
   getKey: (row: T) => string,
   areComparable?: (left: T, right: T) => boolean,
 ): boolean {
-  if (prefix.length > superset.length) {
+  if (prefix.length > fullSequence.length) {
     return false;
   }
 
   for (let index = 0; index < prefix.length; index += 1) {
     const left = prefix[index];
-    const right = superset[index];
+    const right = fullSequence[index];
     if (getKey(left) !== getKey(right)) {
       return false;
     }

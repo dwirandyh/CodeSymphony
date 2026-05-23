@@ -13,13 +13,23 @@ import {
   getThreadMessagesCollection,
   resetThreadCollectionsForTest,
 } from "../../../../collections/threadCollections";
-import { resetThreadStreamStateRegistryForTest } from "../../../../collections/threadStreamState";
+import {
+  getThreadStreamConnectionState,
+  resetThreadStreamStateRegistryForTest,
+} from "../../../../collections/threadStreamState";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreadEventStream } from "./useThreadEventStream";
 
 const invalidateQueriesMock = vi.fn();
 const cancelQueriesMock = vi.fn();
 
+const {
+  markWorktreeGitStatusChangedMock,
+  requestRepositoryReviewsLiveRefreshMock,
+} = vi.hoisted(() => ({
+  markWorktreeGitStatusChangedMock: vi.fn(),
+  requestRepositoryReviewsLiveRefreshMock: vi.fn(),
+}));
 
 vi.mock("../../../../lib/logService", () => ({
   logService: {
@@ -88,6 +98,14 @@ vi.mock("../../../../lib/api", () => ({
       return runtimeBaseUrlMock;
     },
   },
+}));
+
+vi.mock("../../../../hooks/queries/useGitStatus", () => ({
+  markWorktreeGitStatusChanged: markWorktreeGitStatusChangedMock,
+}));
+
+vi.mock("../../../../hooks/queries/useRepositoryReviews", () => ({
+  requestRepositoryReviewsLiveRefresh: requestRepositoryReviewsLiveRefreshMock,
 }));
 
 let originalEventSource: typeof EventSource | undefined;
@@ -247,6 +265,8 @@ beforeEach(() => {
   invalidateQueriesMock.mockReset();
   cancelQueriesMock.mockReset();
   cancelQueriesMock.mockResolvedValue(undefined);
+  markWorktreeGitStatusChangedMock.mockReset();
+  requestRepositoryReviewsLiveRefreshMock.mockReset();
   getThreadStatusSnapshotMock.mockReset();
   getThreadStatusSnapshotMock.mockResolvedValue({ status: "idle", newestIdx: null });
   getTimelineSnapshotMock.mockReset();
@@ -656,8 +676,38 @@ describe("useThreadEventStream", () => {
     expect(latestThreads[0]?.title).toBe("Done");
   });
 
+  it("requests git status live refresh for selected thread git-affecting events", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+    renderHook(threadId, { repositoryId: "repo-1", selectedThreadIsPrMr: false });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "tool.finished",
+        makeEvent({
+          id: "git-tool-finished",
+          threadId,
+          idx: 5,
+          type: "tool.finished",
+          payload: { toolName: "Bash", source: "bash" },
+        }),
+      );
+    });
+
+    expect(markWorktreeGitStatusChangedMock).toHaveBeenCalledWith(queryClient, "wt-1", {
+      cause: "thread_activity",
+    });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitStatus("wt-1") });
+  });
+
   it.each(["chat.completed", "chat.failed"] as const)(
-    "invalidates repository reviews when selected PR/MR thread receives %s",
+    "requests repository reviews live refresh when selected PR/MR thread receives %s",
     async (type) => {
       const threadId = "selected-thread";
       queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
@@ -682,7 +732,8 @@ describe("useThreadEventStream", () => {
         );
       });
 
-      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
+      expect(requestRepositoryReviewsLiveRefreshMock).toHaveBeenCalledWith(queryClient, "repo-1");
+      expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
     },
   );
 
@@ -707,7 +758,7 @@ describe("useThreadEventStream", () => {
     expect(MockEventSource.instances).toHaveLength(1);
   });
 
-  it("does not invalidate repository reviews for non-PR/MR selected threads", async () => {
+  it("does not request repository reviews live refresh for non-PR/MR selected threads", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -731,7 +782,7 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
+    expect(requestRepositoryReviewsLiveRefreshMock).not.toHaveBeenCalledWith(queryClient, "repo-1");
   });
 
   it("patches selected thread as inactive on chat.failed", async () => {
@@ -1047,6 +1098,62 @@ describe("useThreadEventStream", () => {
 
     expect(MockEventSource.instances).toHaveLength(2);
     expect(MockEventSource.instances[1]?.url).toContain("afterIdx=4");
+  });
+
+  it("tracks thread stream connection health across open and reconnect states", async () => {
+    const threadId = "selected-thread";
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const firstStream = MockEventSource.instances[0]!;
+    expect(getThreadStreamConnectionState(threadId)).toBe("connecting");
+
+    act(() => {
+      firstStream.onopen?.();
+    });
+    expect(getThreadStreamConnectionState(threadId)).toBe("healthy");
+
+    await act(async () => {
+      firstStream.readyState = MockEventSource.CLOSED;
+      firstStream.onerror?.();
+      await Promise.resolve();
+    });
+
+    expect(getThreadStreamConnectionState(threadId)).toBe("reconnecting");
+  });
+
+  it("treats a fresh resubscribe for the same thread as connecting, not reconnecting", async () => {
+    const threadId = "selected-thread";
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const firstStream = MockEventSource.instances[0]!;
+
+    act(() => {
+      firstStream.onopen?.();
+    });
+    expect(getThreadStreamConnectionState(threadId)).toBe("healthy");
+
+    renderHook(null);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(MockEventSource.instances).toHaveLength(2);
+    expect(getThreadStreamConnectionState(threadId)).toBe("connecting");
   });
 
   it("resyncs the selected thread from snapshots when the stream stays stale but backend progress has advanced", async () => {

@@ -6,6 +6,7 @@ import type { Repository } from "@codesymphony/shared-types";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useRepositoryManager } from "./useRepositoryManager";
 
+const mockMarkWorktreeGitStatusChanged = vi.fn();
 const mockCreateRepoMutateAsync = vi.fn();
 const mockCreateWorktreeMutateAsync = vi.fn().mockResolvedValue({
   worktree: {
@@ -26,6 +27,7 @@ const mockDeleteWorktreeMutateAsync = vi.fn();
 const mockDeleteRepoMutateAsync = vi.fn();
 const mockRenameBranchMutateAsync = vi.fn();
 const mockUpdateWorktreeBaseBranchMutateAsync = vi.fn();
+const measureStartupMetricSinceBootMock = vi.fn();
 
 function makeRepositories(): Repository[] {
   return [
@@ -74,7 +76,15 @@ const repositoriesState = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../hooks/queries/useRepositories", () => ({
-  useRepositories: vi.fn(() => repositoriesState),
+  useRepositories: vi.fn((options?: { enabled?: boolean }) => (
+    options?.enabled === false
+      ? {
+          data: [],
+          isLoading: false,
+          error: null,
+        }
+      : repositoriesState
+  )),
 }));
 
 vi.mock("../../../hooks/mutations/useCreateRepository", () => ({
@@ -94,6 +104,14 @@ vi.mock("../../../hooks/mutations/useRenameWorktreeBranch", () => ({
 }));
 vi.mock("../../../hooks/mutations/useUpdateWorktreeBaseBranch", () => ({
   useUpdateWorktreeBaseBranch: () => ({ mutateAsync: mockUpdateWorktreeBaseBranchMutateAsync, isPending: false }),
+}));
+
+vi.mock("../../../hooks/queries/useGitStatus", () => ({
+  markWorktreeGitStatusChanged: (...args: unknown[]) => mockMarkWorktreeGitStatusChanged(...args),
+}));
+
+vi.mock("../../../lib/startupPerf", () => ({
+  measureStartupMetricSinceBoot: (...args: unknown[]) => measureStartupMetricSinceBootMock(...args),
 }));
 
 const mockRunSetupStream = vi.fn().mockReturnValue({
@@ -150,6 +168,31 @@ function TestComponent({ desiredRepoId, desiredWorktreeId }: { desiredRepoId?: s
   );
 }
 
+function TestComponentWithRepositoryGate({
+  desiredRepoId,
+  desiredWorktreeId,
+  repositoriesEnabled,
+}: {
+  desiredRepoId?: string;
+  desiredWorktreeId?: string;
+  repositoriesEnabled: boolean;
+}) {
+  hookResult = useRepositoryManager(mockOnError, {
+    ...mockOptions,
+    desiredRepoId,
+    desiredWorktreeId,
+    repositoriesEnabled,
+  });
+  return (
+    <div>
+      repos:{hookResult.repositories.length}
+      ,selectedRepo:{hookResult.selectedRepositoryId ?? "null"}
+      ,selectedWt:{hookResult.selectedWorktreeId ?? "null"}
+      ,loading:{String(hookResult.loadingRepos)}
+    </div>
+  );
+}
+
 let queryClient: QueryClient;
 
 beforeEach(() => {
@@ -167,6 +210,7 @@ beforeEach(() => {
     onScriptOutputChunk: vi.fn(),
   };
   vi.clearAllMocks();
+  measureStartupMetricSinceBootMock.mockReset();
 });
 
 afterEach(() => {
@@ -184,6 +228,16 @@ function render(props: { desiredRepoId?: string; desiredWorktreeId?: string } = 
   });
 }
 
+function renderWithRepositoryGate(props: { desiredRepoId?: string; desiredWorktreeId?: string; repositoriesEnabled: boolean }) {
+  act(() => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <TestComponentWithRepositoryGate {...props} />
+      </QueryClientProvider>
+    );
+  });
+}
+
 describe("useRepositoryManager", () => {
   it("returns repositories from useRepositories", () => {
     render();
@@ -195,9 +249,60 @@ describe("useRepositoryManager", () => {
     render();
     expect(hookResult.selectedRepositoryId).toBe("r1");
     expect(hookResult.selectedWorktreeId).toBeTruthy();
+    expect(measureStartupMetricSinceBootMock).toHaveBeenCalledWith("startup.selected_workspace_ready_ms", {
+      source: "useRepositoryManager",
+      repositoryId: "r1",
+      worktreeId: "wt-root",
+    });
   });
 
-  it("clears stale selection and cached thread data when repositories disappear", () => {
+  it("waits for repositories to be enabled before selecting a workspace", () => {
+    renderWithRepositoryGate({ repositoriesEnabled: false });
+
+    expect(hookResult.repositories).toHaveLength(0);
+    expect(hookResult.selectedRepositoryId).toBeNull();
+    expect(hookResult.selectedWorktreeId).toBeNull();
+    expect(measureStartupMetricSinceBootMock).not.toHaveBeenCalled();
+
+    renderWithRepositoryGate({ repositoriesEnabled: true });
+
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-root");
+    expect(measureStartupMetricSinceBootMock).toHaveBeenCalledWith("startup.selected_workspace_ready_ms", {
+      source: "useRepositoryManager",
+      repositoryId: "r1",
+      worktreeId: "wt-root",
+    });
+  });
+
+  it("keeps requested startup selection while repositories remain gated", () => {
+    renderWithRepositoryGate({
+      desiredRepoId: "r1",
+      desiredWorktreeId: "wt-feat",
+      repositoriesEnabled: false,
+    });
+
+    expect(hookResult.repositories).toHaveLength(0);
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+    expect(measureStartupMetricSinceBootMock).not.toHaveBeenCalled();
+
+    renderWithRepositoryGate({
+      desiredRepoId: "r1",
+      desiredWorktreeId: "wt-feat",
+      repositoriesEnabled: true,
+    });
+
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+    expect(measureStartupMetricSinceBootMock).toHaveBeenCalledWith("startup.selected_workspace_ready_ms", {
+      source: "useRepositoryManager",
+      repositoryId: "r1",
+      worktreeId: "wt-feat",
+    });
+  });
+
+  it("preserves requested startup worktree selection while clearing stale caches when repositories disappear", async () => {
     render({ desiredWorktreeId: "wt-feat" });
     queryClient.setQueryData(queryKeys.threads.list("wt-feat"), [{ id: "t1" }]);
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot("t1"), { seed: { messages: { data: [] }, events: { data: [] } } });
@@ -213,8 +318,13 @@ describe("useRepositoryManager", () => {
       );
     });
 
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
     expect(hookResult.selectedRepositoryId).toBeNull();
-    expect(hookResult.selectedWorktreeId).toBeNull();
+    expect(hookResult.selectedWorktreeId).toBe("wt-feat");
     expect(queryClient.getQueryData(queryKeys.threads.list("wt-feat"))).toBeUndefined();
     expect(queryClient.getQueryData(queryKeys.threads.timelineSnapshot("t1"))).toBeUndefined();
     expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot("t1"))).toBeUndefined();
@@ -580,6 +690,7 @@ describe("useRepositoryManager", () => {
   describe("stopSetup", () => {
     it("stops the active setup stream", async () => {
       const { api } = await import("../../../lib/api");
+      const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
       render();
       // First start a setup to have an active stream
       await act(async () => {
@@ -590,6 +701,12 @@ describe("useRepositoryManager", () => {
         await hookResult.stopSetup();
       });
       expect(api.stopSetupScript).toHaveBeenCalledWith("wt-feat");
+      expect(mockMarkWorktreeGitStatusChanged).toHaveBeenCalledWith(queryClient, "wt-feat", {
+        cause: "repository_script_activity",
+      });
+      expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
+        { queryKey: ["worktrees", "wt-feat", "gitStatus"] },
+      ]);
     });
   });
 
@@ -628,6 +745,7 @@ describe("useRepositoryManager", () => {
     it("handles done events from setup stream", () => {
       const listeners: Record<string, (e: { data: string }) => void> = {};
       const mockClose = vi.fn();
+      const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
       mockRunSetupStream.mockReturnValue({
         addEventListener: (type: string, cb: (e: { data: string }) => void) => { listeners[type] = cb; },
         close: mockClose,
@@ -648,11 +766,18 @@ describe("useRepositoryManager", () => {
       expect(mockOptions.onScriptUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ worktreeId: "wt-feat", type: "setup", status: "completed" })
       );
+      expect(mockMarkWorktreeGitStatusChanged).toHaveBeenCalledWith(queryClient, "wt-feat", {
+        cause: "repository_script_activity",
+      });
+      expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
+        { queryKey: ["worktrees", "wt-feat", "gitStatus"] },
+      ]);
     });
 
     it("handles error events from setup stream", () => {
       let onerrorHandler: (() => void) | null = null;
       const mockClose = vi.fn();
+      const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
       mockRunSetupStream.mockReturnValue({
         addEventListener: vi.fn(),
         close: mockClose,
@@ -671,6 +796,12 @@ describe("useRepositoryManager", () => {
       });
       expect(mockClose).toHaveBeenCalled();
       expect(hookResult.setupRunning).toBe(false);
+      expect(mockMarkWorktreeGitStatusChanged).toHaveBeenCalledWith(queryClient, "wt-feat", {
+        cause: "repository_script_activity",
+      });
+      expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
+        { queryKey: ["worktrees", "wt-feat", "gitStatus"] },
+      ]);
     });
   });
 });

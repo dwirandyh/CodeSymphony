@@ -2,15 +2,15 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 
-const GIT_BRANCH_DIFF_SUMMARY_REFETCH_MS = 30_000;
+const GIT_BRANCH_DIFF_SUMMARY_FALLBACK_REFETCH_MS = 60_000;
 
 export function gitBranchDiffSummaryQueryOptions(worktreeId: string, baseBranch: string) {
   return queryOptions({
     queryKey: queryKeys.worktrees.gitBranchDiffSummary(worktreeId, baseBranch),
     queryFn: () => api.getGitBranchDiffSummary(worktreeId),
     enabled: worktreeId.length > 0 && baseBranch.length > 0,
-    refetchInterval: (query) => query.state.fetchStatus === "fetching" ? false : GIT_BRANCH_DIFF_SUMMARY_REFETCH_MS,
-    staleTime: GIT_BRANCH_DIFF_SUMMARY_REFETCH_MS - 1_000,
+    refetchInterval: (query) => query.state.fetchStatus === "fetching" ? false : GIT_BRANCH_DIFF_SUMMARY_FALLBACK_REFETCH_MS,
+    staleTime: GIT_BRANCH_DIFF_SUMMARY_FALLBACK_REFETCH_MS - 1_000,
     retry: false,
   });
 }

@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkspaceRightPanel } from "./WorkspaceRightPanel";
+import { WorkspaceRightPanel, WorkspaceRightPanelContentFallback } from "./WorkspaceRightPanel";
 
 vi.mock("../../components/workspace/DevicePanel", () => ({
   DevicePanel: () => <div>Device Panel Mock</div>,
@@ -23,6 +23,14 @@ afterEach(() => {
 });
 
 describe("WorkspaceRightPanel", () => {
+  it("renders lightweight right-panel fallback copy", () => {
+    act(() => {
+      root.render(<WorkspaceRightPanelContentFallback />);
+    });
+
+    expect(container.textContent).toContain("Loading panel");
+  });
+
   it("toggles the device panel from the right rail", () => {
     const onUpdatePanel = vi.fn();
 
@@ -35,6 +43,7 @@ describe("WorkspaceRightPanel", () => {
             entries: [],
             branch: "main",
             upstream: null,
+            connectionState: "healthy",
             loading: false,
             committing: false,
             syncing: false,
@@ -79,6 +88,7 @@ describe("WorkspaceRightPanel", () => {
             entries: [],
             branch: "main",
             upstream: null,
+            connectionState: "healthy",
             loading: false,
             committing: false,
             syncing: false,
@@ -121,6 +131,7 @@ describe("WorkspaceRightPanel", () => {
             entries: [],
             branch: "main",
             upstream: null,
+            connectionState: "healthy",
             loading: false,
             committing: false,
             syncing: false,

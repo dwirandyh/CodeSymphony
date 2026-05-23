@@ -11,6 +11,10 @@ import {
 } from "./eventUtils.js";
 import type { ExploreActivityGroup, ExploreRunKind, ExploreRunState } from "./types.js";
 
+type ExtractExploreActivityGroupsOptions = {
+  eventsAreSorted?: boolean;
+};
+
 export function shortenReadTargetForDisplay(target: string): string {
   const cleaned = target.trim().replace(/^["'`]+|["'`]+$/g, "");
   const normalized = cleaned.replace(/\\/g, "/");
@@ -343,8 +347,11 @@ const IDLE_GROUP_BOUNDARY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "chat.failed",
 ]);
 
-export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActivityGroup[] {
-  const ordered = [...context].sort((a, b) => a.idx - b.idx);
+export function extractExploreActivityGroups(
+  context: ChatEvent[],
+  options?: ExtractExploreActivityGroupsOptions,
+): ExploreActivityGroup[] {
+  const ordered = options?.eventsAreSorted ? context : [...context].sort((a, b) => a.idx - b.idx);
   const groups: ExploreActivityGroup[] = [];
   const failedReadToolUseIds = new Set<string>();
   for (const event of ordered) {

@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ApprovePlanInput, ApprovePlanResult, ChatEvent } from "@codesymphony/shared-types";
+import type {
+  ApprovePlanInput,
+  ApprovePlanResult,
+  ChatEvent,
+  ChatThreadStatusSnapshot,
+} from "@codesymphony/shared-types";
 import { useLiveQuery } from "@tanstack/react-db";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../../lib/api";
+import { queryKeys } from "../../../lib/queryKeys";
 import { getThreadCollections } from "../../../collections/threadCollections";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest } from "../types";
 import {
@@ -11,6 +18,7 @@ import {
   isPendingPlanAwaitingDecision,
   type WorktreeThreadUiStatus,
 } from "./worktreeThreadStatus";
+import { reduceStatusSnapshotWithEvent } from "./threadStatusSnapshotCache";
 
 const EMPTY_EVENTS: ChatEvent[] = [];
 
@@ -36,6 +44,7 @@ export function usePendingGates(
   selectedThreadId: string | null,
   deps: PendingGatesDeps,
 ) {
+  const queryClient = useQueryClient();
   const { onError, startWaitingAssistant, clearWaitingAssistantForThread } = deps;
   const { data: liveEvents } = useLiveQuery(
     () => selectedThreadId ? getThreadCollections(selectedThreadId).eventsCollection : undefined,
@@ -267,6 +276,25 @@ export function usePendingGates(
 
     try {
       await api.dismissPlan(selectedThreadId);
+      const nextIdx = events.length > 0
+        ? Math.max(...events.map((event) => event.idx)) + 1
+        : 0;
+      const dismissEvent: ChatEvent = {
+        id: `${selectedThreadId}:plan-dismissed:${nextIdx}`,
+        threadId: selectedThreadId,
+        idx: nextIdx,
+        type: "plan.dismissed",
+        payload: {
+          filePath: pendingPlan.filePath,
+          reason: "Plan dismissed by user.",
+        },
+        createdAt: new Date().toISOString(),
+      };
+      getThreadCollections(selectedThreadId).eventsCollection.insert(dismissEvent);
+      queryClient.setQueryData<ChatThreadStatusSnapshot | undefined>(
+        queryKeys.threads.statusSnapshot(selectedThreadId),
+        (current) => reduceStatusSnapshotWithEvent(current, dismissEvent),
+      );
     } catch (e) {
       setClosedPlanDecision((current) => (
         current?.threadId === nextClosedPlanDecision.threadId

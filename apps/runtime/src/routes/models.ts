@@ -1,5 +1,8 @@
+import os from "node:os";
+import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import {
+  ClaudeModelCatalogSchema,
   CodexModelCatalogSchema,
   CreateModelProviderInputSchema,
   CursorModelCatalogSchema,
@@ -8,9 +11,26 @@ import {
   UpdateModelProviderInputSchema,
   type ModelProviderCompatibility,
 } from "@codesymphony/shared-types";
+import * as claudeModelCatalog from "../claude/modelCatalog.js";
 import * as codexSessionRunner from "../codex/sessionRunner.js";
 import * as cursorSessionRunner from "../cursor/sessionRunner.js";
 import * as opencodeModelCatalog from "../opencode/modelCatalog.js";
+import { createPersistentExpiringCache } from "../services/persistentExpiringCache.js";
+
+const MODEL_CATALOG_CACHE_TTL_MS = 3 * 24 * 60 * 60_000;
+
+function resolveModelCatalogCacheDir(): string {
+  const configuredDir = process.env.CODESYMPHONY_MODEL_CATALOG_CACHE_DIR?.trim();
+  if (configuredDir) {
+    return path.resolve(configuredDir);
+  }
+
+  return path.join(os.homedir(), ".codesymphony", "cache", "model-catalogs");
+}
+
+function resolveModelCatalogCachePath(catalogId: string): string {
+  return path.join(resolveModelCatalogCacheDir(), `${catalogId}.json`);
+}
 
 function normalizeProviderTestUrl(baseUrl: string, compatibility: ModelProviderCompatibility): string {
   const trimmedBaseUrl = baseUrl.replace(/\/+$/, "");
@@ -118,15 +138,73 @@ async function testOpenAiCompatibleProvider(params: {
 }
 
 export async function registerModelRoutes(app: FastifyInstance) {
+  const claudeModelCatalogCache = createPersistentExpiringCache({
+    ttlMs: MODEL_CATALOG_CACHE_TTL_MS,
+    storagePath: resolveModelCatalogCachePath("claude"),
+    load: async () => claudeModelCatalog.listClaudeModels({
+      cwd: process.cwd(),
+    }),
+    validate: (candidate) => ClaudeModelCatalogSchema.parse({
+      models: candidate,
+      fetchedAt: "1970-01-01T00:00:00.000Z",
+    }).models,
+  });
+  const codexModelCatalogCache = createPersistentExpiringCache({
+    ttlMs: MODEL_CATALOG_CACHE_TTL_MS,
+    storagePath: resolveModelCatalogCachePath("codex"),
+    load: async () => codexSessionRunner.listCodexModels({
+      cwd: process.cwd(),
+    }),
+    validate: (candidate) => CodexModelCatalogSchema.parse({
+      models: candidate,
+      fetchedAt: "1970-01-01T00:00:00.000Z",
+    }).models,
+  });
+  const cursorModelCatalogCache = createPersistentExpiringCache({
+    ttlMs: MODEL_CATALOG_CACHE_TTL_MS,
+    storagePath: resolveModelCatalogCachePath("cursor"),
+    load: async () => cursorSessionRunner.listCursorModels({
+      cwd: process.cwd(),
+    }),
+    validate: (candidate) => CursorModelCatalogSchema.parse({
+      models: candidate,
+      fetchedAt: "1970-01-01T00:00:00.000Z",
+    }).models,
+  });
+  const opencodeModelCatalogCache = createPersistentExpiringCache({
+    ttlMs: MODEL_CATALOG_CACHE_TTL_MS,
+    storagePath: resolveModelCatalogCachePath("opencode"),
+    load: async () => opencodeModelCatalog.listOpencodeModels(),
+    validate: (candidate) => OpencodeModelCatalogSchema.parse({
+      models: candidate,
+      fetchedAt: "1970-01-01T00:00:00.000Z",
+    }).models,
+  });
+
+  app.get("/claude/models", async (_request, reply) => {
+    try {
+      const snapshot = await claudeModelCatalogCache.get();
+      return {
+        data: ClaudeModelCatalogSchema.parse({
+          models: snapshot.value,
+          fetchedAt: snapshot.fetchedAt,
+        }),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to list Claude models";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
   app.get("/codex/models", async (_request, reply) => {
     try {
-      const payload = CodexModelCatalogSchema.parse({
-        models: await codexSessionRunner.listCodexModels({
-          cwd: process.cwd(),
+      const snapshot = await codexModelCatalogCache.get();
+      return {
+        data: CodexModelCatalogSchema.parse({
+          models: snapshot.value,
+          fetchedAt: snapshot.fetchedAt,
         }),
-        fetchedAt: new Date().toISOString(),
-      });
-      return { data: payload };
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list Codex models";
       return reply.code(500).send({ error: message });
@@ -135,13 +213,13 @@ export async function registerModelRoutes(app: FastifyInstance) {
 
   app.get("/cursor/models", async (_request, reply) => {
     try {
-      const payload = CursorModelCatalogSchema.parse({
-        models: await cursorSessionRunner.listCursorModels({
-          cwd: process.cwd(),
+      const snapshot = await cursorModelCatalogCache.get();
+      return {
+        data: CursorModelCatalogSchema.parse({
+          models: snapshot.value,
+          fetchedAt: snapshot.fetchedAt,
         }),
-        fetchedAt: new Date().toISOString(),
-      });
-      return { data: payload };
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list Cursor models";
       return reply.code(500).send({ error: message });
@@ -150,11 +228,13 @@ export async function registerModelRoutes(app: FastifyInstance) {
 
   app.get("/opencode/models", async (_request, reply) => {
     try {
-      const payload = OpencodeModelCatalogSchema.parse({
-        models: await opencodeModelCatalog.listOpencodeModels(),
-        fetchedAt: new Date().toISOString(),
-      });
-      return { data: payload };
+      const snapshot = await opencodeModelCatalogCache.get();
+      return {
+        data: OpencodeModelCatalogSchema.parse({
+          models: snapshot.value,
+          fetchedAt: snapshot.fetchedAt,
+        }),
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list OpenCode models";
       return reply.code(500).send({ error: message });

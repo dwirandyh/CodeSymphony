@@ -581,6 +581,37 @@ describe("chat routes", () => {
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/events/stream" });
       expect(res.statusCode).toBe(404);
     });
+
+    it("flushes an initial ping for empty threads so the SSE stream opens immediately", async () => {
+      mockChatService.getThreadById.mockResolvedValue({
+        id: "t1",
+        worktreeId: "w1",
+        title: "New Thread",
+      });
+      mockChatService.listEvents.mockResolvedValue([]);
+      const baseUrl = await app.listen({ host: "127.0.0.1", port: 0 });
+      const controller = new AbortController();
+
+      try {
+        const res = await fetch(`${baseUrl}/api/threads/t1/events/stream`, {
+          signal: controller.signal,
+        });
+
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toContain("text/event-stream");
+
+        const reader = res.body?.getReader();
+        expect(reader).toBeTruthy();
+
+        const firstChunk = await reader!.read();
+        const text = new TextDecoder().decode(firstChunk.value ?? new Uint8Array());
+        expect(text).toContain(": connected");
+
+        await reader!.cancel().catch(() => undefined);
+      } finally {
+        controller.abort();
+      }
+    }, 10_000);
   });
 
   describe("GET /api/threads/:id/timeline", () => {
@@ -612,6 +643,37 @@ describe("chat routes", () => {
         onTiming: expect.any(Function),
       }));
       expect(res.json().data.collectionsIncluded).toBe(true);
+    });
+
+    it("requests compact timeline snapshots without canonical collections", async () => {
+      mockChatService.listThreadSnapshot.mockResolvedValue({
+        messages: [],
+        events: [],
+        timeline: {
+          timelineItems: [],
+          summary: {
+            oldestRenderableKey: null,
+            oldestRenderableKind: null,
+            oldestRenderableMessageId: null,
+            oldestRenderableHydrationPending: false,
+            headIdentityStable: true,
+          },
+          newestSeq: 10,
+          newestIdx: 200,
+          collectionsIncluded: false,
+          messages: [],
+          events: [],
+        },
+      });
+
+      const res = await app.inject({ method: "GET", url: "/api/threads/t1/timeline?mode=compact" });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", expect.objectContaining({
+        includeCollections: false,
+        onTiming: expect.any(Function),
+      }));
+      expect(res.json().data.collectionsIncluded).toBe(false);
     });
 
     it("does not leak overlap-unresolved subagent explore events into top-level explore cards", async () => {

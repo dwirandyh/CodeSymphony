@@ -173,6 +173,26 @@ type PlanFileOutput = {
   revealedAt: string;
 };
 
+function ensureAscendingOrder<T>(
+  items: T[],
+  getOrderValue: (item: T) => number,
+): T[] {
+  if (items.length < 2) {
+    return items;
+  }
+
+  let previousOrderValue = getOrderValue(items[0]!);
+  for (let index = 1; index < items.length; index += 1) {
+    const currentOrderValue = getOrderValue(items[index]!);
+    if (currentOrderValue < previousOrderValue) {
+      return [...items].sort((left, right) => getOrderValue(left) - getOrderValue(right));
+    }
+    previousOrderValue = currentOrderValue;
+  }
+
+  return items;
+}
+
 function shouldSuppressPlanSeedMessage(params: {
   message: ChatMessage;
   normalizedPlan: ReturnType<typeof normalizePlanCreatedEvent> | undefined;
@@ -355,8 +375,8 @@ export function buildTimelineFromSeed(params: {
     loggedFirstInsertOrderByMessageId: new Set(),
   };
 
-  const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
-  const orderedEventsByIdx = [...events].sort((a, b) => a.idx - b.idx);
+  const sortedMessages = ensureAscendingOrder(messages, (message) => message.seq);
+  const orderedEventsByIdx = ensureAscendingOrder(events, (event) => event.idx);
 
   const firstMessageEventIdxById = new Map<string, number>();
   const firstScopedEventIdxByMessageId = new Map<string, number>();
@@ -429,64 +449,60 @@ export function buildTimelineFromSeed(params: {
     }
   }
 
-  const inlineToolEvents = orderedEventsByIdx.filter((event) =>
-    INLINE_TOOL_EVENT_TYPES.has(event.type) && !isTodoWriteToolEvent(event),
-  );
+  const inlineToolEvents: ChatEvent[] = [];
   const todoEventsByMessageId = new Map<string, ChatEvent[]>();
-  for (const event of orderedEventsByIdx) {
-    if (event.type !== "todo.updated") {
-      continue;
-    }
-
-    const messageId = getScopedMessageId(event);
-    if (!messageId) {
-      continue;
-    }
-
-    const existing = todoEventsByMessageId.get(messageId) ?? [];
-    existing.push(event);
-    todoEventsByMessageId.set(messageId, existing);
-  }
   const explicitInlineEventsByMessageId = new Map<string, ChatEvent[]>();
   const fallbackInlineToolEvents: ChatEvent[] = [];
-  for (const event of inlineToolEvents) {
-    const messageId = getInlineEventMessageId(event);
-    if (!messageId) {
-      fallbackInlineToolEvents.push(event);
-      continue;
-    }
-
-    const existing = explicitInlineEventsByMessageId.get(messageId) ?? [];
-    existing.push(event);
-    explicitInlineEventsByMessageId.set(messageId, existing);
-  }
-  const semanticContextEvents = orderedEventsByIdx.filter((event) =>
-    ((event.type === "tool.started"
-      || event.type === "tool.output"
-      || event.type === "tool.finished")
-      && !isTodoWriteToolEvent(event))
-    || event.type === "subagent.started"
-    || event.type === "subagent.finished"
-    || event.type === "plan.created"
-    || event.type === "todo.updated"
-    || event.type === "plan.approved"
-    || event.type === "plan.dismissed"
-    || event.type === "plan.revision_requested"
-  );
+  const semanticContextEvents: ChatEvent[] = [];
   const assistantDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
   for (const event of orderedEventsByIdx) {
-    if (event.type !== "message.delta" || event.payload.role !== "assistant") {
-      continue;
+    const isTodoWriteEvent = isTodoWriteToolEvent(event);
+    const isInlineToolEvent = INLINE_TOOL_EVENT_TYPES.has(event.type) && !isTodoWriteEvent;
+
+    if (isInlineToolEvent) {
+      inlineToolEvents.push(event);
+      const messageId = getInlineEventMessageId(event);
+      if (!messageId) {
+        fallbackInlineToolEvents.push(event);
+      } else {
+        const existing = explicitInlineEventsByMessageId.get(messageId) ?? [];
+        existing.push(event);
+        explicitInlineEventsByMessageId.set(messageId, existing);
+      }
     }
 
-    const messageId = getScopedMessageId(event);
-    if (!messageId) {
-      continue;
+    if (
+      isInlineToolEvent
+      || event.type === "subagent.started"
+      || event.type === "subagent.finished"
+      || event.type === "plan.created"
+      || event.type === "todo.updated"
+      || event.type === "plan.approved"
+      || event.type === "plan.dismissed"
+      || event.type === "plan.revision_requested"
+    ) {
+      semanticContextEvents.push(event);
     }
 
-    const existing = assistantDeltaEventsByMessageId.get(messageId) ?? [];
-    existing.push(event);
-    assistantDeltaEventsByMessageId.set(messageId, existing);
+    if (event.type === "todo.updated") {
+      const messageId = getScopedMessageId(event);
+      if (messageId) {
+        const existing = todoEventsByMessageId.get(messageId) ?? [];
+        existing.push(event);
+        todoEventsByMessageId.set(messageId, existing);
+      }
+    }
+
+    if (event.type === "message.delta" && event.payload.role === "assistant") {
+      const messageId = getScopedMessageId(event);
+      if (!messageId) {
+        continue;
+      }
+
+      const existing = assistantDeltaEventsByMessageId.get(messageId) ?? [];
+      existing.push(event);
+      assistantDeltaEventsByMessageId.set(messageId, existing);
+    }
   }
 
   const assistantContextById = new Map<string, ChatEvent[]>();
@@ -500,14 +516,16 @@ export function buildTimelineFromSeed(params: {
     }
   }
 
-  for (let index = 0; index < assistantMessages.length; index += 1) {
+  let nextAssistantStartIdx: number | undefined;
+  for (let index = assistantMessages.length - 1; index >= 0; index -= 1) {
     const currentMessage = assistantMessages[index];
-    for (let nextIndex = index + 1; nextIndex < assistantMessages.length; nextIndex += 1) {
-      const nextStartIdx = assistantStartIdxByMessageId.get(assistantMessages[nextIndex].id);
-      if (typeof nextStartIdx === "number") {
-        nextAssistantStartIdxByMessageId.set(currentMessage.id, nextStartIdx);
-        break;
-      }
+    if (typeof nextAssistantStartIdx === "number") {
+      nextAssistantStartIdxByMessageId.set(currentMessage.id, nextAssistantStartIdx);
+    }
+
+    const currentStartIdx = assistantStartIdxByMessageId.get(currentMessage.id);
+    if (typeof currentStartIdx === "number") {
+      nextAssistantStartIdx = currentStartIdx;
     }
   }
 
@@ -656,7 +674,9 @@ export function buildTimelineFromSeed(params: {
       ? context.filter((event) => !subagentEventIds.has(event.id))
       : context;
 
-    const allBashRuns = message.role === "assistant" ? extractBashRuns(nonSubagentContext) : [];
+    const allBashRuns = message.role === "assistant" ? extractBashRuns(nonSubagentContext, {
+      eventsAreSorted: true,
+    }) : [];
     const exploreLikeBashEventIds = new Set<string>();
     if (message.role === "assistant") {
       for (const run of allBashRuns) {
@@ -841,7 +861,9 @@ export function buildTimelineFromSeed(params: {
     }
 
     const editedRuns = message.role === "assistant"
-      ? extractEditedRuns(nonBashContext, context)
+      ? extractEditedRuns(nonBashContext, context, {
+        eventsAreSorted: true,
+      })
           .filter((run) => !run.changedFiles.every((filePath) => isPlanFilePath(filePath)))
       : [];
 
@@ -867,6 +889,9 @@ export function buildTimelineFromSeed(params: {
     const genericToolRuns = message.role === "assistant"
       ? extractGenericToolRuns(
         activityContext.filter((event) => !assignedToolEventIds.has(event.id)),
+        {
+          eventsAreSorted: true,
+        },
       )
       : [];
 

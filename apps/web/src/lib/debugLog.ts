@@ -24,15 +24,27 @@ type DebugLogFilters = {
   threadId: string | null;
 };
 
+type DebugLogEntry = {
+  seq: number;
+  ts: number;
+  source: string;
+  message: string;
+  data: unknown;
+};
+
 let debugSeq = 0;
 let persistentVerboseDebugOptIn: boolean | null = null;
 let persistentDebugFilters: DebugLogFilters | null = null;
+let pendingForcedEntries: DebugLogEntry[] = [];
+let forcedFlushInFlight = false;
+let forcedFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 const VERBOSE_DEBUG_SOURCE_PREFIXES = [
   "thread.timeline",
   "thread.stream",
   "thread.workspace",
 ];
+const FORCED_DEBUG_LOG_RETRY_MS = 1_000;
 
 function isVerboseDebugSource(source: string) {
   return VERBOSE_DEBUG_SOURCE_PREFIXES.some((prefix) => source === prefix || source.startsWith(`${prefix}.`));
@@ -149,6 +161,10 @@ function shouldEmitDebugLog(
   data: unknown,
   options: DebugLogOptions | undefined,
 ): boolean {
+  if (options?.force) {
+    return true;
+  }
+
   const filters = getPersistentDebugFilters();
   const matchesExplicitSourceFilter =
     filters.sourcePrefixes.length > 0 && matchesSourcePrefixes(source, filters.sourcePrefixes);
@@ -165,15 +181,55 @@ function shouldEmitDebugLog(
     }
   }
 
-  if (options?.force) {
-    return true;
-  }
-
   if (isVerboseDebugSource(source) && !isVerboseDebugEnabled() && !matchesExplicitSourceFilter) {
     return false;
   }
 
   return true;
+}
+
+function scheduleForcedDebugLogFlush() {
+  if (forcedFlushTimer != null || pendingForcedEntries.length === 0 || typeof window === "undefined") {
+    return;
+  }
+
+  forcedFlushTimer = setTimeout(() => {
+    forcedFlushTimer = null;
+    void flushPendingForcedDebugLogs();
+  }, FORCED_DEBUG_LOG_RETRY_MS);
+}
+
+async function flushPendingForcedDebugLogs() {
+  if (typeof window === "undefined" || forcedFlushInFlight || pendingForcedEntries.length === 0) {
+    return;
+  }
+
+  forcedFlushInFlight = true;
+  const batch = pendingForcedEntries.slice();
+
+  try {
+    const response = await fetch(`${resolveRuntimeApiBase()}/debug/log`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(batch),
+      keepalive: true,
+    });
+
+    if (!response.ok) {
+      throw new Error(`debug log upload failed with status ${response.status}`);
+    }
+
+    pendingForcedEntries = pendingForcedEntries.slice(batch.length);
+  } catch {
+    scheduleForcedDebugLogFlush();
+  } finally {
+    forcedFlushInFlight = false;
+    if (pendingForcedEntries.length > 0) {
+      scheduleForcedDebugLogFlush();
+    }
+  }
 }
 
 export function debugLog(source: string, message: string, data?: unknown, options?: DebugLogOptions) {
@@ -185,7 +241,7 @@ export function debugLog(source: string, message: string, data?: unknown, option
     return;
   }
 
-  const entry = {
+  const entry: DebugLogEntry = {
     seq: ++debugSeq,
     ts: Math.round(performance.now() * 10) / 10,
     source,
@@ -196,6 +252,15 @@ export function debugLog(source: string, message: string, data?: unknown, option
   const buffer = window.__CS_DEBUG_LOG__ ?? [];
   buffer.push(entry);
   window.__CS_DEBUG_LOG__ = buffer.slice(-200);
+
+  if (options?.force) {
+    pendingForcedEntries.push(entry);
+    if (pendingForcedEntries.length > 200) {
+      pendingForcedEntries = pendingForcedEntries.slice(-200);
+    }
+    void flushPendingForcedDebugLogs();
+    return;
+  }
 
   const body = JSON.stringify([entry]);
 

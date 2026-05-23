@@ -1,5 +1,5 @@
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readdir, readFile, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { execFile as execFileRaw } from "node:child_process";
@@ -109,6 +109,16 @@ async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Pr
     timeoutMs: options?.timeoutMs,
     allowedExitCodes: options?.allowedExitCodes,
   });
+}
+
+function assertWorktreePathAvailable(cwd: string) {
+  if (!existsSync(cwd)) {
+    throw new Error(`Worktree path not found: ${cwd}. Create a new worktree from Repository panel.`);
+  }
+
+  if (!statSync(cwd).isDirectory()) {
+    throw new Error(`Worktree path is not a directory: ${cwd}. Create a new worktree from Repository panel.`);
+  }
 }
 
 function isPathInsideRoot(root: string, candidate: string): boolean {
@@ -566,6 +576,8 @@ export async function getGitStatus(cwd: string): Promise<{
   behind: number;
   entries: Array<{ path: string; status: string; insertions: number; deletions: number }>;
 }> {
+  assertWorktreePathAvailable(cwd);
+
   const [branch, syncStatus] = await Promise.all([
     runGit(["branch", "--show-current"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => "HEAD"),
     getBranchSyncStatus(cwd),

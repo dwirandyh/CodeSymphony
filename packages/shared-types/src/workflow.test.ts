@@ -4,6 +4,7 @@ import {
   ApprovePlanResultSchema,
   AutomationSchema,
   BUILTIN_CHAT_MODELS_BY_AGENT,
+  ClaudeModelCatalogSchema,
   CliAgentSchema,
   CodexModelCatalogSchema,
   CreateAutomationInputSchema,
@@ -28,20 +29,18 @@ describe("Cursor shared workflow schemas", () => {
     expect(CliAgentSchema.parse("cursor")).toBe("cursor");
   });
 
-  it("declares non-empty built-in and default Cursor models", () => {
-    const builtins = BUILTIN_CHAT_MODELS_BY_AGENT.cursor;
-    expect(builtins.length).toBeGreaterThan(0);
-    expect(builtins).toContain(DEFAULT_CHAT_MODEL_BY_AGENT.cursor);
-  });
-
-  it("defaults Claude to Sonnet 4.6 and keeps it in the built-in catalog", () => {
-    expect(DEFAULT_CHAT_MODEL_BY_AGENT.claude).toBe("claude-sonnet-4-6");
-    expect(BUILTIN_CHAT_MODELS_BY_AGENT.claude).toContain("claude-sonnet-4-6");
-    expect(BUILTIN_CHAT_MODELS_BY_AGENT.claude).not.toContain("glm-4.7");
-  });
-
-  it("keeps Codex built-in models out of shared-types", () => {
+  it("keeps shared built-in model catalogs empty so runtime can source them from each CLI", () => {
+    expect(BUILTIN_CHAT_MODELS_BY_AGENT.claude).toEqual([]);
     expect(BUILTIN_CHAT_MODELS_BY_AGENT.codex).toEqual([]);
+    expect(BUILTIN_CHAT_MODELS_BY_AGENT.cursor).toEqual([]);
+    expect(BUILTIN_CHAT_MODELS_BY_AGENT.opencode).toEqual([]);
+  });
+
+  it("keeps the existing Claude default model id for persisted thread compatibility", () => {
+    expect(DEFAULT_CHAT_MODEL_BY_AGENT.claude).toBe("claude-sonnet-4-6");
+  });
+
+  it("keeps Codex built-in models out of shared-types and requires runtime resolution", () => {
     expect(DEFAULT_CHAT_MODEL_BY_AGENT.codex).toBe("");
   });
 
@@ -141,6 +140,35 @@ describe("Cursor shared workflow schemas", () => {
           name: "GPT-5.5",
           hidden: false,
           isDefault: true,
+        },
+      ],
+    });
+  });
+
+  it("accepts Claude model catalogs from the Claude CLI SDK", () => {
+    expect(ClaudeModelCatalogSchema.parse({
+      models: [
+        {
+          id: "default",
+          name: "Default (recommended)",
+          description: "Use the default model.",
+        },
+        {
+          id: "opus",
+          name: "Opus",
+          description: "Most capable for complex work.",
+        },
+      ],
+      fetchedAt: "2026-01-01T00:00:00.000Z",
+    })).toMatchObject({
+      models: [
+        {
+          id: "default",
+          name: "Default (recommended)",
+        },
+        {
+          id: "opus",
+          name: "Opus",
         },
       ],
     });

@@ -1,12 +1,19 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
 const mockFetch = vi.fn();
+const debugLogMock = vi.fn();
+
+vi.mock("./debugLog", () => ({
+  debugLog: (...args: unknown[]) => debugLogMock(...args),
+}));
+
 globalThis.fetch = mockFetch;
 
 function mockOk(data: unknown) {
   return Promise.resolve({
     ok: true,
     status: 200,
+    headers: new Headers(),
     json: () => Promise.resolve({ data }),
   } as Response);
 }
@@ -15,6 +22,7 @@ function mockError(status: number, error: string) {
   return Promise.resolve({
     ok: false,
     status,
+    headers: new Headers(),
     json: () => Promise.resolve({ error }),
   } as Response);
 }
@@ -23,6 +31,7 @@ function mock204() {
   return Promise.resolve({
     ok: true,
     status: 204,
+    headers: new Headers(),
     json: () => Promise.resolve(null),
   } as Response);
 }
@@ -33,6 +42,7 @@ describe("api", () => {
   beforeEach(async () => {
     vi.resetModules();
     mockFetch.mockReset();
+    debugLogMock.mockReset();
     const mod = await import("./api");
     api = mod.api;
   });
@@ -45,6 +55,39 @@ describe("api", () => {
       expect(result).toEqual(repos);
       expect(mockFetch).toHaveBeenCalledWith(
         expect.stringContaining("/repositories"),
+        expect.objectContaining({ headers: expect.any(Headers) }),
+      );
+    });
+  });
+
+  describe("getWorkspaceBootstrap", () => {
+    it("fetches compact workspace bootstrap data with selected ids", async () => {
+      const bootstrap = {
+        selection: {
+          repositoryId: "repo-1",
+          worktreeId: "wt-1",
+          threadId: "thread-1",
+        },
+        repository: null,
+        worktree: null,
+        threads: [],
+        threadsLoaded: true,
+        thread: null,
+        gitStatus: null,
+        capturedAt: "2026-05-20T00:00:00.000Z",
+      };
+
+      mockFetch.mockReturnValueOnce(mockOk(bootstrap));
+
+      const result = await api.getWorkspaceBootstrap({
+        repositoryId: "repo-1",
+        worktreeId: "wt-1",
+        threadId: "thread-1",
+      });
+
+      expect(result).toEqual(bootstrap);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/workspace/bootstrap?repositoryId=repo-1&worktreeId=wt-1&threadId=thread-1"),
         expect.objectContaining({ headers: expect.any(Headers) }),
       );
     });
@@ -546,6 +589,29 @@ describe("api", () => {
       );
     });
 
+    it("requests compact timeline snapshots for startup bootstrap", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({
+        timelineItems: [],
+        summary: {
+          oldestRenderableKey: null,
+          oldestRenderableKind: null,
+          oldestRenderableMessageId: null,
+          oldestRenderableHydrationPending: false,
+          headIdentityStable: true,
+        },
+        newestSeq: null,
+        newestIdx: null,
+        collectionsIncluded: false,
+        events: [],
+        messages: [],
+      }));
+      await api.getTimelineSnapshot("t1", { mode: "compact" });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/threads/t1/timeline?mode=compact"),
+        expect.anything(),
+      );
+    });
+
     it("sends expectedWorktreeId with chat messages", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "m1" }));
       await api.sendMessage("t1", {
@@ -691,6 +757,21 @@ describe("api", () => {
   });
 
   describe("model provider operations", () => {
+    it("lists Claude models", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({
+        models: [{ id: "default", name: "Default (recommended)", description: "Use the default model." }],
+        fetchedAt: "2026-01-01T00:00:00Z",
+      }));
+      await expect(api.listClaudeModels()).resolves.toEqual({
+        models: [{ id: "default", name: "Default (recommended)", description: "Use the default model." }],
+        fetchedAt: "2026-01-01T00:00:00Z",
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/claude/models"),
+        expect.objectContaining({ headers: expect.any(Headers) }),
+      );
+    });
+
     it("lists Codex models", async () => {
       mockFetch.mockReturnValueOnce(mockOk({
         models: [{ id: "gpt-5.5", name: "GPT-5.5", description: "Frontier coding model", hidden: false, isDefault: true }],

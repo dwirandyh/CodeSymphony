@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useMemo, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type {
@@ -7,6 +7,7 @@ import type {
   AutomationRun,
   ChatMode,
   ChatThreadPermissionMode,
+  ClaudeModelCatalogEntry,
   CliAgent,
   CodexModelCatalogEntry,
   CursorModelCatalogEntry,
@@ -44,14 +45,18 @@ import { api } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { queryKeys } from "../../lib/queryKeys";
 import { useRepositories } from "../../hooks/queries/useRepositories";
+import { LiveStatusErrorToast } from "../../components/workspace/LiveStatusErrorToast";
 import {
   AgentModelSelector,
   type AgentModelSelection,
 } from "../../components/workspace/composer/AgentModelSelector";
+import { useClaudeModels } from "../../hooks/queries/useClaudeModels";
 import { useCodexModels } from "../../hooks/queries/useCodexModels";
 import { useCursorModels } from "../../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../../hooks/queries/useOpencodeModels";
 import { useRuntimeInfo } from "../../hooks/queries/useRuntimeInfo";
+import { requestAutomationRunsLiveRefresh, useAutomationRuns } from "../../hooks/queries/useAutomationRuns";
+import { resolveWorkspaceLiveErrorSummary } from "../../lib/workspaceLiveErrorState";
 import { useModelProviders } from "../workspace/hooks/useModelProviders";
 import { useWorkspaceSyncStream } from "../workspace/hooks/useWorkspaceSyncStream";
 import { AutomationPromptEditor } from "./AutomationPromptEditor";
@@ -128,12 +133,17 @@ const AUTOMATION_STATUS_FILTER_OPTIONS: Array<{
 ];
 
 const ALL_PROJECTS_FILTER_VALUE = "__all_projects__";
+const AUTOMATION_LIST_FALLBACK_REFETCH_MS = 60_000;
+const AUTOMATION_DETAIL_FALLBACK_REFETCH_MS = 60_000;
+const AUTOMATION_VERSIONS_FALLBACK_REFETCH_MS = 5 * 60_000;
 
 const rememberedAutomationListState: {
   repositoryFilter: string | null;
+  repositoryFilterLabel: string | null;
   enabledFilter: "all" | "enabled" | "paused";
 } = {
   repositoryFilter: null,
+  repositoryFilterLabel: null,
   enabledFilter: "enabled",
 };
 
@@ -209,25 +219,74 @@ function normalizeTimezone(timezone: string | null | undefined): string {
   return value && value.length > 0 ? value : getCurrentTimezone();
 }
 
-function findRootWorktree(repository: Repository | undefined) {
+function findActiveRootWorktree(repository: Repository | undefined) {
   if (!repository) {
     return null;
   }
 
-  const rootMatch = repository.worktrees.find((worktree) => worktree.path === repository.rootPath && worktree.status === "active");
-  if (rootMatch) {
-    return rootMatch;
-  }
-
-  return repository.worktrees.find((worktree) => worktree.status === "active") ?? null;
+  return repository.worktrees.find((worktree) => worktree.path === repository.rootPath && worktree.status === "active") ?? null;
 }
 
 function findRepositoryById(repositories: Repository[], repositoryId: string) {
   return repositories.find((repository) => repository.id === repositoryId);
 }
 
-function getAutomationContextWorktreeId(repository: Repository | undefined) {
-  return findRootWorktree(repository)?.id ?? "";
+function getAutomationContextWorktreeId(params: {
+  repository: Repository | undefined;
+  targetMode: AutomationTargetMode;
+  preferredWorktreeId?: string | null;
+}) {
+  const { repository, targetMode, preferredWorktreeId } = params;
+  if (!repository) {
+    return "";
+  }
+
+  const rootWorktree = findActiveRootWorktree(repository);
+  if (targetMode === "repo_root") {
+    return rootWorktree?.id ?? "";
+  }
+
+  if (preferredWorktreeId) {
+    const preferredWorktree = repository.worktrees.find((worktree) => (
+      worktree.id === preferredWorktreeId && worktree.status === "active"
+    )) ?? null;
+    if (preferredWorktree) {
+      return preferredWorktree.id;
+    }
+  }
+
+  return rootWorktree?.id ?? repository.worktrees.find((worktree) => worktree.status === "active")?.id ?? "";
+}
+
+function getAutomationRunUnavailableReason(
+  automation: Pick<Automation, "repositoryId" | "targetMode">,
+  repositories: Repository[],
+  options?: {
+    latestRunError?: string | null;
+  },
+) {
+  const latestRunError = options?.latestRunError ?? null;
+  if (automation.targetMode !== "repo_root") {
+    return null;
+  }
+
+  const repository = findRepositoryById(repositories, automation.repositoryId);
+  if (!repository) {
+    return null;
+  }
+
+  if (
+    latestRunError
+    && (
+      latestRunError.includes("Worktree path not found:")
+      || latestRunError.includes("Worktree path is not a directory:")
+      || latestRunError === "Repository root worktree is not available"
+    )
+  ) {
+    return "Repository root worktree is not available";
+  }
+
+  return findActiveRootWorktree(repository) ? null : "Repository root worktree is not available";
 }
 
 function defaultModelForAgent(agent: CliAgent): string {
@@ -373,7 +432,7 @@ function toFormState(
   const repository = automation
     ? findRepositoryById(repositories, automation.repositoryId)
     : findRepositoryById(repositories, prefills?.repositoryId ?? repositories[0]?.id ?? "") ?? repositories[0];
-  const rootWorktree = findRootWorktree(repository);
+  const targetMode = automation?.targetMode ?? "repo_root";
   const schedule = automation ? parseAutomationRrule(automation.rrule) : {
     frequency: "daily" as const,
     hour: 9,
@@ -384,8 +443,14 @@ function toFormState(
 
   return {
     repositoryId: automation?.repositoryId ?? repository?.id ?? "",
-    targetWorktreeId: getAutomationContextWorktreeId(repository) || automation?.targetWorktreeId || prefills?.worktreeId || "",
-    targetMode: automation?.targetMode ?? "repo_root",
+    targetWorktreeId: getAutomationContextWorktreeId({
+      repository,
+      targetMode,
+      preferredWorktreeId: targetMode === "worktree"
+        ? automation?.targetWorktreeId ?? prefills?.worktreeId
+        : undefined,
+    }),
+    targetMode,
     name: automation?.name ?? "",
     prompt: automation?.prompt ?? "",
     agent: automation?.agent ?? prefills?.agent ?? "claude",
@@ -437,6 +502,14 @@ function formToPayload(form: AutomationFormState) {
 function formToUpdatePayload(form: AutomationFormState) {
   const { repositoryId: _repositoryId, ...payload } = formToPayload(form);
   return payload;
+}
+
+function serializeAutomationUpdatePayload(form: AutomationFormState) {
+  return JSON.stringify(formToUpdatePayload(form));
+}
+
+function isAutomationNotFoundError(error: unknown) {
+  return error instanceof Error && error.message === "Automation not found";
 }
 
 function getProvidersForAgent(providers: ModelProvider[], agent: CliAgent) {
@@ -851,6 +924,7 @@ function AutomationInlinePicker({
 function AutomationSessionPicker({
   value,
   providers,
+  claudeModels,
   codexModels,
   cursorModels,
   opencodeModels,
@@ -862,6 +936,7 @@ function AutomationSessionPicker({
 }: {
   value: Pick<AutomationFormState, "agent" | "model" | "modelProviderId">;
   providers: ModelProvider[];
+  claudeModels: readonly ClaudeModelCatalogEntry[];
   codexModels: readonly CodexModelCatalogEntry[];
   cursorModels: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
@@ -879,6 +954,7 @@ function AutomationSessionPicker({
         modelProviderId: value.modelProviderId,
       }}
       providers={providers}
+      claudeModels={claudeModels}
       codexModels={codexModels}
       cursorModels={cursorModels}
       opencodeModels={opencodeModels}
@@ -1194,7 +1270,8 @@ function AutomationListItem({
   const repository = findRepositoryById(repositories, automation.repositoryId);
   const scheduleSummary = summarizeScheduleCompact(automation);
   const activeRun = isAutomationRunActive(automation.latestRun) ? automation.latestRun : null;
-  const runActionDisabled = runPending || activeRun !== null;
+  const runUnavailableReason = getAutomationRunUnavailableReason(automation, repositories);
+  const runActionDisabled = runPending || activeRun !== null || runUnavailableReason !== null;
 
   const stopEvent = (event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();
@@ -1257,6 +1334,7 @@ function AutomationListItem({
           <AutomationRowActionButton
             aria-label={`Run now ${automation.name}`}
             disabled={runActionDisabled}
+            title={runUnavailableReason ?? undefined}
             onClick={(event) => {
               stopEvent(event);
               setMoreOpen(false);
@@ -1343,12 +1421,14 @@ export function AutomationsListPage({
   const repositoriesQuery = useRepositories();
   const { providers } = useModelProviders();
   const runtimeInfo = useRuntimeInfo();
+  const claudeModelsQuery = useClaudeModels();
   const codexModelsQuery = useCodexModels();
   const cursorModelsQuery = useCursorModels();
   const opencodeModelsQuery = useOpencodeModels();
   const repositories = repositoriesQuery.data;
-  const [repositoryFilter, setRepositoryFilter] = useState(() => rememberedAutomationListState.repositoryFilter ?? "");
-  const [enabledFilter, setEnabledFilter] = useState<"all" | "enabled" | "paused">(() => rememberedAutomationListState.enabledFilter);
+  const [repositoryFilterState, setRepositoryFilterState] = useState(() => rememberedAutomationListState.repositoryFilter ?? "");
+  const [repositoryFilterLabelState, setRepositoryFilterLabelState] = useState(() => rememberedAutomationListState.repositoryFilterLabel);
+  const [enabledFilterState, setEnabledFilterState] = useState<"all" | "enabled" | "paused">(() => rememberedAutomationListState.enabledFilter);
   const [createDialogOpen, setCreateDialogOpen] = useState(prefills?.create ?? false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createValidationErrors, setCreateValidationErrors] = useState<AutomationFormValidationErrors>({});
@@ -1356,6 +1436,23 @@ export function AutomationsListPage({
   const [createForm, setCreateForm] = useState<AutomationFormState>(() => toFormState(repositories, providers, null, prefills));
   const [createDialogPopoverHost, setCreateDialogPopoverHost] = useState<HTMLDivElement | null>(null);
   const compactLayout = layout === "panel";
+  const repositoryFilter = repositoryFilterState;
+  const repositoryFilterLabel = repositoryFilterLabelState;
+  const enabledFilter = enabledFilterState;
+
+  const setRepositoryFilter = useCallback((value: string) => {
+    const matchedRepository = value ? findRepositoryById(repositories, value) : null;
+    const nextLabel = value ? matchedRepository?.name ?? rememberedAutomationListState.repositoryFilterLabel ?? value : null;
+    rememberedAutomationListState.repositoryFilter = value;
+    rememberedAutomationListState.repositoryFilterLabel = nextLabel;
+    setRepositoryFilterState(value);
+    setRepositoryFilterLabelState(nextLabel);
+  }, [repositories]);
+
+  const setEnabledFilter = useCallback((value: "all" | "enabled" | "paused") => {
+    rememberedAutomationListState.enabledFilter = value;
+    setEnabledFilterState(value);
+  }, []);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     setCreateDialogOpen(open);
@@ -1380,9 +1477,22 @@ export function AutomationsListPage({
   }, [repositories, providers, prefills]);
 
   useEffect(() => {
-    rememberedAutomationListState.repositoryFilter = repositoryFilter;
-    rememberedAutomationListState.enabledFilter = enabledFilter;
-  }, [enabledFilter, repositoryFilter]);
+    if (!repositoryFilter) {
+      if (repositoryFilterLabel !== null) {
+        rememberedAutomationListState.repositoryFilterLabel = null;
+        setRepositoryFilterLabelState(null);
+      }
+      return;
+    }
+
+    const matchedRepository = findRepositoryById(repositories, repositoryFilter);
+    if (!matchedRepository || matchedRepository.name === repositoryFilterLabel) {
+      return;
+    }
+
+    rememberedAutomationListState.repositoryFilterLabel = matchedRepository.name;
+    setRepositoryFilterLabelState(matchedRepository.name);
+  }, [repositories, repositoryFilter, repositoryFilterLabel]);
 
   const automationsQuery = useQuery({
     queryKey: queryKeys.automations.list(
@@ -1393,7 +1503,8 @@ export function AutomationsListPage({
       repositoryId: repositoryFilter || undefined,
       enabled: enabledFilter === "all" ? undefined : enabledFilter === "enabled",
     }),
-    refetchInterval: 10_000,
+    refetchInterval: AUTOMATION_LIST_FALLBACK_REFETCH_MS,
+    staleTime: AUTOMATION_LIST_FALLBACK_REFETCH_MS - 1_000,
   });
   const automations = automationsQuery.data ?? [];
   const automationById = useMemo(
@@ -1461,7 +1572,7 @@ export function AutomationsListPage({
     onSuccess: (_run, automationId) => {
       applyAutomationLatestRunToCache(queryClient, automationId, _run);
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(automationId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.automations.runs(automationId) });
+      requestAutomationRunsLiveRefresh(queryClient, automationId);
     },
     onError: (error, automationId) => {
       setActionError(error instanceof Error ? error.message : "Unable to run automation");
@@ -1490,10 +1601,21 @@ export function AutomationsListPage({
     },
   });
   const createRepository = findRepositoryById(repositories, createForm.repositoryId);
+  const claudeModels = claudeModelsQuery.data?.models ?? [];
   const codexModels = codexModelsQuery.data?.models ?? [];
   const cursorModels = cursorModelsQuery.data?.models ?? [];
   const opencodeModels = opencodeModelsQuery.data?.models ?? [];
   const codexBuiltinModelOverride = runtimeInfo.data?.codexCliProviderOverride?.model ?? null;
+  const projectFilterOptions = [
+    { value: ALL_PROJECTS_FILTER_VALUE, label: "All projects" },
+    ...(repositoryFilter && !repositories.some((repository) => repository.id === repositoryFilter)
+      ? [{ value: repositoryFilter, label: repositoryFilterLabel ?? repositoryFilter }]
+      : []),
+    ...repositories.map((repository) => ({
+      value: repository.id,
+      label: repository.name,
+    })),
+  ];
   const createProjectOptions = repositories.map((repository) => ({
     value: repository.id,
     label: repository.name,
@@ -1574,13 +1696,7 @@ export function AutomationsListPage({
                 ariaLabel="Project filter"
                 value={repositoryFilter || ALL_PROJECTS_FILTER_VALUE}
                 onValueChange={(value) => setRepositoryFilter(value === ALL_PROJECTS_FILTER_VALUE ? "" : value)}
-                options={[
-                  { value: ALL_PROJECTS_FILTER_VALUE, label: "All projects" },
-                  ...repositories.map((repository) => ({
-                    value: repository.id,
-                    label: repository.name,
-                  })),
-                ]}
+                options={projectFilterOptions}
               />
             </ComposerFooterField>
             <ComposerFooterField label="Status" className="min-w-[180px]">
@@ -1718,9 +1834,14 @@ export function AutomationsListPage({
                       className="min-w-0 justify-between"
                       onSelect={(nextRepositoryId) => {
                         const nextRepository = findRepositoryById(repositories, nextRepositoryId);
+                        const nextTargetWorktreeId = getAutomationContextWorktreeId({
+                          repository: nextRepository,
+                          targetMode: createForm.targetMode,
+                          preferredWorktreeId: createForm.targetMode === "worktree" ? createForm.targetWorktreeId : undefined,
+                        });
                         updateCreateForm({
                           repositoryId: nextRepositoryId,
-                          targetWorktreeId: getAutomationContextWorktreeId(nextRepository),
+                          targetWorktreeId: nextTargetWorktreeId,
                         }, ["repositoryId", "targetWorktreeId"]);
                       }}
                       testId="automation-create-project-trigger"
@@ -1735,8 +1856,14 @@ export function AutomationsListPage({
                       options={createTargetOptions}
                       className="min-w-0 justify-between"
                       onSelect={(nextTargetMode) => {
+                        const resolvedTargetMode = nextTargetMode as AutomationTargetMode;
                         updateCreateForm({
-                          targetMode: nextTargetMode as AutomationTargetMode,
+                          targetMode: resolvedTargetMode,
+                          targetWorktreeId: getAutomationContextWorktreeId({
+                            repository: createRepository,
+                            targetMode: resolvedTargetMode,
+                            preferredWorktreeId: resolvedTargetMode === "worktree" ? createForm.targetWorktreeId : undefined,
+                          }),
                         }, ["targetWorktreeId"]);
                       }}
                       testId="automation-create-target-trigger"
@@ -1749,6 +1876,7 @@ export function AutomationsListPage({
                         modelProviderId: createForm.modelProviderId,
                       }}
                       providers={providers}
+                      claudeModels={claudeModels}
                       codexModels={codexModels}
                       cursorModels={cursorModels}
                       opencodeModels={opencodeModels}
@@ -1823,12 +1951,15 @@ export function AutomationDetailPage({
   const repositoriesQuery = useRepositories();
   const { providers } = useModelProviders();
   const runtimeInfo = useRuntimeInfo();
+  const claudeModelsQuery = useClaudeModels();
   const codexModelsQuery = useCodexModels();
   const cursorModelsQuery = useCursorModels();
   const opencodeModelsQuery = useOpencodeModels();
   const repositories = repositoriesQuery.data;
   const detailQueryKey = queryKeys.automations.detail(automationId);
   const compactLayout = layout === "panel";
+  const lastSyncedPayloadRef = useRef<string | null>(null);
+  const missingAutomationHandledRef = useRef(false);
   const handleBack = useCallback(() => {
     if (onBack) {
       onBack();
@@ -1843,38 +1974,106 @@ export function AutomationDetailPage({
   const automationQuery = useQuery({
     queryKey: detailQueryKey,
     queryFn: () => api.getAutomation(automationId),
-    refetchInterval: 5_000,
+    refetchInterval: AUTOMATION_DETAIL_FALLBACK_REFETCH_MS,
+    staleTime: AUTOMATION_DETAIL_FALLBACK_REFETCH_MS - 1_000,
+    retry: false,
   });
-  const runsQuery = useQuery({
-    queryKey: queryKeys.automations.runs(automationId),
-    queryFn: () => api.listAutomationRuns(automationId),
-    refetchInterval: 5_000,
-  });
+  const runsQuery = useAutomationRuns(automationId);
   const versionsQuery = useQuery({
     queryKey: queryKeys.automations.versions(automationId),
     queryFn: () => api.listAutomationPromptVersions(automationId),
-    refetchInterval: 15_000,
+    refetchInterval: AUTOMATION_VERSIONS_FALLBACK_REFETCH_MS,
+    staleTime: AUTOMATION_VERSIONS_FALLBACK_REFETCH_MS - 1_000,
+    retry: false,
   });
 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [form, setForm] = useState<AutomationFormState | null>(null);
+  const [dismissedLiveErrorSignature, setDismissedLiveErrorSignature] = useState<string | null>(null);
+  const runsLiveErrorMessage = runsQuery.error instanceof Error
+    ? runsQuery.error.message
+    : runsQuery.error
+      ? String(runsQuery.error)
+      : null;
+  const runsLiveError = resolveWorkspaceLiveErrorSummary([
+    {
+      domain: "automation_runs",
+      connectionState: runsQuery.connectionState,
+      errorMessage: runsLiveErrorMessage,
+    },
+  ]);
+  const visibleRunsLiveError = runsLiveError && dismissedLiveErrorSignature !== runsLiveError.signature
+    ? runsLiveError
+    : null;
+
+  useEffect(() => {
+    if (!runsLiveError) {
+      setDismissedLiveErrorSignature(null);
+      return;
+    }
+
+    setDismissedLiveErrorSignature((current) => (
+      current != null && current !== runsLiveError.signature ? null : current
+    ));
+  }, [runsLiveError]);
 
   useEffect(() => {
     if (!automationQuery.data) {
       return;
     }
+
+    missingAutomationHandledRef.current = false;
     const nextForm = toFormState(repositories, providers, automationQuery.data);
+    const nextPayload = serializeAutomationUpdatePayload(nextForm);
     setForm((current) => {
       if (current === null) {
+        lastSyncedPayloadRef.current = nextPayload;
         return nextForm;
       }
 
-      const currentPayload = JSON.stringify(formToUpdatePayload(current));
-      const nextPayload = JSON.stringify(formToUpdatePayload(nextForm));
-      return currentPayload === nextPayload ? nextForm : current;
+      const currentPayload = serializeAutomationUpdatePayload(current);
+      const lastSyncedPayload = lastSyncedPayloadRef.current;
+      const hasUnsavedChanges = lastSyncedPayload !== null && currentPayload !== lastSyncedPayload;
+
+      if (currentPayload === nextPayload || !hasUnsavedChanges) {
+        lastSyncedPayloadRef.current = nextPayload;
+        return nextForm;
+      }
+
+      return current;
     });
   }, [automationQuery.data, repositories, providers]);
+
+  useEffect(() => {
+    if (form === null || automationQuery.data != null) {
+      return;
+    }
+
+    if (queryClient.getQueryState(detailQueryKey) != null || missingAutomationHandledRef.current) {
+      return;
+    }
+
+    missingAutomationHandledRef.current = true;
+    handleBack();
+  }, [automationQuery.data, detailQueryKey, form, handleBack, queryClient]);
+
+  useEffect(() => {
+    if (!automationQuery.isError || !isAutomationNotFoundError(automationQuery.error)) {
+      missingAutomationHandledRef.current = false;
+      return;
+    }
+
+    if (missingAutomationHandledRef.current) {
+      return;
+    }
+
+    missingAutomationHandledRef.current = true;
+    queryClient.removeQueries({ queryKey: detailQueryKey });
+    queryClient.removeQueries({ queryKey: queryKeys.automations.runs(automationId) });
+    queryClient.removeQueries({ queryKey: queryKeys.automations.versions(automationId) });
+    handleBack();
+  }, [automationId, automationQuery.error, automationQuery.isError, detailQueryKey, handleBack, queryClient]);
 
   const saveMutation = useMutation({
     mutationFn: (payload: ReturnType<typeof formToUpdatePayload>) => api.updateAutomation(automationId, payload),
@@ -1918,7 +2117,7 @@ export function AutomationDetailPage({
     onSuccess: (run) => {
       applyAutomationLatestRunToCache(queryClient, automationId, run);
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(automationId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.automations.runs(automationId) });
+      requestAutomationRunsLiveRefresh(queryClient, automationId);
     },
     onError: (error) => {
       setActionError(error instanceof Error ? error.message : "Unable to run automation");
@@ -1946,6 +2145,7 @@ export function AutomationDetailPage({
     mutationFn: (versionId: string) => api.restoreAutomationPromptVersion(automationId, versionId),
     onSuccess: (restoredAutomation) => {
       queryClient.setQueryData(detailQueryKey, restoredAutomation);
+      lastSyncedPayloadRef.current = serializeAutomationUpdatePayload(toFormState(repositories, providers, restoredAutomation));
       setForm((current) => current
         ? { ...current, prompt: restoredAutomation.prompt }
         : toFormState(repositories, providers, restoredAutomation));
@@ -1957,6 +2157,16 @@ export function AutomationDetailPage({
   });
 
   const automation = automationQuery.data;
+
+  if (automationQuery.isError && !isAutomationNotFoundError(automationQuery.error)) {
+    return (
+      <AutomationPageShell layout={layout}>
+        <div className="w-full border-y border-destructive/30 bg-destructive/10 px-3 py-8 text-sm text-destructive-foreground">
+          {automationQuery.error instanceof Error ? automationQuery.error.message : "Unable to load automation."}
+        </div>
+      </AutomationPageShell>
+    );
+  }
 
   if (automationQuery.isLoading || form === null || automation == null) {
     return (
@@ -1975,12 +2185,19 @@ export function AutomationDetailPage({
     description: describeAutomationTarget(repository, option.value),
     icon: getAutomationTargetIcon(option.value),
   }));
+  const claudeModels = claudeModelsQuery.data?.models ?? [];
   const codexModels = codexModelsQuery.data?.models ?? [];
   const cursorModels = cursorModelsQuery.data?.models ?? [];
   const opencodeModels = opencodeModelsQuery.data?.models ?? [];
   const codexBuiltinModelOverride = runtimeInfo.data?.codexCliProviderOverride?.model ?? null;
   const activeRun = (runsQuery.data ?? []).find((run) => isAutomationRunActive(run))
     ?? (isAutomationRunActive(automation.latestRun) ? automation.latestRun : null);
+  const latestKnownRun = runsQuery.data?.[0] ?? automation.latestRun ?? null;
+  const runUnavailableReason = getAutomationRunUnavailableReason(automation, repositories, {
+    latestRunError: latestKnownRun?.error ?? null,
+  });
+  const runActionDisabled = runMutation.isPending || activeRun !== null || runUnavailableReason !== null;
+  const actionMessage = actionError ?? runUnavailableReason;
 
   return (
     <AutomationPageShell layout={layout}>
@@ -2032,7 +2249,8 @@ export function AutomationDetailPage({
             <Button
               type="button"
               className="px-5"
-              disabled={runMutation.isPending || activeRun !== null}
+              disabled={runActionDisabled}
+              title={runUnavailableReason ?? undefined}
               onClick={() => runMutation.mutate()}
             >
               <Play className="mr-2 h-4 w-4" />
@@ -2041,9 +2259,16 @@ export function AutomationDetailPage({
           </div>
         </div>
 
-        {actionError ? (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground">
-            {actionError}
+        {actionMessage ? (
+          <div
+            className={cn(
+              "rounded-lg px-3 py-2 text-sm",
+              actionError
+                ? "border border-destructive/30 bg-destructive/10 text-destructive-foreground"
+                : "border border-amber-500/25 bg-amber-500/10 text-amber-200",
+            )}
+          >
+            {actionMessage}
           </div>
         ) : null}
 
@@ -2136,10 +2361,15 @@ export function AutomationDetailPage({
                     options={detailTargetOptions}
                     className="justify-between"
                     onSelect={(nextTargetMode) => {
+                      const resolvedTargetMode = nextTargetMode as AutomationTargetMode;
                       setForm((current) => current ? {
                         ...current,
-                        targetMode: nextTargetMode as AutomationTargetMode,
-                        targetWorktreeId: getAutomationContextWorktreeId(repository),
+                        targetMode: resolvedTargetMode,
+                        targetWorktreeId: getAutomationContextWorktreeId({
+                          repository,
+                          targetMode: resolvedTargetMode,
+                          preferredWorktreeId: resolvedTargetMode === "worktree" ? current.targetWorktreeId : undefined,
+                        }),
                       } : current);
                     }}
                     testId="automation-detail-target-trigger"
@@ -2173,6 +2403,7 @@ export function AutomationDetailPage({
                       modelProviderId: form.modelProviderId,
                     }}
                     providers={providers}
+                    claudeModels={claudeModels}
                     codexModels={codexModels}
                     cursorModels={cursorModels}
                     opencodeModels={opencodeModels}
@@ -2196,7 +2427,9 @@ export function AutomationDetailPage({
             </section>
 
             <section className="space-y-4 border-t border-border/40 py-5 xl:px-5">
-              <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-foreground">Runs</h2>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-foreground">Runs</h2>
+              </div>
               <AutomationRunList
                 automation={automation}
                 runs={runsQuery.data ?? []}
@@ -2215,6 +2448,13 @@ export function AutomationDetailPage({
           </aside>
         </div>
       </div>
+      {visibleRunsLiveError ? (
+        <LiveStatusErrorToast
+          description={visibleRunsLiveError.description}
+          title={visibleRunsLiveError.title}
+          onDismiss={() => setDismissedLiveErrorSignature(visibleRunsLiveError.signature)}
+        />
+      ) : null}
     </AutomationPageShell>
   );
 }

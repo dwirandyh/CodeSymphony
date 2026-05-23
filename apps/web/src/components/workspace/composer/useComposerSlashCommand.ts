@@ -60,10 +60,14 @@ export function useComposerSlashCommand({
       shortDescription: toShortDescription(result.obj.description),
     }));
   }, [slashCommand.active, slashCommand.query, slashCommands]);
+  const suggestionsSignature = useMemo(
+    () => suggestions.map((suggestion) => suggestion.name).join("\u0000"),
+    [suggestions],
+  );
 
   useEffect(() => {
-    setSelectedIndex(0);
-  }, [suggestions]);
+    setSelectedIndex((current) => current === 0 ? current : 0);
+  }, [suggestionsSignature]);
 
   const closeSlashCommand = useCallback(() => {
     setSlashCommand({ active: false, query: "", startOffset: -1, anchorNode: null, trigger: "/" });

@@ -6,6 +6,8 @@ import type { SaveAutomationConfig } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
 import { useWorkspaceFileEditor } from "./useWorkspaceFileEditor";
 
+const mockMarkWorktreeGitStatusChanged = vi.fn();
+
 vi.mock("../../../lib/api", () => ({
   api: {
     getFileContents: vi.fn().mockResolvedValue({ oldContent: null, newContent: null }),
@@ -13,6 +15,10 @@ vi.mock("../../../lib/api", () => ({
     runTerminalCommand: vi.fn(),
     saveWorktreeFileContent: vi.fn(),
   },
+}));
+
+vi.mock("../../../hooks/queries/useGitStatus", () => ({
+  markWorktreeGitStatusChanged: (...args: unknown[]) => mockMarkWorktreeGitStatusChanged(...args),
 }));
 
 let container: HTMLDivElement;
@@ -220,6 +226,45 @@ describe("useWorkspaceFileEditor", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("marks worktree git status changed instead of invalidating git status directly after saving", async () => {
+    vi.mocked(api.getWorktreeFileContent).mockResolvedValue({
+      path: "src/example.ts",
+      content: "export const value = 1;\n",
+      mimeType: "text/typescript",
+    });
+    vi.mocked(api.saveWorktreeFileContent).mockResolvedValue({
+      path: "src/example.ts",
+      content: "export const value = 2;\n",
+      mimeType: "text/typescript",
+    });
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TestComponent />
+        </QueryClientProvider>,
+      );
+      await flushPromises();
+    });
+
+    act(() => {
+      hookResult.handleEditorDraftChange("src/example.ts", "export const value = 2;\n");
+    });
+
+    await act(async () => {
+      await hookResult.handleSaveActiveFile();
+    });
+
+    expect(mockMarkWorktreeGitStatusChanged).toHaveBeenCalledWith(queryClient, "worktree-1", {
+      cause: "file_saved",
+      invalidateBranchDiffSummary: true,
+    });
+    expect(invalidateQueriesSpy.mock.calls).not.toContainEqual([
+      { queryKey: ["worktrees", "worktree-1", "gitStatus"] },
+    ]);
   });
 
   it("uses an explicit fallback thread id when the last active file closes", async () => {

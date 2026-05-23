@@ -1,8 +1,15 @@
+import { useSyncExternalStore } from "react";
+import type { WorkspaceLiveConnectionState } from "@codesymphony/shared-types";
+
 type ThreadStreamState = {
+  connectionErrorMessage: string | null;
+  connectionListeners: Set<() => void>;
+  connectionState: WorkspaceLiveConnectionState;
   seenEventIds: Set<string>;
   lastEventIdx: number | null;
   lastMessageSeq: number | null;
   lastAppliedSnapshotKey: string | null;
+  lastAppliedSnapshotIncludesCollections: boolean;
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   disposed: boolean;
@@ -12,14 +19,24 @@ const threadStreamStateRegistry = new Map<string, ThreadStreamState>();
 
 function createThreadStreamState(): ThreadStreamState {
   return {
+    connectionErrorMessage: null,
+    connectionListeners: new Set(),
+    connectionState: "connecting",
     seenEventIds: new Set<string>(),
     lastEventIdx: null,
     lastMessageSeq: null,
     lastAppliedSnapshotKey: null,
+    lastAppliedSnapshotIncludesCollections: false,
     reconnectAttempts: 0,
     reconnectTimer: null,
     disposed: false,
   };
+}
+
+function notifyConnectionListeners(state: ThreadStreamState) {
+  for (const listener of [...state.connectionListeners]) {
+    listener();
+  }
 }
 
 export function getThreadStreamState(threadId: string) {
@@ -32,6 +49,32 @@ export function getThreadStreamState(threadId: string) {
   const created = createThreadStreamState();
   threadStreamStateRegistry.set(threadId, created);
   return created;
+}
+
+export function getThreadStreamConnectionState(threadId: string) {
+  return getThreadStreamState(threadId).connectionState;
+}
+
+export function getThreadStreamConnectionErrorMessage(threadId: string) {
+  return getThreadStreamState(threadId).connectionErrorMessage;
+}
+
+export function setThreadStreamConnectionState(
+  threadId: string,
+  connectionState: WorkspaceLiveConnectionState,
+  connectionErrorMessage: string | null = null,
+) {
+  const state = getThreadStreamState(threadId);
+  if (
+    state.connectionState === connectionState
+    && state.connectionErrorMessage === connectionErrorMessage
+  ) {
+    return;
+  }
+
+  state.connectionState = connectionState;
+  state.connectionErrorMessage = connectionErrorMessage;
+  notifyConnectionListeners(state);
 }
 
 export function hasSeenThreadEvent(threadId: string, eventId: string) {
@@ -87,8 +130,19 @@ export function getThreadLastAppliedSnapshotKey(threadId: string) {
   return getThreadStreamState(threadId).lastAppliedSnapshotKey;
 }
 
-export function setThreadLastAppliedSnapshotKey(threadId: string, snapshotKey: string | null) {
-  getThreadStreamState(threadId).lastAppliedSnapshotKey = snapshotKey;
+export function getThreadLastAppliedSnapshotIncludesCollections(threadId: string) {
+  return getThreadStreamState(threadId).lastAppliedSnapshotIncludesCollections;
+}
+
+export function setThreadLastAppliedSnapshotKey(
+  threadId: string,
+  snapshotKey: string | null,
+  options?: { includesCollections?: boolean },
+) {
+  const state = getThreadStreamState(threadId);
+  state.lastAppliedSnapshotKey = snapshotKey;
+  state.lastAppliedSnapshotIncludesCollections =
+    snapshotKey != null && (options?.includesCollections ?? true);
 }
 
 export function resetThreadReconnectAttempts(threadId: string) {
@@ -145,4 +199,28 @@ export function clearAllThreadStreamState() {
 
 export function resetThreadStreamStateRegistryForTest() {
   clearAllThreadStreamState();
+}
+
+function subscribeToThreadStreamConnection(threadId: string, listener: () => void) {
+  const state = getThreadStreamState(threadId);
+  state.connectionListeners.add(listener);
+  return () => {
+    state.connectionListeners.delete(listener);
+  };
+}
+
+export function useThreadStreamConnectionState(threadId: string | null) {
+  return useSyncExternalStore(
+    (listener) => threadId ? subscribeToThreadStreamConnection(threadId, listener) : () => undefined,
+    () => threadId ? getThreadStreamConnectionState(threadId) : null,
+    () => threadId ? getThreadStreamConnectionState(threadId) : null,
+  );
+}
+
+export function useThreadStreamConnectionErrorMessage(threadId: string | null) {
+  return useSyncExternalStore(
+    (listener) => threadId ? subscribeToThreadStreamConnection(threadId, listener) : () => undefined,
+    () => threadId ? getThreadStreamConnectionErrorMessage(threadId) : null,
+    () => threadId ? getThreadStreamConnectionErrorMessage(threadId) : null,
+  );
 }

@@ -16,10 +16,12 @@ use std::thread;
 use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{Manager, WebviewWindowBuilder};
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSWindow, NSWindowButton};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{ns_string, NSUserDefaults};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
@@ -166,8 +168,7 @@ fn prepare_prisma_query_engine(resource_dir: &Path, app_data_dir: &Path) -> Opti
         .join("client")
         .join(prisma_query_engine_library_name());
     let writable_engines_dir = app_data_dir.join("prisma-engines");
-    let writable_query_engine =
-        writable_engines_dir.join(prisma_query_engine_library_name());
+    let writable_query_engine = writable_engines_dir.join(prisma_query_engine_library_name());
 
     if let Err(error) = std::fs::create_dir_all(&writable_engines_dir) {
         eprintln!(
@@ -244,10 +245,72 @@ fn resolve_node_binary(resource_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+fn read_startup_override_bool_env(name: &str) -> Option<bool> {
+    let value = std::env::var(name).ok()?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" => Some(true),
+        "0" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn append_runtime_ready_delay_env(cmd: &mut Command) {
+    if let Some(value) = std::env::var_os("CODESYMPHONY_STARTUP_READY_DELAY_MS") {
+        cmd.env("CODESYMPHONY_STARTUP_READY_DELAY_MS", value);
+    }
+}
+
 fn desktop_runtime_init_script(port: u16) -> String {
-    format!(
+    let mut script = format!(
         "window.__CS_RUNTIME_PORT = {port}; window.__CS_RUNTIME_API_BASE = 'http://{LOCALHOST_RUNTIME_HOST}:{port}/api';"
-    )
+    );
+
+    if let Ok(scenario) = std::env::var("CODESYMPHONY_STARTUP_SCENARIO") {
+        let normalized = scenario.trim();
+        if matches!(
+            normalized,
+            "cold-empty" | "warm-persisted" | "warm-runtime-delayed"
+        ) {
+            if let Ok(scenario_json) = serde_json::to_string(normalized) {
+                script.push_str(&format!(
+                    "window.__CS_STARTUP_SCENARIO_OVERRIDE__ = {scenario_json}; try {{ window.localStorage.setItem('codesymphony.startupPerf.scenario', {scenario_json}); }} catch {{}}"
+                ));
+            }
+        }
+    }
+
+    if let Some(persisted_state) =
+        read_startup_override_bool_env("CODESYMPHONY_STARTUP_PERSISTED_STATE")
+    {
+        let persisted_state_literal = if persisted_state { "true" } else { "false" };
+        let persisted_state_storage_value = if persisted_state {
+            "\"true\""
+        } else {
+            "\"false\""
+        };
+        script.push_str(&format!(
+            "window.__CS_STARTUP_PERSISTED_STATE_OVERRIDE__ = {persisted_state_literal}; try {{ window.localStorage.setItem('codesymphony.startupPerf.persistedState', {persisted_state_storage_value}); }} catch {{}}"
+        ));
+
+        if !persisted_state {
+            script.push_str(
+                "window.__CS_STARTUP_IGNORE_STORED_SNAPSHOT__ = true; window.__CS_STARTUP_SHELL_SNAPSHOT_OVERRIDE__ = null; try { window.localStorage.removeItem('codesymphony:workspace:startup-shell:v1'); } catch {}",
+            );
+        }
+    }
+
+    if let Ok(snapshot_json) = std::env::var("CODESYMPHONY_STARTUP_SHELL_SNAPSHOT_JSON") {
+        let normalized = snapshot_json.trim();
+        if !normalized.is_empty() {
+            if let Ok(snapshot_json_literal) = serde_json::to_string(normalized) {
+                script.push_str(&format!(
+                    "window.__CS_STARTUP_SHELL_SNAPSHOT_OVERRIDE__ = {snapshot_json_literal}; try {{ window.localStorage.setItem('codesymphony:workspace:startup-shell:v1', {snapshot_json_literal}); }} catch {{}}"
+                ));
+            }
+        }
+    }
+
+    script
 }
 
 fn read_runtime_http_response(port: u16, path: &str) -> Option<String> {
@@ -381,6 +444,7 @@ fn spawn_runtime_dev(port: u16) -> Option<Child> {
         .env("RUNTIME_PORT", port.to_string())
         .env("CODESYMPHONY_DEBUG_LOG_PATH", runtime_dir.join("debug.log"))
         .current_dir(workspace_root);
+    append_runtime_ready_delay_env(&mut cmd);
 
     if let Some(runtime_path) = build_runtime_path_env() {
         cmd.env("PATH", runtime_path);
@@ -497,11 +561,11 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         return None;
     }
 
-    let prisma_query_engine_library = match prepare_prisma_query_engine(&resource_dir, &app_data_dir)
-    {
-        Some(path) => path,
-        None => return None,
-    };
+    let prisma_query_engine_library =
+        match prepare_prisma_query_engine(&resource_dir, &app_data_dir) {
+            Some(path) => path,
+            None => return None,
+        };
 
     let mut cmd = Command::new(&node_bin);
     cmd.arg(&runtime_entry)
@@ -517,6 +581,7 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
             "WEB_DIST_PATH",
             resource_dir.join("runtime-bundle").join("web-dist"),
         );
+    append_runtime_ready_delay_env(&mut cmd);
 
     if let Some(runtime_path) = build_runtime_path_env() {
         cmd.env("PATH", runtime_path);
@@ -651,14 +716,69 @@ fn shutdown_requested(app_handle: &tauri::AppHandle) -> bool {
         .unwrap_or(true)
 }
 
+#[cfg(target_os = "macos")]
+fn disable_macos_window_restoration() {
+    let defaults = NSUserDefaults::standardUserDefaults();
+    defaults.setBool_forKey(true, ns_string!("ApplePersistenceIgnoreState"));
+    defaults.setBool_forKey(false, ns_string!("NSQuitAlwaysKeepsWindows"));
+}
+
+#[cfg(target_os = "macos")]
+fn harden_macos_main_window<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    if let Ok(ns_window_ptr) = window.ns_window() {
+        let ns_window: &NSWindow = unsafe { &*ns_window_ptr.cast() };
+        ns_window.setRestorable(false);
+        ns_window.disableSnapshotRestoration();
+    }
+}
+
 fn show_main_window(app_handle: &tauri::AppHandle) {
-    if let Some(window) = app_handle.get_webview_window("main") {
+    let window = app_handle.get_webview_window("main").or_else(|| {
+        let config = app_handle
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|window| window.label == "main")
+            .or_else(|| app_handle.config().app.windows.first())?;
+
+        WebviewWindowBuilder::from_config(app_handle, config)
+            .ok()?
+            .build()
+            .ok()
+    });
+
+    if let Some(window) = window {
+        #[cfg(target_os = "macos")]
+        let _ = app_handle.show();
+
+        #[cfg(target_os = "macos")]
+        harden_macos_main_window(&window);
+
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
 
         #[cfg(target_os = "macos")]
         schedule_macos_traffic_light_adjustment(app_handle, "main", "window.reopen");
+    }
+}
+
+fn schedule_main_window_show_attempts(app_handle: &tauri::AppHandle) {
+    const RETRY_DELAYS_MS: [u64; 7] = [0, 150, 500, 1_000, 2_000, 4_000, 8_000];
+
+    for delay_ms in RETRY_DELAYS_MS {
+        let app_handle = app_handle.clone();
+        thread::spawn(move || {
+            if delay_ms > 0 {
+                thread::sleep(Duration::from_millis(delay_ms));
+            }
+
+            let retry_handle = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                show_main_window(&retry_handle);
+            });
+        });
     }
 }
 
@@ -1254,6 +1374,9 @@ fn macos_traffic_light_window_event_reason(event: &tauri::WindowEvent) -> Option
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    disable_macos_window_restoration();
+
     let is_dev = cfg!(debug_assertions);
     let runtime_port = if cfg!(debug_assertions) {
         DESKTOP_DEV_RUNTIME_PORT
@@ -1268,6 +1391,7 @@ fn main() {
                 .open_js_links_on_click(true)
                 .build(),
         )
+        .plugin(tauri_plugin_sql::Builder::default().build())
         .append_invoke_initialization_script(desktop_runtime_init_script(runtime_port))
         .invoke_handler(tauri::generate_handler![
             collect_resource_monitor_desktop_metrics,
@@ -1282,9 +1406,8 @@ fn main() {
             #[cfg(target_os = "macos")]
             schedule_macos_traffic_light_adjustment(app.handle(), "main", "app.setup");
 
-            if let Some(window) = app.handle().get_webview_window("main") {
-                let _ = window.show();
-            }
+            show_main_window(app.handle());
+            schedule_main_window_show_attempts(app.handle());
 
             if !is_dev {
                 let app_handle = app.handle().clone();
@@ -1324,9 +1447,14 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
+            tauri::RunEvent::Ready => {
+                show_main_window(app_handle);
+                schedule_main_window_show_attempts(app_handle);
+            }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 show_main_window(app_handle);
+                schedule_main_window_show_attempts(app_handle);
             }
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 request_runtime_shutdown(app_handle);

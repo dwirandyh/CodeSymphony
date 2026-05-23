@@ -121,6 +121,7 @@ type PendingRequest = {
 
 const CODEX_BINARY = process.env.CODEX_BINARY_PATH ?? "codex";
 const REQUEST_TIMEOUT_MS = 20_000;
+export const CODEX_FIRST_TURN_SIGNAL_TIMEOUT_MS = 3 * 60_000;
 const CODEX_CUSTOM_PROVIDER_ID = "codesymphony_custom";
 const CODEX_CUSTOM_PROVIDER_NAME = "CodeSymphony OpenAI-compatible";
 const CODEX_CUSTOM_PROVIDER_API_KEY_ENV = "CODESYMPHONY_CODEX_API_KEY";
@@ -528,6 +529,13 @@ function createCodexAppServerExitError(params: {
   );
 }
 
+function createCodexFirstTurnSignalTimeoutError(timeoutMs: number): Error {
+  const timeoutSeconds = Math.round(timeoutMs / 1000);
+  return new Error(
+    `codex app-server did not send any turn activity within ${timeoutSeconds}s`,
+  );
+}
+
 function isResponse(value: unknown): value is JsonRpcResponse {
   const candidate = asObject(value);
   return Boolean(candidate && (typeof candidate.id === "string" || typeof candidate.id === "number") && !candidate.method);
@@ -772,6 +780,34 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   let rejectCompletion: ((error: Error) => void) | null = null;
   let lastForwardedAgentMessageId: string | null = null;
   let sawForwardedCommentary = false;
+  let firstTurnSignalTimer: ReturnType<typeof setTimeout> | null = null;
+  let sawFirstTurnSignal = false;
+
+  const clearFirstTurnSignalTimer = () => {
+    if (firstTurnSignalTimer === null) {
+      return;
+    }
+    clearTimeout(firstTurnSignalTimer);
+    firstTurnSignalTimer = null;
+  };
+
+  const markFirstTurnSignal = () => {
+    if (sawFirstTurnSignal) {
+      return;
+    }
+    sawFirstTurnSignal = true;
+    clearFirstTurnSignalTimer();
+  };
+
+  const scheduleFirstTurnSignalTimeout = () => {
+    clearFirstTurnSignalTimer();
+    if (sawFirstTurnSignal) {
+      return;
+    }
+    firstTurnSignalTimer = setTimeout(() => {
+      finish(createCodexFirstTurnSignalTimeoutError(CODEX_FIRST_TURN_SIGNAL_TIMEOUT_MS));
+    }, CODEX_FIRST_TURN_SIGNAL_TIMEOUT_MS);
+  };
 
   const resolveComplete = () => {
     if (completed) {
@@ -836,6 +872,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     output.close();
     child.removeAllListeners();
     child.stderr.removeAllListeners();
+    clearFirstTurnSignalTimer();
 
     if (!child.killed) {
       killChildProcess(child);
@@ -933,6 +970,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         const params = asObject(parsed.params);
         const ownerToolUseId = extractOwnerToolUseId(subagentOwnerByThreadId, params);
         const ownership = toOwnership(ownerToolUseId);
+        markFirstTurnSignal();
 
         try {
           if (
@@ -1084,6 +1122,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         }
 
         if (parsed.method === "turn/plan/updated") {
+          markFirstTurnSignal();
           const turnId = asString(params?.turnId)?.trim();
           const explanation = asString(params?.explanation)?.trim() ?? null;
           const steps = asArray(params?.plan)
@@ -1125,6 +1164,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         }
 
         if (parsed.method === "item/plan/delta") {
+          markFirstTurnSignal();
           const itemId = asString(params?.itemId);
           const delta = asString(params?.delta);
           if (itemId && delta) {
@@ -1134,6 +1174,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         }
 
         if (parsed.method === "item/started" && item) {
+          markFirstTurnSignal();
           const itemId = asString(item.id);
           const itemType = asString(item.type);
           const normalizedItemType = itemType?.trim().toLowerCase();
@@ -1202,6 +1243,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         }
 
         if (parsed.method === "item/agentMessage/delta") {
+          markFirstTurnSignal();
           const itemId = asString(params?.itemId);
           const phase = normalizeAgentMessagePhase(itemId ? agentMessagePhaseById.get(itemId) : undefined);
           const delta = asString(params?.delta);
@@ -1233,6 +1275,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         }
 
         if (parsed.method === "item/commandExecution/outputDelta") {
+          markFirstTurnSignal();
           const itemId = asString(params?.itemId);
           if (!itemId) {
             return;
@@ -1251,6 +1294,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         }
 
         if (parsed.method === "item/completed" && item) {
+          markFirstTurnSignal();
           const itemId = asString(item.id);
           const itemType = asString(item.type);
           const normalizedItemType = itemType?.trim().toLowerCase();
@@ -1356,6 +1400,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         }
 
         if (parsed.method === "turn/completed") {
+          markFirstTurnSignal();
           const turn = asObject(params?.turn);
           const status = asString(turn?.status) ?? "completed";
           if (status === "failed") {
@@ -1450,6 +1495,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
       model: resolvedModel,
       collaborationMode: buildCollaborationMode(resolvedModel, permissionMode),
     });
+    scheduleFirstTurnSignalTimeout();
 
     await completionPromise;
 
