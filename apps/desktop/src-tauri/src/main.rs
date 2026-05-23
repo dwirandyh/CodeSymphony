@@ -27,13 +27,6 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSWindow, NSWindowButton};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
 struct RuntimeProcess(Mutex<Option<Child>>);
 struct AppShutdown(AtomicBool);
 

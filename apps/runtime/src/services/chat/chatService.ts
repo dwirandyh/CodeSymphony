@@ -2370,8 +2370,15 @@ export function createChatService(deps: RuntimeDeps) {
       });
       if (shouldClearRunState) {
         clearPendingGateRequestsBecauseRunEnded(pendingPermissionsByThread, pendingQuestionsByThread, threadId);
-        await maybeDispatchQueuedMessages(threadId);
-        await emitThreadWorkspaceUpdate(threadId);
+        try {
+          await maybeDispatchQueuedMessages(threadId);
+          await emitThreadWorkspaceUpdate(threadId);
+        } catch (cleanupError) {
+          deps.logService?.log("warn", "chat.lifecycle", "Skipped post-run cleanup after assistant completion", {
+            threadId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        }
       }
     }
   }
