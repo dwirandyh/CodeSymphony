@@ -209,6 +209,53 @@ describe("TerminalTab", () => {
     expect(indicator?.getAttribute("aria-label")).toBe("Connected");
   });
 
+  it("reconnects interactive terminal sessions after an exit event", async () => {
+    vi.useFakeTimers();
+
+    act(() => {
+      root.render(<TerminalTab sessionId="wt1:terminal:abc" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+
+    const firstSocket = MockWebSocket.instances[0];
+    expect(firstSocket).toBeTruthy();
+
+    act(() => {
+      firstSocket?.onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          kind: "cs-terminal-event",
+          type: "exit",
+          exitCode: 0,
+          signal: 0,
+        }),
+      }));
+    });
+
+    expect(firstSocket?.close).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      firstSocket?.onclose?.(new CloseEvent("close", {
+        code: 1000,
+        reason: "Terminal exited",
+      }));
+    });
+
+    const reconnectingIndicator = container.querySelector('[data-testid="terminal-connection-indicator"]');
+    expect(reconnectingIndicator?.getAttribute("aria-label")).toBe("Reconnecting");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2010);
+    });
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    const connectedIndicator = container.querySelector('[data-testid="terminal-connection-indicator"]');
+    expect(connectedIndicator?.getAttribute("aria-label")).toBe("Connected");
+  });
+
   it("nudges the terminal size after reconnect so fullscreen TUIs repaint on restore", async () => {
     vi.useFakeTimers();
     const clientWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");

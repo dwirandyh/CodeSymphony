@@ -66,6 +66,20 @@ describe("terminalService", () => {
       expect(first).toBe(second);
     });
 
+    it("respawns exited workspace terminal sessions when reconnecting", () => {
+      const first = service.spawn("wt1:terminal:abc", "/tmp");
+      const exitedPty = currentMockPty;
+
+      exitedPty._emit("exit", { exitCode: 0, signal: 0 });
+
+      const second = service.spawn("wt1:terminal:abc", "/tmp");
+
+      expect(second).not.toBe(first);
+      expect(second.active).toBe(true);
+      expect(currentMockPty).not.toBe(exitedPty);
+      expect(vi.mocked(pty.spawn)).toHaveBeenCalledTimes(2);
+    });
+
     it("replaces the session when cwd changes", () => {
       const first = service.spawn("s1", "/tmp");
       const oldPty = currentMockPty;

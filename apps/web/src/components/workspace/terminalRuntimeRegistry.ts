@@ -149,6 +149,10 @@ function getDefaultTerminalTitle(sessionId: string, cwd: string | null): string 
   return "Terminal";
 }
 
+function isWorkspaceTerminalSessionId(sessionId: string): boolean {
+  return /(?:^|:)terminal(?:$|:)/u.test(sessionId) || /^default:\d+$/u.test(sessionId);
+}
+
 function stripAnsi(text: string): string {
   return text.replace(
     /\u001B(?:\][^\u0007]*(?:\u0007|\u001B\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/gu,
@@ -610,6 +614,9 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
             exitCode: parsed.exitCode,
             signal: parsed.signal,
           });
+        }
+        if (isWorkspaceTerminalSessionId(entry.sessionId) && entry.webSocket === nextWebSocket) {
+          nextWebSocket.close();
         }
         return;
       }

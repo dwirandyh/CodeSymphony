@@ -1,34 +1,12 @@
-import * as pty from "node-pty";
-import { chmodSync, existsSync } from "node:fs";
-import { createRequire } from "node:module";
-import { basename, dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { basename } from "node:path";
+import { isPtyIoError, spawnPty, type PtyProcess } from "./ptyBackend.js";
 
 const MAX_SCROLLBACK_BYTES = 50_000;
 
-/**
- * Ensure node-pty's spawn-helper binary has executable permissions.
- * Tauri's resource copying can strip the +x bit, causing posix_spawnp to fail.
- */
-function fixSpawnHelperPermissions(): void {
-    try {
-        const require = createRequire(import.meta.url);
-        const nodePtyRoot = dirname(require.resolve("node-pty/package.json"));
-        const platform = process.platform === "darwin" ? "darwin" : process.platform;
-        const arch = process.arch;
-        const spawnHelper = join(nodePtyRoot, "prebuilds", `${platform}-${arch}`, "spawn-helper");
-        if (existsSync(spawnHelper)) {
-            chmodSync(spawnHelper, 0o755);
-        }
-    } catch {
-        // Best-effort; if we can't fix it, pty.spawn will throw with a clear error
-    }
-}
-
-fixSpawnHelperPermissions();
-
 interface TerminalSession {
     id: string;
-    ptyProcess: pty.IPty;
+    ptyProcess: PtyProcess;
     requestedCwd?: string;
     resolvedCwd: string;
     listeners: Set<(data: string) => void>;
@@ -65,6 +43,10 @@ function normalizeCwd(cwd?: string): string | undefined {
     return trimmed ? trimmed : undefined;
 }
 
+function isWorkspaceTerminalSessionId(sessionId: string): boolean {
+    return /(?:^|:)terminal(?:$|:)/u.test(sessionId) || /^default:\d+$/u.test(sessionId);
+}
+
 export function resolveShellCandidates(): string[] {
     const candidates = [process.env.SHELL, "/bin/zsh", "/bin/bash", "/bin/sh"]
         .filter((value): value is string => Boolean(value));
@@ -94,7 +76,7 @@ export function createTerminalService() {
         return Array.from(new Set(candidates));
     }
 
-    function spawnProcess(cwd?: string, options?: SpawnOptions): { ptyProcess: pty.IPty; resolvedCwd: string } {
+    function spawnProcess(cwd?: string, options?: SpawnOptions): { ptyProcess: PtyProcess; resolvedCwd: string } {
         const shellCandidates = resolveShellCandidates();
         const cwdCandidates = resolveCwdCandidates(cwd);
         let lastError: unknown = new Error("Unable to spawn terminal process");
@@ -109,7 +91,7 @@ export function createTerminalService() {
             for (const candidateCwd of cwdCandidates) {
                 try {
                     return {
-                        ptyProcess: pty.spawn(shell, args, {
+                        ptyProcess: spawnPty(shell, args, {
                             name: "xterm-256color",
                             cols: 80,
                             rows: 24,
@@ -140,7 +122,8 @@ export function createTerminalService() {
         const existing = sessions.get(sessionId);
         const shouldReuseExisting = existing
             && !options?.replace
-            && existing.requestedCwd === normalizedCwd;
+            && existing.requestedCwd === normalizedCwd
+            && (existing.active || !isWorkspaceTerminalSessionId(sessionId));
         if (shouldReuseExisting) {
             return existing;
         }
@@ -148,7 +131,8 @@ export function createTerminalService() {
         const inheritedListeners = existing?.listeners ?? new Set<(data: string) => void>();
         const inheritedExitListeners = existing?.exitListeners ?? new Set<(event: { exitCode: number; signal: number }) => void>();
 
-        if (existing) {
+        if (existing?.active) {
+            existing.active = false;
             existing.ptyProcess.kill();
         }
 
@@ -202,17 +186,45 @@ export function createTerminalService() {
         return session;
     }
 
+    function deactivateSession(session: TerminalSession): void {
+        if (!session.active) {
+            return;
+        }
+
+        session.active = false;
+    }
+
+    function handlePtyIoFailure(sessionId: string, session: TerminalSession, error: unknown): void {
+        if (!isPtyIoError(error)) {
+            throw error;
+        }
+
+        deactivateSession(session);
+    }
+
     function write(sessionId: string, data: string): void {
         const session = sessions.get(sessionId);
-        if (session?.active) {
+        if (!session?.active) {
+            return;
+        }
+
+        try {
             session.ptyProcess.write(data);
+        } catch (error) {
+            handlePtyIoFailure(sessionId, session, error);
         }
     }
 
     function resize(sessionId: string, cols: number, rows: number): void {
         const session = sessions.get(sessionId);
-        if (session?.active) {
+        if (!session?.active) {
+            return;
+        }
+
+        try {
             session.ptyProcess.resize(cols, rows);
+        } catch (error) {
+            handlePtyIoFailure(sessionId, session, error);
         }
     }
 
