@@ -65,7 +65,8 @@ const DESKTOP_PROD_RUNTIME_PORT: u16 = 4322;
 const LOCALHOST_RUNTIME_HOST: &str = "127.0.0.1";
 const LAN_RUNTIME_HOST: &str = "0.0.0.0";
 const COMMON_RUNTIME_EXECUTABLE_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
-const USER_RUNTIME_EXECUTABLE_DIR_SUFFIXES: [&str; 2] = [".opencode/bin", ".local/bin"];
+const USER_RUNTIME_EXECUTABLE_DIR_SUFFIXES: [&str; 3] =
+    [".bun/bin", ".opencode/bin", ".local/bin"];
 #[cfg(target_os = "macos")]
 const MACOS_TRAFFIC_LIGHT_VERTICAL_OFFSET: f64 = 4.0;
 #[cfg(target_os = "macos")]
@@ -198,12 +199,12 @@ fn prepare_prisma_query_engine(resource_dir: &Path, app_data_dir: &Path) -> Opti
     Some(writable_query_engine)
 }
 
-fn find_node_candidate(dir: &Path) -> Option<PathBuf> {
+fn find_bun_candidate(dir: &Path) -> Option<PathBuf> {
     if !dir.is_dir() {
         return None;
     }
 
-    let exact = dir.join("node");
+    let exact = dir.join("bun");
     if exact.is_file() {
         return Some(exact);
     }
@@ -216,7 +217,7 @@ fn find_node_candidate(dir: &Path) -> Option<PathBuf> {
                 return false;
             }
             match path.file_name().and_then(|name| name.to_str()) {
-                Some(name) => name.starts_with("node-"),
+                Some(name) => name.starts_with("bun-"),
                 None => false,
             }
         })
@@ -226,7 +227,7 @@ fn find_node_candidate(dir: &Path) -> Option<PathBuf> {
     candidates.into_iter().next()
 }
 
-fn resolve_node_binary(resource_dir: &Path) -> Option<PathBuf> {
+fn resolve_bun_binary(resource_dir: &Path) -> Option<PathBuf> {
     let mut search_dirs = vec![resource_dir.join("binaries"), resource_dir.to_path_buf()];
 
     if let Ok(current_exe) = std::env::current_exe() {
@@ -237,8 +238,8 @@ fn resolve_node_binary(resource_dir: &Path) -> Option<PathBuf> {
     }
 
     for dir in search_dirs {
-        if let Some(node_bin) = find_node_candidate(&dir) {
-            return Some(node_bin);
+        if let Some(bun_bin) = find_bun_candidate(&dir) {
+            return Some(bun_bin);
         }
     }
 
@@ -395,8 +396,9 @@ fn ensure_runtime_dev_database(runtime_dir: &Path, db_path: &Path) -> bool {
     }
 
     let database_url = format!("file:{}", db_path.display());
-    let status = Command::new("pnpm")
-        .args(["exec", "prisma", "migrate", "deploy"])
+    let bun_executable = resolve_common_binary("bun").unwrap_or_else(|| PathBuf::from("bun"));
+    let status = Command::new(&bun_executable)
+        .args(["x", "prisma", "migrate", "deploy"])
         .env("DATABASE_URL", &database_url)
         .current_dir(runtime_dir)
         .status();
@@ -534,11 +536,11 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         return None;
     }
 
-    let node_bin = match resolve_node_binary(&resource_dir) {
+    let bun_bin = match resolve_bun_binary(&resource_dir) {
         Some(path) => path,
         None => {
             eprintln!(
-                "Failed to locate bundled node binary. Checked resource dir: {}",
+                "Failed to locate bundled Bun binary. Checked resource dir: {}",
                 resource_dir.display()
             );
             return None;
@@ -567,8 +569,9 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
             None => return None,
         };
 
-    let mut cmd = Command::new(&node_bin);
-    cmd.arg(&runtime_entry)
+    let mut cmd = Command::new(&bun_bin);
+    cmd.arg("run")
+        .arg(&runtime_entry)
         .current_dir(&runtime_bundle_dir)
         .env("NODE_ENV", "production")
         .env("DATABASE_URL", format!("file:{}", db_path.display()))
@@ -611,8 +614,8 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         Ok(child) => Some(child),
         Err(error) => {
             eprintln!(
-                "Failed to spawn runtime process using node {}: {error}",
-                node_bin.display()
+                "Failed to spawn runtime process using Bun {}: {error}",
+                bun_bin.display()
             );
             None
         }

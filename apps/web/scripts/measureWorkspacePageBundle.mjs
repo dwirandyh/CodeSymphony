@@ -30,7 +30,7 @@ function findWorkspaceEntryAsset() {
 const assetFile = findWorkspaceEntryAsset();
 
 if (!assetFile) {
-  console.error(`WorkspacePage chunk not found in ${distAssetsDir}. Run "pnpm --filter @codesymphony/web build" first.`);
+  console.error(`WorkspacePage chunk not found in ${distAssetsDir}. Run "bun run --filter @codesymphony/web build" first.`);
   process.exit(1);
 }
 

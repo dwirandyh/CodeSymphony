@@ -82,7 +82,7 @@ EOF
 fi
 
 cd "${DESKTOP_DIR}"
-pnpm exec tauri build "${tauri_build_args[@]}"
+bun x tauri build "${tauri_build_args[@]}"
 bash "${RESIGN_APP_SCRIPT}"
 
 if [[ "${APPLE_SIGNING_IDENTITY}" != "-" ]]; then

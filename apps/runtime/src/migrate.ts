@@ -206,7 +206,7 @@ export function createPrismaMigrationExecutionPlan(): PrismaMigrationExecutionPl
 
 /**
  * Run Prisma migrations in production.
- * Uses process.execPath (the bundled Node.js binary) to invoke prisma CLI.
+ * Uses process.execPath (the bundled JavaScript runtime binary) to invoke prisma CLI.
  */
 export async function runPrismaMigrations(options?: {
   force?: boolean;

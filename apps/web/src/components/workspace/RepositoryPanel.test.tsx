@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
+import { resetThreadsCollectionRegistryForTest } from "../../collections/threads";
 import { RepositoryPanel } from "./RepositoryPanel";
 
 const { listThreadsMock, getThreadStatusSnapshotMock, getGitBranchDiffSummaryMock, getRepositoryReviewsMock } = vi.hoisted(() => ({
@@ -53,8 +54,9 @@ beforeEach(() => {
   isTauriDesktopMock.mockReturnValue(false);
 });
 
-afterEach(() => {
+afterEach(async () => {
   act(() => root.unmount());
+  await resetThreadsCollectionRegistryForTest();
   queryClient.clear();
   container.remove();
 });
@@ -175,6 +177,7 @@ describe("RepositoryPanel", () => {
 
   it("renders repository name", () => {
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
     });
@@ -211,6 +214,7 @@ describe("RepositoryPanel", () => {
 
   it("shows root and branch worktrees without section separators", () => {
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
       selectedWorktreeId: "r1-wt-root",
@@ -221,6 +225,7 @@ describe("RepositoryPanel", () => {
 
   it("renders the automation icon for automation worktrees", () => {
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [
         makeRepo({
           worktrees: [
@@ -260,6 +265,7 @@ describe("RepositoryPanel", () => {
   it("calls onCreateWorktree when add button clicked", () => {
     const onCreateWorktree = vi.fn();
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
       onCreateWorktree,
@@ -275,6 +281,7 @@ describe("RepositoryPanel", () => {
   it("calls onSelectWorktree when worktree clicked", () => {
     const onSelectWorktree = vi.fn();
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
       onSelectWorktree,
@@ -288,6 +295,7 @@ describe("RepositoryPanel", () => {
   it("shows delete_failed worktrees with retry and force-delete actions", () => {
     const onDeleteWorktree = vi.fn();
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [makeRepo({
         worktrees: [
           {
@@ -373,6 +381,7 @@ describe("RepositoryPanel", () => {
 
   it("keeps the repository chevron from shrinking in tight layouts", () => {
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [makeRepo({ name: "repository-name-that-is-long-enough-to-compete-with-the-count" })],
       selectedRepositoryId: "r1",
     });
@@ -402,6 +411,7 @@ describe("RepositoryPanel", () => {
 
   it("hides repositories excluded by the workspace filter", () => {
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [
         makeRepo({ id: "r1", name: "repo-one" }),
         makeRepo({ id: "r2", name: "repo-two" }),
@@ -447,6 +457,7 @@ describe("RepositoryPanel", () => {
     const onReorderRepositories = vi.fn();
 
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [
         makeRepo({ id: "r1", name: "repo-one" }),
         makeRepo({ id: "r2", name: "repo-two" }),
@@ -523,6 +534,7 @@ describe("RepositoryPanel", () => {
 
   it("allows dragover to stay droppable when the drag source only exists in dataTransfer", () => {
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [
         makeRepo({ id: "r1", name: "repo-one" }),
         makeRepo({ id: "r2", name: "repo-two" }),
@@ -571,6 +583,7 @@ describe("RepositoryPanel", () => {
     const onReorderRepositories = vi.fn();
 
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [
         makeRepo({ id: "r1", name: "repo-one" }),
         makeRepo({ id: "r2", name: "repo-two" }),
@@ -900,6 +913,7 @@ describe("RepositoryPanel", () => {
     const onReorderRepositories = vi.fn();
 
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [
         makeRepo({ id: "r1", name: "repo-one" }),
         makeRepo({ id: "r2", name: "repo-two" }),
@@ -1286,6 +1300,7 @@ describe("RepositoryPanel", () => {
 
   it("styles the selected worktree as a flat fill without a selection ring", () => {
     renderPanel({
+      enableMetadataQueries: false,
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
       selectedWorktreeId: "r1-wt-feat",

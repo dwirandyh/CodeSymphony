@@ -19,7 +19,7 @@ const manifest: MaterialIconThemeManifest = {
   rootFolder: "folder",
   rootFolderExpanded: "folder-open",
   fileNames: {
-    "pnpm-lock.yaml": "lock",
+    "bun.lock": "lock",
     "config/readme": "markdown",
   },
   fileExtensions: {
@@ -56,7 +56,7 @@ describe("resolveMaterialIconThemeIconFile", () => {
 
   it("prefers exact file-name matches over extension matches", () => {
     expect(resolveMaterialIconThemeIconFile(manifest, {
-      path: "pnpm-lock.yaml",
+      path: "bun.lock",
       type: "file",
     })).toBe("lock.svg");
   });

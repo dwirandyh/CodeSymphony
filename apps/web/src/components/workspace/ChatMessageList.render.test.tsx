@@ -149,11 +149,28 @@ Object.defineProperty(window, "matchMedia", {
 
 let container: HTMLDivElement;
 let root: Root;
+let consoleErrorSpy: ReturnType<typeof vi.spyOn> | null = null;
+let originalConsoleError: typeof console.error;
 
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  originalConsoleError = console.error;
+  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: Parameters<typeof console.error>) => {
+    const [message] = args;
+    if (
+      typeof message === "string"
+      && (
+        message.includes("not wrapped in act")
+        || message.includes("A component suspended inside an `act` scope")
+      )
+    ) {
+      return;
+    }
+
+    originalConsoleError(...args);
+  });
   Element.prototype.scrollIntoView = vi.fn();
   vi.mocked(parsePatchFiles).mockReset();
   vi.mocked(parsePatchFiles).mockReturnValue([]);
@@ -173,6 +190,7 @@ beforeEach(() => {
     callback(0);
     return 1;
   });
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
   vi.stubGlobal("ResizeObserver", vi.fn().mockImplementation((callback: ResizeObserverCallback) => {
     const observer = new MockResizeObserver(callback);
     resizeObserverInstances.push(observer);
@@ -183,6 +201,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  consoleErrorSpy?.mockRestore();
+  consoleErrorSpy = null;
   vi.unstubAllGlobals();
 });
 

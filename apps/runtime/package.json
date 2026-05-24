@@ -11,18 +11,15 @@
   ],
   "scripts": {
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true",
-    "predev": "pnpm exec prisma migrate deploy && pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
-    "prebuild": "pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
-    "dev": "tsx watch --env-file .env src/index.ts",
-    "prestart": "pnpm exec prisma migrate deploy && pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
-    "start": "tsx --env-file .env src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "dev": "prisma generate && prisma migrate deploy && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && bun --watch --env-file=.env src/index.ts",
+    "start": "prisma generate && prisma migrate deploy && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && bun --env-file=.env src/index.ts",
+    "build": "prisma generate && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && if [ ! -d dist ]; then rm -f tsconfig.tsbuildinfo; fi; tsc -p tsconfig.json",
     "test": "DATABASE_URL=\"file:./test.db\" prisma migrate deploy && vitest run --config vitest.config.ts",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "lint": "tsc --noEmit -p tsconfig.json",
-    "bench:thread-snapshot": "tsx --env-file .env src/scripts/benchmarkThreadSnapshots.ts",
-    "startup:metrics:collect": "tsx --env-file .env src/scripts/collectStartupMetrics.ts",
-    "startup:metrics:reset": "tsx --env-file .env src/scripts/resetDebugLog.ts",
+    "bench:thread-snapshot": "bun --env-file=.env src/scripts/benchmarkThreadSnapshots.ts",
+    "startup:metrics:collect": "bun --env-file=.env src/scripts/collectStartupMetrics.ts",
+    "startup:metrics:reset": "bun --env-file=.env src/scripts/resetDebugLog.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:seed": "prisma db seed"
@@ -47,11 +44,7 @@
     "@types/node": "^22.13.10",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^3.2.4",
-    "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.0.8"
-  },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
   }
 }

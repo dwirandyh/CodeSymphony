@@ -32,7 +32,7 @@ Thread model selection and **Model providers** in the app call `GET/POST /api/mo
 | `apps/web` | React 19 + Vite + Tailwind workspace UI |
 | `apps/desktop` | Tauri shell wrapping the web app |
 | `packages/shared-types` | Zod schemas and shared API types |
-| `packages/chat-timeline-core` | Timeline assembly from chat events (used by the web app; built in parallel during `pnpm dev`) |
+| `packages/chat-timeline-core` | Timeline assembly from chat events (used by the web app; built in parallel during `bun run dev`) |
 | `packages/orchestrator-core` | Standalone run state machine (not required by the runtime) |
 
 Implementations live under `apps/runtime/src/routes/` (grouped by domain: `chats`, `repositories`, `devices`, `models`, etc.). Keep new API routes grouped by the same domain boundary.
@@ -51,8 +51,7 @@ Running **multiple git worktrees** of this repo: use `make setup-worktree PORT=<
 
 ## Prerequisites
 
-- Node.js 22+
-- pnpm 10+ (repo pins `packageManager` in root `package.json`)
+- Bun 1.3+ (repo pins `packageManager` in root `package.json`)
 - Git on `PATH`
 - **At least one** supported coding CLI on `PATH` (or configured via the env vars in [CLI coding agents](#cli-coding-agents)), with that tool’s normal login/auth completed
 
@@ -67,7 +66,7 @@ Optional (install as needed):
 1. Install dependencies:
 
 ```bash
-pnpm install
+bun install
 ```
 
 2. Configure the runtime:
@@ -95,19 +94,19 @@ The dev database file is created under `apps/runtime/prisma/` when you migrate. 
 3. Initialize the database:
 
 ```bash
-pnpm db:generate
-pnpm db:migrate
-pnpm db:seed
+bun run db:generate
+bun run db:migrate
+bun run db:seed
 ```
 
-(`pnpm db:seed` sets `DATABASE_URL` for the seed script; ensure `apps/runtime/.env` matches your dev DB.)
+(`bun run db:seed` sets `DATABASE_URL` for the seed script; ensure `apps/runtime/.env` matches your dev DB.)
 
 ## Run
 
 **Web + runtime** (also watches `chat-timeline-core` for TypeScript changes):
 
 ```bash
-pnpm dev
+bun run dev
 ```
 
 or:
@@ -116,19 +115,19 @@ or:
 make dev
 ```
 
-The Makefile targets are convenience wrappers around the same pnpm scripts.
+The Makefile targets are convenience wrappers around the same Bun scripts.
 
 - Web: `http://127.0.0.1:5173` (Vite proxies `/api` to the runtime)
 - Runtime: JSON API under `http://127.0.0.1:4331/api`; liveness at `http://127.0.0.1:4331/health` (not under `/api`)
 - Quick smoke check: open `http://127.0.0.1:4331/health` before debugging API or UI issues.
 
-**Runtime only** — `pnpm dev:runtime`  
-**Web only** — `pnpm dev:web` (expects a running runtime for API calls)
+**Runtime only** — `bun run dev:runtime`  
+**Web only** — `bun run dev:web` (expects a running runtime for API calls)
 
 **Production-style run** (builds runtime + web, then serves bundled web from the runtime):
 
 ```bash
-pnpm run
+bun run run
 ```
 
 or `make run` (stops common dev processes first).
@@ -136,21 +135,21 @@ or `make run` (stops common dev processes first).
 **Desktop**:
 
 ```bash
-pnpm dev:desktop
+bun run dev:desktop
 ```
 
 Release macOS app (signing identity required for distribution):
 
 ```bash
-APPLE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" pnpm --filter @codesymphony/desktop build:app
+APPLE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" bun run --filter @codesymphony/desktop build:app
 ```
 
-Use `CODESYMPHONY_MACOS_SIGN_IDENTITY` as an alias for the signing identity. Use `pnpm --filter @codesymphony/desktop build:app:adhoc` only for local ad-hoc builds; TCC-sensitive features (e.g. screen recording) may not behave like a properly signed app.
+Use `CODESYMPHONY_MACOS_SIGN_IDENTITY` as an alias for the signing identity. Use `bun run --filter @codesymphony/desktop build:app:adhoc` only for local ad-hoc builds; TCC-sensitive features (e.g. screen recording) may not behave like a properly signed app.
 
 Build outputs:
 
 - `.app`: `apps/desktop/src-tauri/target/release/bundle/macos/CodeSymphony.app`
-- `.dmg`: `apps/desktop/src-tauri/target/release/bundle/dmg/` when you run `pnpm --filter @codesymphony/desktop build`
+- `.dmg`: `apps/desktop/src-tauri/target/release/bundle/dmg/` when you run `bun run --filter @codesymphony/desktop build`
 
 ## Desktop app troubleshooting
 
@@ -267,17 +266,17 @@ High-level groups (non-exhaustive — see `apps/runtime/src/routes/*.ts`):
 ## Test, lint, and build
 
 ```bash
-pnpm test
-pnpm lint
-pnpm build
-pnpm knip          # optional: unused exports/deps scan (see knip.ts)
+bun run test
+bun run lint
+bun run build
+bun run knip       # optional: unused exports/deps scan (see knip.ts)
 ```
 
 Single-package examples:
 
 ```bash
-pnpm --filter @codesymphony/runtime test -- chatService.permissions.test.ts
-pnpm --filter @codesymphony/web test -- WorkspacePage.test.tsx
+bun run --filter @codesymphony/runtime test -- chatService.permissions.test.ts
+bun run --filter @codesymphony/web test -- WorkspacePage.test.tsx
 ```
 
 ## Permission approval testing
@@ -285,9 +284,9 @@ pnpm --filter @codesymphony/web test -- WorkspacePage.test.tsx
 Automated:
 
 ```bash
-pnpm --filter @codesymphony/runtime test -- chatService.permissions.test.ts chats.stream.test.ts
-pnpm --filter @codesymphony/web test -- WorkspacePage.test.tsx
-pnpm test
+bun run --filter @codesymphony/runtime test -- chatService.permissions.test.ts chats.stream.test.ts
+bun run --filter @codesymphony/web test -- WorkspacePage.test.tsx
+bun run test
 ```
 
 Manual end-to-end:

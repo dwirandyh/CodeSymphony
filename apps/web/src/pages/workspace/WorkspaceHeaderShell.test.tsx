@@ -1,5 +1,5 @@
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceHeaderShell } from "./WorkspaceHeaderShell";
 
@@ -14,7 +14,7 @@ describe("WorkspaceHeaderShell", () => {
   });
 
   afterEach(() => {
-    flushSync(() => {
+    act(() => {
       root.unmount();
     });
     container.remove();
@@ -29,7 +29,7 @@ describe("WorkspaceHeaderShell", () => {
       leftPanelVisible: true,
     };
 
-    flushSync(() => {
+    act(() => {
       root.render(<WorkspaceHeaderShell {...props} {...overrides} />);
     });
   }
@@ -54,7 +54,7 @@ describe("WorkspaceHeaderShell", () => {
       throw new Error("Left panel toggle not found");
     }
 
-    flushSync(() => {
+    act(() => {
       button.click();
     });
 

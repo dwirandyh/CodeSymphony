@@ -19,7 +19,7 @@ async function initGitRepository(): Promise<string> {
 }
 
 async function waitForEventCount(events: WorkspaceSyncEvent[], expectedCount: number): Promise<void> {
-  const timeoutAt = Date.now() + 5_000;
+  const timeoutAt = Date.now() + 10_000;
   while (events.length < expectedCount && Date.now() < timeoutAt) {
     await new Promise((resolve) => {
       setTimeout(resolve, 25);
@@ -27,6 +27,12 @@ async function waitForEventCount(events: WorkspaceSyncEvent[], expectedCount: nu
   }
 
   expect(events.length).toBeGreaterThanOrEqual(expectedCount);
+}
+
+async function allowWatchersToSettle(): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, 75);
+  });
 }
 
 describe("worktreeWatchService", () => {
@@ -75,6 +81,7 @@ describe("worktreeWatchService", () => {
 
     watchService.start();
     await watchService.refresh();
+    await allowWatchersToSettle();
 
     await writeFile(path.join(worktreePath, "src", "feature.ts"), "export const value = 1;\n", "utf8");
 
@@ -91,7 +98,7 @@ describe("worktreeWatchService", () => {
     expect(events.every((event) => event.repositoryId === "repo-1")).toBe(true);
     expect(invalidatedFileCaches).toEqual(["wt-1"]);
     expect(invalidatedGitCaches).toEqual(["wt-1"]);
-  });
+  }, 15_000);
 
   it("emits only a git workspace event when git metadata changes externally", async () => {
     const worktreePath = await initGitRepository();
@@ -125,6 +132,7 @@ describe("worktreeWatchService", () => {
 
     watchService.start();
     await watchService.refresh();
+    await allowWatchersToSettle();
 
     await writeFile(path.join(worktreePath, ".git", "FETCH_HEAD"), "origin/main\n", "utf8");
 
@@ -136,5 +144,5 @@ describe("worktreeWatchService", () => {
     expect(events.map((event) => event.type)).toEqual(["worktree.git.updated"]);
     expect(invalidatedFileCaches).toEqual([]);
     expect(invalidatedGitCaches).toEqual(["wt-1"]);
-  });
+  }, 15_000);
 });

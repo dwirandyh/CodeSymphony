@@ -4,16 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
-    "prebuild": "pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
-    "dev": "vite",
-    "build": "tsc -p tsconfig.json && vite build",
-    "measure:workspace-bundle": "node scripts/measureWorkspacePageBundle.mjs",
+    "dev": "bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && vite",
+    "build": "bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && if [ ! -d dist ]; then rm -f tsconfig.tsbuildinfo; fi; tsc -p tsconfig.json && vite build",
+    "measure:workspace-bundle": "bun scripts/measureWorkspacePageBundle.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@standard-schema/spec": "^1.1.0",
     "@babel/runtime": "^7.29.2",
     "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-css": "^6.3.1",

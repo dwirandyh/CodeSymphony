@@ -1,5 +1,5 @@
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread } from "@codesymphony/shared-types";
 import { WorkspaceHeader } from "./WorkspaceHeader";
@@ -55,7 +55,7 @@ describe("WorkspaceHeader", () => {
   });
 
   afterEach(() => {
-    flushSync(() => {
+    act(() => {
       root.unmount();
     });
     localStorage.clear();
@@ -84,7 +84,7 @@ describe("WorkspaceHeader", () => {
       onRenameThread: noop,
     };
 
-    flushSync(() => {
+    act(() => {
       root.render(<WorkspaceHeader {...props} {...overrides} />);
     });
   }
@@ -98,7 +98,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Selected tab not found");
     }
 
-    flushSync(() => {
+    act(() => {
       selectedTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     });
 
@@ -107,12 +107,11 @@ describe("WorkspaceHeader", () => {
       throw new Error("Rename input not found");
     }
 
-    flushSync(() => {
+    await act(async () => {
       input.value = "  Summarize setup docs  ";
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
     });
-
-    await Promise.resolve();
 
     expect(onRenameThread).toHaveBeenCalledTimes(1);
     expect(onRenameThread).toHaveBeenCalledWith("thread-1", "Summarize setup docs");
@@ -127,7 +126,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Selected tab not found");
     }
 
-    flushSync(() => {
+    act(() => {
       selectedTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     });
 
@@ -136,7 +135,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Rename input not found");
     }
 
-    flushSync(() => {
+    act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
 
@@ -152,7 +151,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Unselected tab not found");
     }
 
-    flushSync(() => {
+    act(() => {
       unselectedTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     });
 
@@ -191,7 +190,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Left panel toggle button not found");
     }
 
-    flushSync(() => {
+    act(() => {
       leftToggle.click();
     });
 
@@ -228,7 +227,7 @@ describe("WorkspaceHeader", () => {
     expect(container.querySelector('[data-testid="create-session-button"]')?.className).not.toContain("border");
     expect(container.querySelector('[data-testid="create-session-button"]')?.className).toContain("bg-secondary");
 
-    flushSync(() => {
+    act(() => {
       addSessionButton.click();
     });
 
@@ -301,7 +300,7 @@ describe("WorkspaceHeader", () => {
     }
   });
 
-  it("remembers the last selected create action for the main add session button", () => {
+  it("remembers the last selected create action for the main add session button", async () => {
     const onCreateThread = vi.fn();
     const onCreateTerminal = vi.fn();
     renderHeader({ onCreateThread, onCreateTerminal, worktreePath: "/tmp/repo" });
@@ -312,8 +311,9 @@ describe("WorkspaceHeader", () => {
       throw new Error("Create session controls not found");
     }
 
-    flushSync(() => {
+    await act(async () => {
       menuButton.click();
+      await Promise.resolve();
     });
 
     const terminalOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
@@ -322,13 +322,14 @@ describe("WorkspaceHeader", () => {
       throw new Error("Terminal create option not found");
     }
 
-    flushSync(() => {
+    await act(async () => {
       terminalOption.click();
+      await Promise.resolve();
     });
 
     expect(addSessionButton.textContent?.trim()).toBe("");
 
-    flushSync(() => {
+    act(() => {
       addSessionButton.click();
     });
 
@@ -336,7 +337,7 @@ describe("WorkspaceHeader", () => {
     expect(onCreateTerminal).toHaveBeenCalledTimes(2);
   });
 
-  it("portals the create session menu outside the header tab strip", () => {
+  it("portals the create session menu outside the header tab strip", async () => {
     renderHeader({ worktreePath: "/tmp/repo" });
 
     const menuButton = container.querySelector<HTMLButtonElement>('button[aria-label="Choose session type"]');
@@ -344,8 +345,9 @@ describe("WorkspaceHeader", () => {
       throw new Error("Create session menu button not found");
     }
 
-    flushSync(() => {
+    await act(async () => {
       menuButton.click();
+      await Promise.resolve();
     });
 
     const menu = document.body.querySelector<HTMLElement>('[data-testid="create-session-menu"]');
@@ -390,7 +392,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Secondary thread tab not found");
     }
 
-    flushSync(() => {
+    act(() => {
       secondaryTab.dispatchEvent(new Event("pointerover", { bubbles: true }));
       secondaryTab.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     });
@@ -407,7 +409,7 @@ describe("WorkspaceHeader", () => {
     expect(container.querySelector('[data-testid="workspace-worktree-path"]')).toBeNull();
   });
 
-  it("renders breadcrumb-style context and lets target branch be selected", () => {
+  it("renders breadcrumb-style context and lets target branch be selected", async () => {
     const onSelectTargetBranch = vi.fn();
     renderHeader({
       selectedWorktreeBranch: "feature/root-sync",
@@ -423,8 +425,9 @@ describe("WorkspaceHeader", () => {
     expect(context?.textContent).toBe("feature/root-sync");
     expect(trigger?.textContent).toContain("origin/main");
 
-    flushSync(() => {
+    await act(async () => {
       trigger?.click();
+      await Promise.resolve();
     });
 
     const filter = document.body.querySelector<HTMLInputElement>('[data-testid="workspace-target-branch-filter"]');
@@ -432,7 +435,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Target branch filter not found");
     }
 
-    flushSync(() => {
+    act(() => {
       const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
       if (!valueSetter) {
         throw new Error("Input value setter not found");
@@ -448,8 +451,9 @@ describe("WorkspaceHeader", () => {
       throw new Error("Filtered target branch option not found");
     }
 
-    flushSync(() => {
+    await act(async () => {
       filteredOption.click();
+      await Promise.resolve();
     });
 
     expect(onSelectTargetBranch).toHaveBeenCalledWith("release/2026.04");
@@ -487,7 +491,7 @@ describe("WorkspaceHeader", () => {
 
     expect(fileTab.className).toContain("italic");
 
-    flushSync(() => {
+    act(() => {
       fileTab.click();
       fileTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
       closeButton.click();
@@ -516,7 +520,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Terminal tab controls not found");
     }
 
-    flushSync(() => {
+    act(() => {
       terminalTab.click();
       closeButton.click();
     });

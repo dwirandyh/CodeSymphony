@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { execFile as execFileCallback } from "node:child_process";
 import { writeFile } from "node:fs/promises";

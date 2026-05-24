@@ -65,8 +65,8 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
-  queryClient.clear();
   resetModelProvidersCollectionRegistryForTest();
+  queryClient.clear();
   container.remove();
 });
 

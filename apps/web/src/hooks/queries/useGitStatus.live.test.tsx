@@ -122,12 +122,12 @@ describe("useGitStatus live updates", () => {
     act(() => {
       root.unmount();
     });
+    await resetGitStatusCollectionRegistryForTest();
     queryClient.clear();
     container.remove();
     if (originalWebSocket) {
       globalThis.WebSocket = originalWebSocket;
     }
-    await resetGitStatusCollectionRegistryForTest();
   });
 
   it("subscribes to git status snapshots over the shared workspace websocket", async () => {

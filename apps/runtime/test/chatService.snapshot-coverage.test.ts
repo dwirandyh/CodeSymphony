@@ -291,7 +291,7 @@ describe("chatService snapshot", () => {
         type: "tool_finished",
         payload: {
           toolName: "Bash",
-          summary: "Command failed: rtk pnpm test",
+          summary: "Command failed: rtk bun test",
           output: "same giant failure blob",
           error: "same giant failure blob",
         },

@@ -81,6 +81,7 @@ let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
 let hookResult: ReturnType<typeof useRepositoryManager>;
+let originalConsoleError: typeof console.error;
 
 function TestComponent() {
   hookResult = useRepositoryManager(vi.fn(), {
@@ -109,14 +110,29 @@ describe("useRepositoryManager recovery", () => {
     });
     listRepositoriesMock.mockReset();
     measureStartupMetricSinceBootMock.mockReset();
+    originalConsoleError = console.error;
+    vi.spyOn(console, "error").mockImplementation((...args: Parameters<typeof console.error>) => {
+      const [message, error] = args;
+      if (
+        typeof message === "string"
+        && message.startsWith("[QueryCollection] Error observing query repositories")
+        && error instanceof Error
+        && error.message === "Runtime API unavailable"
+      ) {
+        return;
+      }
+
+      originalConsoleError(...args);
+    });
   });
 
   afterEach(async () => {
     act(() => root.unmount());
-    queryClient.clear();
-    container.remove();
     resetWorkspaceStartupBootstrapForTest();
     await resetRepositoriesCollectionRegistryForTest();
+    queryClient.clear();
+    container.remove();
+    vi.restoreAllMocks();
   });
 
   it("selects requested repository and worktree after repository collection recovery", async () => {

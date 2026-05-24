@@ -450,7 +450,7 @@ describe("DevicePanel", () => {
             id: "ios-simulator:tcc-adhoc",
             platform: "ios-simulator",
             severity: "warning",
-            message: "Native iOS simulator streaming is unavailable: The user declined TCCs for application, window, display capture CodeSymphony's bundled runtime binary is ad-hoc signed (/Applications/CodeSymphony.app/Contents/MacOS/node), so macOS can keep denying Screen Recording to the simulator bridge. Reinstall the latest signed app build, then fully quit and reopen CodeSymphony before reconnecting the stream.",
+            message: "Native iOS simulator streaming is unavailable: The user declined TCCs for application, window, display capture CodeSymphony's bundled runtime binary is ad-hoc signed (/Applications/CodeSymphony.app/Contents/MacOS/bun-aarch64-apple-darwin), so macOS can keep denying Screen Recording to the simulator bridge. Reinstall the latest signed app build, then fully quit and reopen CodeSymphony before reconnecting the stream.",
           },
         ],
         refreshedAt: new Date().toISOString(),

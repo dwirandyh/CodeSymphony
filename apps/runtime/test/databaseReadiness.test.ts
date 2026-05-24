@@ -25,7 +25,7 @@ describe("assertDatabaseReady", () => {
 
     await expect(assertDatabaseReady(prisma)).rejects.toThrow(DatabaseNotReadyError);
     await expect(assertDatabaseReady(prisma)).rejects.toThrow(
-      "Run `pnpm db:migrate` before starting the runtime.",
+      "Run `bun run db:migrate` before starting the runtime.",
     );
   });
 

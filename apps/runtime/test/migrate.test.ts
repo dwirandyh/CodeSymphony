@@ -69,6 +69,7 @@ afterEach(() => {
 describe("runPrismaMigrations", () => {
   it("skips the prisma CLI when the database already matches the bundled migrations", async () => {
     const fixture = createFixture();
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     process.env.PRISMA_SCHEMA_PATH = fixture.schemaPath;
     process.env.PRISMA_MIGRATIONS_DIR = fixture.migrationsDir;
     process.env.DATABASE_URL = `file:${fixture.dbPath}`;
@@ -81,6 +82,7 @@ describe("runPrismaMigrations", () => {
     expect(result.executed).toBe(false);
     expect(result.reason).toBe("database-unchanged");
     expect(prismaMocks.queryRaw).toHaveBeenCalledTimes(1);
+    expect(consoleLogSpy).toHaveBeenCalledWith("Skipping Prisma migrations (database schema already matches bundled migrations)");
   });
 });
 

@@ -448,14 +448,14 @@ describe("useRepositoryManager", () => {
       repositoriesState.data = [
         {
           ...makeRepositories()[0],
-          setupScript: ["pnpm install"],
+          setupScript: ["bun install"],
         },
       ];
       mockCreateWorktreeMutateAsync.mockImplementationOnce(async () => {
         repositoriesState.data = [
           {
             ...makeRepositories()[0],
-            setupScript: ["pnpm install"],
+            setupScript: ["bun install"],
             worktrees: [
               {
                 id: "wt-new",
@@ -499,7 +499,7 @@ describe("useRepositoryManager", () => {
         repositoriesState.data = [
           {
             ...makeRepositories()[0],
-            setupScript: ["pnpm install"],
+            setupScript: ["bun install"],
             worktrees: [
               ...makeRepositories()[0].worktrees,
               {
