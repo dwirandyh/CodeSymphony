@@ -2094,6 +2094,7 @@ export function createChatService(deps: RuntimeDeps) {
             groupId: payload.groupId,
             explanation: payload.explanation,
             items: payload.items,
+            ...(payload.anchorToolUseId ? { anchorToolUseId: payload.anchorToolUseId } : {}),
           });
         },
         onPermissionRequest: async (payload) => {

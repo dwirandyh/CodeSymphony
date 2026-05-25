@@ -261,7 +261,7 @@ const TodoProgressTimelineItem = memo(function TodoProgressTimelineItem({
   return (
     <article className="px-1 text-[12px]" data-testid="timeline-todo-progress">
       <div className="flex items-center gap-2 text-[12px] leading-5">
-        <span className="text-muted-foreground">Started to-do</span>
+        <span className="text-muted-foreground">Started to-do:</span>
         <CircleCheckBig className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
         <span className="text-muted-foreground/70">{item.content}</span>
       </div>

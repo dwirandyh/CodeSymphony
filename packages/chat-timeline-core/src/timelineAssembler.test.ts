@@ -79,6 +79,48 @@ describe("buildTimelineFromSeed", () => {
     expect(unsortedResult).toEqual(sortedResult);
   });
 
+  it("recovers assistant deltas that were incorrectly scoped to a completed previous assistant message", () => {
+    const messages = [
+      makeMessage("u1", 0, "user", "Plan this."),
+      makeMessage("a1", 1, "assistant", "Initial plan response."),
+      makeMessage("a2", 2, "assistant", ""),
+      makeMessage("u2", 3, "user", "Sufah?"),
+      makeMessage("a3", 4, "assistant", ""),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "a1", delta: "Initial plan response." }),
+      makeEvent(2, "chat.completed", { messageId: "a1" }),
+      makeEvent(3, "tool.started", { toolName: "Bash", toolUseId: "bash-1", messageId: "a1" }),
+      makeEvent(4, "tool.finished", {
+        toolName: "Bash",
+        precedingToolUseIds: ["bash-1"],
+        summary: "Ran date",
+        messageId: "a1",
+      }),
+      makeEvent(5, "message.delta", { role: "assistant", messageId: "a1", delta: "Implemented." }),
+      makeEvent(6, "chat.completed", { messageId: "a2" }),
+      makeEvent(7, "message.delta", { role: "user", messageId: "u2", delta: "Sufah?" }),
+      makeEvent(8, "message.delta", { role: "assistant", messageId: "a1", delta: "Ya, sudah." }),
+      makeEvent(9, "chat.completed", { messageId: "a3" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const renderedMessages = result.items
+      .filter((item): item is Extract<ChatTimelineItem, { kind: "message" }> => item.kind === "message")
+      .map((item) => item.message);
+
+    expect(renderedMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: "Implemented." }),
+      expect.objectContaining({ id: "a3", content: "Ya, sudah." }),
+    ]));
+  });
+
   it("suppresses raw bash cards for explore-like runs when the command only appears on tool.finished", () => {
     const messages = [
       makeMessage("m1", 0, "user", "Find last updated in README."),
@@ -1490,6 +1532,82 @@ describe("buildTimelineFromSeed", () => {
       groupId: "turn-1",
       content: "Render todo row",
     });
+  });
+
+  it("anchors late todo-progress replays to matching Update TODOs tool.started events", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Update README."),
+      makeMessage("m2", 1, "assistant", "Working on it."),
+    ];
+    const events = [
+      makeEvent(10, "tool.started", {
+        toolName: "Update TODOs",
+        toolUseId: "todo-tool-1",
+        messageId: "m2",
+      }),
+      makeEvent(12, "tool.started", {
+        toolName: "Update TODOs",
+        toolUseId: "todo-tool-2",
+        messageId: "m2",
+      }),
+      makeEvent(20, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "edit-1",
+        messageId: "m2",
+      }),
+      makeEvent(21, "tool.finished", {
+        toolName: "Edit",
+        toolUseId: "edit-1",
+        messageId: "m2",
+        precedingToolUseIds: ["edit-1"],
+      }),
+      makeEvent(30, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Still working.",
+      }),
+      makeEvent(100, "todo.updated", {
+        agent: "cursor",
+        groupId: "cursor:exec",
+        items: [
+          { id: "todo-1", content: "Create todo list", status: "in_progress" },
+          { id: "todo-2", content: "Edit README", status: "pending" },
+        ],
+        messageId: "m2",
+      }),
+      makeEvent(101, "todo.updated", {
+        agent: "cursor",
+        groupId: "cursor:exec",
+        items: [
+          { id: "todo-1", content: "Create todo list", status: "completed" },
+          { id: "todo-2", content: "Edit README", status: "in_progress" },
+        ],
+        messageId: "m2",
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const todoProgressItems = result.items.filter(
+      (item): item is Extract<ChatTimelineItem, { kind: "todo-progress" }> => item.kind === "todo-progress",
+    );
+    const editToolIndex = result.items.findIndex(
+      (item) => item.kind === "tool" && item.toolName === "Edit",
+    );
+    const firstTodoProgressIndex = result.items.findIndex((item) => item.kind === "todo-progress");
+    const secondTodoProgressIndex = result.items.findIndex(
+      (item, index) => item.kind === "todo-progress" && index > firstTodoProgressIndex,
+    );
+
+    expect(todoProgressItems).toHaveLength(2);
+    expect(firstTodoProgressIndex).toBeGreaterThanOrEqual(0);
+    expect(secondTodoProgressIndex).toBeGreaterThan(firstTodoProgressIndex);
+    expect(editToolIndex).toBeGreaterThan(secondTodoProgressIndex);
   });
 
   it("collapses recreated todo-lists across turns into one persistent row", () => {

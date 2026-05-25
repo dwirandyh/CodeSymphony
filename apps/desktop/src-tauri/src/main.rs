@@ -65,8 +65,7 @@ const DESKTOP_PROD_RUNTIME_PORT: u16 = 4322;
 const LOCALHOST_RUNTIME_HOST: &str = "127.0.0.1";
 const LAN_RUNTIME_HOST: &str = "0.0.0.0";
 const COMMON_RUNTIME_EXECUTABLE_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
-const USER_RUNTIME_EXECUTABLE_DIR_SUFFIXES: [&str; 3] =
-    [".bun/bin", ".opencode/bin", ".local/bin"];
+const USER_RUNTIME_EXECUTABLE_DIR_SUFFIXES: [&str; 3] = [".bun/bin", ".opencode/bin", ".local/bin"];
 #[cfg(target_os = "macos")]
 const MACOS_TRAFFIC_LIGHT_VERTICAL_OFFSET: f64 = 4.0;
 #[cfg(target_os = "macos")]
@@ -1440,11 +1439,6 @@ fn main() {
                     let _ = window.hide();
                     return;
                 }
-            }
-
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                request_runtime_shutdown(&window.app_handle());
-                stop_managed_runtime(&window.app_handle());
             }
         })
         .build(tauri::generate_context!())

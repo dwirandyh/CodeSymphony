@@ -377,6 +377,8 @@ export function buildTimelineFromSeed(params: {
 
   const sortedMessages = ensureAscendingOrder(messages, (message) => message.seq);
   const orderedEventsByIdx = ensureAscendingOrder(events, (event) => event.idx);
+  const assistantMessages = sortedMessages.filter((message) => message.role === "assistant");
+  const assistantSeqById = new Map(assistantMessages.map((message) => [message.id, message.seq]));
 
   const firstMessageEventIdxById = new Map<string, number>();
   const firstScopedEventIdxByMessageId = new Map<string, number>();
@@ -405,6 +407,51 @@ export function buildTimelineFromSeed(params: {
       const currentCompletedIdx = completedEventIdxByMessageId.get(completedId);
       if (currentCompletedIdx == null || event.idx < currentCompletedIdx) {
         completedEventIdxByMessageId.set(completedId, event.idx);
+      }
+    }
+  }
+
+  const resolveScopedMessageId = (event: ChatEvent): string | null => {
+    const messageId = getScopedMessageId(event);
+    if (!messageId) {
+      return null;
+    }
+
+    const completedIdx = completedEventIdxByMessageId.get(messageId);
+    if (completedIdx == null || event.idx <= completedIdx) {
+      return messageId;
+    }
+
+    const originalSeq = assistantSeqById.get(messageId);
+    if (originalSeq == null) {
+      return messageId;
+    }
+
+    const nextEmptyAssistant = assistantMessages.find((message) => {
+      if (message.seq <= originalSeq || message.content.trim().length > 0) {
+        return false;
+      }
+
+      const nextCompletedIdx = completedEventIdxByMessageId.get(message.id);
+      return nextCompletedIdx == null || event.idx <= nextCompletedIdx;
+    });
+
+    return nextEmptyAssistant?.id ?? messageId;
+  };
+
+  for (const event of orderedEventsByIdx) {
+    const scopedMessageId = resolveScopedMessageId(event);
+    if (scopedMessageId) {
+      const currentScopedIdx = firstScopedEventIdxByMessageId.get(scopedMessageId);
+      if (currentScopedIdx == null || event.idx < currentScopedIdx) {
+        firstScopedEventIdxByMessageId.set(scopedMessageId, event.idx);
+      }
+    }
+
+    if (event.type === "message.delta" && event.payload.role === "assistant" && scopedMessageId) {
+      const currentIdx = firstMessageEventIdxById.get(scopedMessageId);
+      if (currentIdx == null || event.idx < currentIdx) {
+        firstMessageEventIdxById.set(scopedMessageId, event.idx);
       }
     }
   }
@@ -461,7 +508,7 @@ export function buildTimelineFromSeed(params: {
 
     if (isInlineToolEvent) {
       inlineToolEvents.push(event);
-      const messageId = getInlineEventMessageId(event);
+      const messageId = resolveScopedMessageId(event);
       if (!messageId) {
         fallbackInlineToolEvents.push(event);
       } else {
@@ -485,7 +532,7 @@ export function buildTimelineFromSeed(params: {
     }
 
     if (event.type === "todo.updated") {
-      const messageId = getScopedMessageId(event);
+      const messageId = resolveScopedMessageId(event);
       if (messageId) {
         const existing = todoEventsByMessageId.get(messageId) ?? [];
         existing.push(event);
@@ -494,7 +541,7 @@ export function buildTimelineFromSeed(params: {
     }
 
     if (event.type === "message.delta" && event.payload.role === "assistant") {
-      const messageId = getScopedMessageId(event);
+      const messageId = resolveScopedMessageId(event);
       if (!messageId) {
         continue;
       }
@@ -506,7 +553,6 @@ export function buildTimelineFromSeed(params: {
   }
 
   const assistantContextById = new Map<string, ChatEvent[]>();
-  const assistantMessages = sortedMessages.filter((message) => message.role === "assistant");
   const assistantStartIdxByMessageId = new Map<string, number>();
   const nextAssistantStartIdxByMessageId = new Map<string, number>();
   for (const message of assistantMessages) {
@@ -657,11 +703,17 @@ export function buildTimelineFromSeed(params: {
     const subagentGroups = subagentExploreExtraction?.subagentGroups ?? [];
     const subagentEventIds = subagentExploreExtraction?.subagentEventIds ?? new Set<string>();
 
+    const assistantDeltaContent = message.role === "assistant" && deltaEventsForAgent.length > 0
+      ? deltaEventsForAgent.map((event) => payloadStringOrNull(event.payload.delta) ?? "").join("")
+      : "";
+    const usedSynthesizedDeltaContent = message.role === "assistant" && message.content.trim().length === 0 && assistantDeltaContent.trim().length > 0;
+    const seedContent = usedSynthesizedDeltaContent ? assistantDeltaContent : message.content;
+
     let cleanedContent = message.role === "assistant"
-      ? sanitizeAssistantVisibleText(message.content)
-      : message.content;
-    if (message.role === "assistant" && message.content.length > 0) {
-      cleanedContent = message.content
+      ? sanitizeAssistantVisibleText(seedContent)
+      : seedContent;
+    if (message.role === "assistant" && seedContent.length > 0) {
+      cleanedContent = seedContent
         .replace(SUBAGENT_SUMMARY_REGEX, "")
         .replace(MAIN_SUMMARY_REGEX, "")
         .replace(MAIN_SUMMARY_START_MARKER, "")
@@ -773,10 +825,10 @@ export function buildTimelineFromSeed(params: {
       }
     }
     const todoListGroups = message.role === "assistant"
-      ? extractTodoListGroups(nonBashContext)
+      ? extractTodoListGroups(nonBashContext, orderedEventsByIdx)
       : [];
     const todoProgressGroups = message.role === "assistant"
-      ? extractTodoProgressGroups(nonBashContext)
+      ? extractTodoProgressGroups(nonBashContext, orderedEventsByIdx)
       : [];
     const todoEventIds = new Set<string>();
     if (message.role === "assistant") {
@@ -1016,7 +1068,7 @@ export function buildTimelineFromSeed(params: {
     sortable.push({
       item: {
         kind: "message",
-        message,
+        message: usedSynthesizedDeltaContent ? { ...message, content: cleanedContent } : message,
         context: nonBashContext,
         renderHint,
         rawFileLanguage,

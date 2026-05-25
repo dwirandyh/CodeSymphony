@@ -266,6 +266,7 @@ export type ClaudeRunner = (args: {
     groupId: string;
     explanation: string | null;
     items: AgentTodoItem[];
+    anchorToolUseId?: string | null;
   }) => Promise<void> | void;
   onSubagentStarted: (payload: {
     agentId: string;

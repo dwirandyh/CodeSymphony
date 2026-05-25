@@ -215,12 +215,23 @@ export function isPlanModeToolEvent(event: ChatEvent): boolean {
   return false;
 }
 
+function normalizeTodoWriteToolName(value: string | null | undefined): string {
+  return value?.trim().toLowerCase().replace(/[\s_-]/g, "") ?? "";
+}
+
 export function isTodoWriteToolEvent(event: ChatEvent): boolean {
   if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
     return false;
   }
 
-  return payloadStringOrNull(event.payload.toolName)?.trim().toLowerCase() === "todowrite";
+  const normalizedToolName = normalizeTodoWriteToolName(payloadStringOrNull(event.payload.toolName));
+  if (normalizedToolName === "todowrite" || normalizedToolName === "updatetodos") {
+    return true;
+  }
+
+  const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+  const internalName = normalizeTodoWriteToolName(payloadStringOrNull(toolInput?._toolName));
+  return internalName === "todowrite" || internalName === "updatetodos";
 }
 
 export function isBashPayload(payload: Record<string, unknown>): boolean {

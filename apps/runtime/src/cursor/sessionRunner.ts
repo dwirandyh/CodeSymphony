@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
@@ -24,6 +25,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import {
   DEFAULT_CHAT_MODEL_BY_AGENT,
+  type AgentTodoItem,
   type PermissionDecision,
   type SlashCommand,
 } from "@codesymphony/shared-types";
@@ -52,6 +54,7 @@ type CursorToolState = {
   startedAtMs: number | null;
   startedEmitted: boolean;
   finishedEmitted: boolean;
+  todoUpdateEmitted: boolean;
 };
 
 type CursorCatalogSnapshot = {
@@ -92,6 +95,7 @@ type PooledCursorConnection = {
   idleTimer: ReturnType<typeof setTimeout> | null;
   lastUsedAtMs: number;
   handlers: CursorClientHandlers;
+  setHandlers: (handlers: CursorClientHandlers) => void;
 };
 
 const pooledCursorConnectionsBySessionId = new Map<string, PooledCursorConnection>();
@@ -221,6 +225,513 @@ function buildCursorPlanMarkdown(entries: Array<{ content: string; status: strin
       return `${index + 1}. ${entry.content}${suffix}`;
     })
     .join("\n");
+}
+
+function normalizeCursorTodoStatus(value: unknown): AgentTodoItem["status"] | null {
+  if (value === "pending" || value === "in_progress" || value === "completed" || value === "cancelled") {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  switch (value.trim().toUpperCase()) {
+    case "TODO_STATUS_PENDING":
+    case "TODO_STATUS_TODO":
+    case "TODO_STATUS_NOT_STARTED":
+      return "pending";
+    case "TODO_STATUS_IN_PROGRESS":
+      return "in_progress";
+    case "TODO_STATUS_COMPLETED":
+      return "completed";
+    case "TODO_STATUS_CANCELLED":
+    case "TODO_STATUS_CANCELED":
+      return "cancelled";
+    default:
+      return null;
+  }
+}
+
+function normalizeCursorTodoItems(value: unknown): AgentTodoItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    const record = coerceObject(item);
+    const content = typeof record?.content === "string" ? record.content.trim() : "";
+    const status = normalizeCursorTodoStatus(record?.status);
+    if (!content || !status) {
+      return [];
+    }
+
+    const id = typeof record?.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
+    return [{ id, content, status } satisfies AgentTodoItem];
+  });
+}
+
+function nestedRecord(record: Record<string, unknown> | null, keys: string[]): Record<string, unknown> | null {
+  let current = record;
+  for (const key of keys) {
+    current = coerceObject(current?.[key]);
+    if (!current) {
+      return null;
+    }
+  }
+  return current;
+}
+
+function parseYamlScalar(raw: string): string {
+  const trimmed = raw.trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\""))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+
+  return trimmed;
+}
+
+function parseCursorPlanTodosFromPrompt(prompt: string): AgentTodoItem[] {
+  const frontmatterMatch = /^---\n([\s\S]*?)\n---/.exec(prompt);
+  if (!frontmatterMatch?.[1]) {
+    return [];
+  }
+
+  const todos: AgentTodoItem[] = [];
+  const lines = frontmatterMatch[1].split("\n");
+  let inTodos = false;
+  let current: Partial<AgentTodoItem> | null = null;
+
+  const flushCurrent = () => {
+    const content = current?.content?.trim();
+    const status = normalizeCursorTodoStatus(current?.status);
+    if (!content || !status) {
+      current = null;
+      return;
+    }
+
+    todos.push({
+      id: current?.id ?? null,
+      content,
+      status,
+    });
+    current = null;
+  };
+
+  for (const line of lines) {
+    if (!inTodos) {
+      if (line.trim() === "todos:") {
+        inTodos = true;
+      }
+      continue;
+    }
+
+    if (/^\S/.test(line)) {
+      break;
+    }
+
+    if (/^\s*-\s+id:\s*/.test(line)) {
+      flushCurrent();
+      current = {};
+      continue;
+    }
+
+    const idMatch = /^\s+id:\s+(.+)\s*$/.exec(line);
+    if (idMatch) {
+      current = current ?? {};
+      current.id = parseYamlScalar(idMatch[1] ?? "");
+      continue;
+    }
+
+    const contentMatch = /^\s+content:\s+(.+)\s*$/.exec(line);
+    if (contentMatch) {
+      current = current ?? {};
+      current.content = parseYamlScalar(contentMatch[1] ?? "");
+      continue;
+    }
+
+    const statusMatch = /^\s+status:\s+(.+)\s*$/.exec(line);
+    if (statusMatch) {
+      current = current ?? {};
+      current.status = normalizeCursorTodoStatus(parseYamlScalar(statusMatch[1] ?? ""));
+    }
+  }
+
+  flushCurrent();
+  return todos;
+}
+
+function parseCursorPlanTodosFromExecutePrompt(prompt: string): AgentTodoItem[] {
+  const executeMarker = "Please execute it now:\n\n";
+  const markerIndex = prompt.indexOf(executeMarker);
+  const planBody = markerIndex >= 0 ? prompt.slice(markerIndex + executeMarker.length) : prompt;
+
+  const frontmatterItems = parseCursorPlanTodosFromPrompt(planBody);
+  if (frontmatterItems.length > 0) {
+    return frontmatterItems;
+  }
+
+  const numberedItems: AgentTodoItem[] = [];
+  for (const line of planBody.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const match = /^(\d+)\.\s+(.+?)(?:\s+\((completed|in progress|pending)\))?\s*$/i.exec(trimmed);
+    if (!match?.[2]) {
+      continue;
+    }
+
+    const statusSuffix = match[3]?.toLowerCase();
+    numberedItems.push({
+      id: null,
+      content: match[2].trim(),
+      status: statusSuffix === "completed"
+        ? "completed"
+        : statusSuffix === "in progress"
+          ? "in_progress"
+          : "pending",
+    });
+  }
+
+  return numberedItems;
+}
+
+function extractTodoItemsFromCursorStoreRecord(
+  record: unknown,
+  toolUseId: string,
+  knownItems: AgentTodoItem[],
+): AgentTodoItem[] {
+  const root = coerceObject(record);
+  if (!root) {
+    return [];
+  }
+
+  if (root.role === "tool") {
+    const matchesTool = root.id === toolUseId
+      || (Array.isArray(root.content) && root.content.some((block) => {
+        const entry = coerceObject(block);
+        return entry?.toolCallId === toolUseId;
+      }));
+
+    if (matchesTool) {
+      const providerOptions = coerceObject(root.providerOptions);
+      const cursor = coerceObject(providerOptions?.cursor);
+      const highLevel = coerceObject(cursor?.highLevelToolCallResult);
+      const success = nestedRecord(highLevel, ["output", "success"]);
+      const structuredItems = normalizeCursorTodoItems(success?.todos);
+      if (structuredItems.length > 0) {
+        return structuredItems;
+      }
+
+      if (Array.isArray(root.content)) {
+        for (const block of root.content) {
+          const entry = coerceObject(block);
+          if (entry?.toolCallId !== toolUseId) {
+            continue;
+          }
+
+          if (typeof entry.result === "string") {
+            const parsedResultItems = parseCursorTodoItemsFromResultText(entry.result);
+            if (parsedResultItems.length > 0) {
+              return parsedResultItems;
+            }
+          }
+        }
+      }
+
+      const content = Array.isArray(root.content) ? root.content as ToolCallContent[] : [];
+      const parsedContentItems = parseCursorTodoItemsFromToolContent(content);
+      if (parsedContentItems.length > 0) {
+        return parsedContentItems;
+      }
+    }
+  }
+
+  if (root.role === "assistant" && Array.isArray(root.content)) {
+    for (const block of root.content) {
+      const entry = coerceObject(block);
+      if (entry?.toolCallId !== toolUseId) {
+        continue;
+      }
+
+      const args = coerceObject(entry.args);
+      const argItems = enrichPartialCursorTodoItems(args?.todos, knownItems);
+      if (argItems.length > 0) {
+        return argItems;
+      }
+    }
+  }
+
+  return [];
+}
+
+async function loadCursorTodoItemsFromSessionStore(
+  sessionId: string,
+  toolUseId: string,
+  knownItems: AgentTodoItem[],
+): Promise<AgentTodoItem[]> {
+  if (typeof Bun === "undefined") {
+    return [];
+  }
+
+  const storePath = join(homedir(), ".cursor", "acp-sessions", sessionId, "store.db");
+
+  try {
+    const { Database } = await import("bun:sqlite");
+    const db = new Database(storePath);
+    try {
+      const rows = db.query("SELECT data FROM blobs").all() as Array<{ data: Buffer | Uint8Array | string }>;
+      for (const row of rows) {
+        const text = typeof row.data === "string"
+          ? row.data
+          : Buffer.from(row.data).toString("utf8");
+        if (!text.trimStart().startsWith("{") || !text.includes(toolUseId)) {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(text) as unknown;
+          const items = extractTodoItemsFromCursorStoreRecord(parsed, toolUseId, knownItems);
+          if (items.length > 0) {
+            return items;
+          }
+        } catch {
+          continue;
+        }
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+
+  return [];
+}
+
+function cursorTodoItemsEqual(left: AgentTodoItem[], right: AgentTodoItem[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((item, index) => {
+    const other = right[index];
+    return item.id === other?.id
+      && item.content === other?.content
+      && item.status === other?.status;
+  });
+}
+
+async function loadAllCursorTodoSnapshotsFromSessionStore(sessionId: string): Promise<Array<{
+  toolUseId: string;
+  items: AgentTodoItem[];
+  rowid: number;
+}>> {
+  if (typeof Bun === "undefined") {
+    return [];
+  }
+
+  const storePath = join(homedir(), ".cursor", "acp-sessions", sessionId, "store.db");
+
+  try {
+    const { Database } = await import("bun:sqlite");
+    const db = new Database(storePath);
+    try {
+      const rows = db.query("SELECT rowid, data FROM blobs ORDER BY rowid ASC").all() as Array<{
+        rowid: number;
+        data: Buffer | Uint8Array | string;
+      }>;
+      const snapshots: Array<{ toolUseId: string; items: AgentTodoItem[]; rowid: number }> = [];
+
+      for (const row of rows) {
+        const text = typeof row.data === "string"
+          ? row.data
+          : Buffer.from(row.data).toString("utf8");
+        if (!text.trimStart().startsWith("{")) {
+          continue;
+        }
+
+        try {
+          const parsed = JSON.parse(text) as unknown;
+          const root = coerceObject(parsed);
+          if (!root || root.role !== "tool" || !Array.isArray(root.content)) {
+            continue;
+          }
+
+          for (const block of root.content) {
+            const entry = coerceObject(block);
+            const toolUseId = typeof entry?.toolCallId === "string" ? entry.toolCallId : null;
+            if (!toolUseId || entry?.toolName !== "TodoWrite") {
+              continue;
+            }
+
+            const items = extractTodoItemsFromCursorStoreRecord(parsed, toolUseId, []);
+            if (items.length > 0) {
+              snapshots.push({ toolUseId, items, rowid: row.rowid });
+            }
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      return snapshots;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
+const CURSOR_TODO_RESULT_LINE = /^- \*\*(COMPLETED|IN_PROGRESS|PENDING|CANCELLED)\*\*: (.+) \(id: ([^)]+)\)\s*$/gim;
+
+function parseCursorTodoItemsFromResultText(text: string): AgentTodoItem[] {
+  if (!text.trim()) {
+    return [];
+  }
+
+  const statusByLabel: Record<string, AgentTodoItem["status"]> = {
+    COMPLETED: "completed",
+    IN_PROGRESS: "in_progress",
+    PENDING: "pending",
+    CANCELLED: "cancelled",
+  };
+
+  return [...text.matchAll(CURSOR_TODO_RESULT_LINE)].flatMap((match) => {
+    const status = statusByLabel[match[1]?.toUpperCase() ?? ""];
+    const todoContent = match[2]?.trim();
+    const id = match[3]?.trim();
+    if (!status || !todoContent) {
+      return [];
+    }
+
+    return [{ id: id || null, content: todoContent, status } satisfies AgentTodoItem];
+  });
+}
+
+function parseCursorTodoItemsFromToolContent(content: ToolCallContent[]): AgentTodoItem[] {
+  return parseCursorTodoItemsFromResultText(extractToolTextContent(content));
+}
+
+function enrichPartialCursorTodoItems(value: unknown, knownItems: AgentTodoItem[]): AgentTodoItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    const record = coerceObject(item);
+    if (!record) {
+      return [];
+    }
+
+    const id = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
+    const status = normalizeCursorTodoStatus(record.status);
+    if (!status) {
+      return [];
+    }
+
+    const content = typeof record.content === "string" ? record.content.trim() : "";
+    if (content) {
+      return [{ id, content, status } satisfies AgentTodoItem];
+    }
+
+    const known = id ? knownItems.find((candidate) => candidate.id === id) : null;
+    if (!known?.content) {
+      return [];
+    }
+
+    return [{ id: id ?? known.id, content: known.content, status } satisfies AgentTodoItem];
+  });
+}
+
+function mergeCursorToolInput(existing: unknown, incoming: Record<string, unknown>): Record<string, unknown> {
+  const previous = coerceObject(existing) ?? {};
+  const merged: Record<string, unknown> = { ...previous, ...incoming };
+  const incomingTodos = incoming.todos;
+  const previousTodos = previous.todos;
+
+  if (Array.isArray(incomingTodos) && incomingTodos.length > 0) {
+    merged.todos = incomingTodos;
+  } else if (Array.isArray(previousTodos) && previousTodos.length > 0) {
+    merged.todos = previousTodos;
+  }
+
+  return merged;
+}
+
+function mergeCursorToolContent(
+  existing: ToolCallContent[],
+  incoming: ToolCallContent[] | null | undefined,
+): ToolCallContent[] {
+  if (Array.isArray(incoming) && incoming.length > 0) {
+    return incoming;
+  }
+
+  return existing;
+}
+
+function hasCursorTodoResultPayload(state: CursorToolState): boolean {
+  if (state.rawOutput != null) {
+    return true;
+  }
+
+  return parseCursorTodoItemsFromToolContent(state.content).length > 0;
+}
+
+function extractCursorTodoItemsFromToolState(
+  state: CursorToolState,
+  knownItems: AgentTodoItem[] = [],
+): AgentTodoItem[] {
+  const output = coerceObject(state.rawOutput);
+  const outputCandidates = [
+    output,
+    nestedRecord(output, ["success"]),
+    nestedRecord(output, ["output"]),
+    nestedRecord(output, ["output", "success"]),
+    nestedRecord(output, ["highLevelToolCallResult", "output", "success"]),
+  ];
+
+  for (const candidate of outputCandidates) {
+    const items = normalizeCursorTodoItems(candidate?.todos);
+    if (items.length > 0) {
+      return items;
+    }
+  }
+
+  const input = coerceObject(state.rawInput);
+  const inputItems = enrichPartialCursorTodoItems(input?.todos, knownItems);
+  if (inputItems.length > 0) {
+    return inputItems;
+  }
+
+  return parseCursorTodoItemsFromToolContent(state.content);
+}
+
+function normalizeCursorTodoToolName(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_-]/g, "");
+}
+
+function isCursorTodoWriteTool(toolName: string, title: string, rawInput?: unknown): boolean {
+  const normalizedToolName = normalizeCursorTodoToolName(toolName);
+  const normalizedTitle = normalizeCursorTodoToolName(title);
+  if (normalizedToolName === "todowrite" || normalizedTitle === "todowrite") {
+    return true;
+  }
+  if (normalizedToolName === "updatetodos" || normalizedTitle === "updatetodos") {
+    return true;
+  }
+
+  const input = coerceObject(rawInput);
+  const internalName = typeof input?._toolName === "string"
+    ? normalizeCursorTodoToolName(input._toolName)
+    : "";
+  return internalName === "todowrite" || internalName === "updatetodos";
 }
 
 function slugifyCursorPlanName(rawName: string): string {
@@ -498,6 +1009,8 @@ function toolNameFromCursorKind(kind: ToolKind | null, title: string): string {
     return "Bash";
   }
 
+  const cleanTitle = title.trim();
+
   switch (kind) {
     case "read":
       return "Read";
@@ -508,7 +1021,7 @@ function toolNameFromCursorKind(kind: ToolKind | null, title: string): string {
     case "move":
       return "Move";
     case "search":
-      return "Search";
+      return cleanTitle && !isGenericToolTitle(cleanTitle) ? cleanTitle : "Search";
     case "execute":
       return "Bash";
     case "fetch":
@@ -563,6 +1076,55 @@ function isGenericToolTitle(title: string): boolean {
     || normalized === "other"
     || normalized === "mcp"
     || normalized === "mcp: tool";
+}
+
+function hasObjectEntries(value: Record<string, unknown> | null): value is Record<string, unknown> {
+  return value != null && Object.keys(value).length > 0;
+}
+
+function pickObjectFromRecord(record: Record<string, unknown> | null, keys: string[]): Record<string, unknown> | null {
+  if (!record) {
+    return null;
+  }
+
+  for (const key of keys) {
+    const candidate = coerceObject(record[key]);
+    if (hasObjectEntries(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function extractIncomingToolInput(incoming: ToolCall | ToolCallUpdate): Record<string, unknown> | null {
+  const directRawInput = coerceObject(incoming.rawInput);
+  if (hasObjectEntries(directRawInput)) {
+    return directRawInput;
+  }
+
+  const incomingRecord = coerceObject(incoming);
+  const meta = coerceObject(incomingRecord?._meta);
+  return pickObjectFromRecord(meta, ["rawInput", "toolInput", "args", "arguments", "input", "params"])
+    ?? pickObjectFromRecord(incomingRecord, ["toolInput", "args", "arguments", "input", "params"]);
+}
+
+function extractIncomingToolOutput(incoming: ToolCall | ToolCallUpdate): unknown {
+  const directRawOutput = incoming.rawOutput;
+  if (directRawOutput !== undefined && directRawOutput !== null) {
+    return directRawOutput;
+  }
+
+  const incomingRecord = coerceObject(incoming);
+  const meta = coerceObject(incomingRecord?._meta);
+  const cursorMeta = coerceObject(meta?.cursor);
+  const highLevelSuccess = nestedRecord(coerceObject(meta?.highLevelToolCallResult), ["output", "success"])
+    ?? nestedRecord(coerceObject(cursorMeta?.highLevelToolCallResult), ["output", "success"]);
+  if (highLevelSuccess) {
+    return { success: highLevelSuccess };
+  }
+
+  return meta?.rawOutput ?? meta?.output ?? meta?.result ?? incomingRecord?.output ?? incomingRecord?.result ?? null;
 }
 
 function mergeToolTitle(currentTitle: string, incomingTitle: string | null | undefined): string {
@@ -627,6 +1189,15 @@ function extractToolPath(state: CursorToolState): string | null {
     return locationPath.trim();
   }
 
+  const input = coerceObject(state.rawInput);
+  const pathKeys = ["path", "file_path", "filePath", "filepath", "file", "target", "filename", "directory", "dir"];
+  for (const key of pathKeys) {
+    const value = input?.[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
   return null;
 }
 
@@ -661,6 +1232,19 @@ function extractCommand(rawInput: unknown): string | null {
       return value.trim();
     }
   }
+  return null;
+}
+
+function extractSearchParams(rawInput: unknown): string | null {
+  const input = coerceObject(rawInput);
+  const searchKeys = ["pattern", "query", "search", "regex", "glob", "grep", "q", "term"];
+  for (const key of searchKeys) {
+    const value = input?.[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
   return null;
 }
 
@@ -724,6 +1308,14 @@ function extractToolOutput(state: CursorToolState): string | null {
   const textOutput = extractToolTextContent(state.content);
   if (textOutput) {
     return textOutput;
+  }
+
+  const output = coerceObject(state.rawOutput);
+  for (const key of ["content", "result", "text", "output", "stdout"]) {
+    const value = output?.[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
   }
 
   if (!isExecuteLikeTool(state)) {
@@ -971,6 +1563,7 @@ async function acquirePooledCursorConnection(params: {
     candidate.busy = true;
     candidate.lastUsedAtMs = Date.now();
     candidate.handlers = params.handlers;
+    candidate.setHandlers(params.handlers);
     return {
       entry: candidate,
       reused: true,
@@ -981,11 +1574,12 @@ async function acquirePooledCursorConnection(params: {
     await destroyPooledCursorConnection(candidate);
   }
 
+  let activeHandlers = params.handlers;
   const handlerBridge: CursorClientHandlers = {
-    sessionUpdate: async (payload) => params.handlers.sessionUpdate(payload),
-    requestPermission: async (payload) => params.handlers.requestPermission(payload),
-    unstable_createElicitation: async (payload) => params.handlers.unstable_createElicitation(payload),
-    extMethod: async (method, payload) => params.handlers.extMethod(method, payload),
+    sessionUpdate: async (payload) => activeHandlers.sessionUpdate(payload),
+    requestPermission: async (payload) => activeHandlers.requestPermission(payload),
+    unstable_createElicitation: async (payload) => activeHandlers.unstable_createElicitation(payload),
+    extMethod: async (method, payload) => activeHandlers.extMethod(method, payload),
   };
 
   const created = await createCursorConnection({
@@ -1004,12 +1598,10 @@ async function acquirePooledCursorConnection(params: {
     idleTimer: null,
     lastUsedAtMs: Date.now(),
     handlers: params.handlers,
+    setHandlers: (handlers) => {
+      activeHandlers = handlers;
+    },
   };
-
-  handlerBridge.sessionUpdate = async (payload) => entry.handlers.sessionUpdate(payload);
-  handlerBridge.requestPermission = async (payload) => entry.handlers.requestPermission(payload);
-  handlerBridge.unstable_createElicitation = async (payload) => entry.handlers.unstable_createElicitation(payload);
-  handlerBridge.extMethod = async (method, payload) => entry.handlers.extMethod(method, payload);
 
   return {
     entry,
@@ -1225,6 +1817,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
   let currentSessionId = sessionId;
   const runnerStartedAtMs = Date.now();
   const todoGroupId = `cursor:${runnerStartedAtMs}`;
+  let lastKnownTodoItems: AgentTodoItem[] = parseCursorPlanTodosFromExecutePrompt(prompt);
   let firstSessionUpdateType: SessionUpdate["sessionUpdate"] | null = null;
   const seenNonTextChunkTypes = new Set<string>();
 
@@ -1258,6 +1851,82 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     planEmitted = true;
   };
 
+  const tryEmitCursorTodoUpdateForState = async (
+    current: CursorToolState,
+  ): Promise<boolean> => {
+    const toolPresentation = resolveCursorToolPresentation({
+      kind: current.kind,
+      title: current.title,
+      rawInput: current.rawInput,
+    });
+    const resolvedToolName = toolPresentation.toolName;
+
+    if (current.todoUpdateEmitted || !isCursorTodoWriteTool(resolvedToolName, current.title, current.rawInput)) {
+      return false;
+    }
+
+    const canEmitNow = current.status === "completed"
+      || current.status === "failed"
+      || (current.status === "in_progress" && hasCursorTodoResultPayload(current));
+    if (!canEmitNow) {
+      return false;
+    }
+
+    let todoItems = extractCursorTodoItemsFromToolState(current, lastKnownTodoItems);
+    if (todoItems.length === 0 && currentSessionId) {
+      todoItems = await loadCursorTodoItemsFromSessionStore(currentSessionId, current.toolUseId, lastKnownTodoItems);
+    }
+    if (todoItems.length === 0) {
+      return false;
+    }
+
+    current.todoUpdateEmitted = true;
+    lastKnownTodoItems = todoItems;
+    await onTodoUpdate?.({
+      agent: "cursor",
+      groupId: todoGroupId,
+      explanation: null,
+      items: todoItems,
+      anchorToolUseId: current.toolUseId,
+    });
+    return true;
+  };
+
+  const flushPendingCursorTodoUpdatesFromStore = async () => {
+    if (!currentSessionId || !onTodoUpdate) {
+      return;
+    }
+
+    const snapshots = await loadAllCursorTodoSnapshotsFromSessionStore(currentSessionId);
+    for (const snapshot of snapshots) {
+      if (!toolStates.has(snapshot.toolUseId)) {
+        continue;
+      }
+
+      if (cursorTodoItemsEqual(snapshot.items, lastKnownTodoItems)) {
+        continue;
+      }
+
+      const toolState = toolStates.get(snapshot.toolUseId);
+      if (toolState) {
+        toolState.todoUpdateEmitted = true;
+      }
+
+      lastKnownTodoItems = snapshot.items;
+      await onTodoUpdate({
+        agent: "cursor",
+        groupId: todoGroupId,
+        explanation: null,
+        items: snapshot.items,
+        anchorToolUseId: snapshot.toolUseId,
+      });
+    }
+
+    for (const current of toolStates.values()) {
+      await tryEmitCursorTodoUpdateForState(current);
+    }
+  };
+
   const handleToolState = async (incoming: ToolCall | ToolCallUpdate): Promise<void> => {
     const toolUseId = normalizeCursorToolCallId(incoming.toolCallId);
     const current = toolStates.get(toolUseId) ?? {
@@ -1272,15 +1941,22 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       startedAtMs: null,
       startedEmitted: false,
       finishedEmitted: false,
+      todoUpdateEmitted: false,
     } satisfies CursorToolState;
 
     current.title = mergeToolTitle(current.title, incoming.title);
     current.kind = incoming.kind ?? current.kind;
     current.status = incoming.status ?? current.status;
-    current.rawInput = incoming.rawInput ?? current.rawInput;
-    current.rawOutput = incoming.rawOutput ?? current.rawOutput;
+    const incomingInput = extractIncomingToolInput(incoming);
+    if (incomingInput) {
+      current.rawInput = mergeCursorToolInput(current.rawInput, incomingInput);
+    }
+    const incomingOutput = extractIncomingToolOutput(incoming);
+    if (incomingOutput != null) {
+      current.rawOutput = incomingOutput;
+    }
     current.locations = incoming.locations ?? current.locations;
-    current.content = incoming.content ?? current.content;
+    current.content = mergeCursorToolContent(current.content, incoming.content);
     toolStates.set(toolUseId, current);
 
     const toolPresentation = resolveCursorToolPresentation({
@@ -1291,8 +1967,13 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     const toolName = toolPresentation.toolName;
     const editTarget = extractToolPath(current);
 
+    const maybeEmitCursorTodoUpdate = async () => {
+      await tryEmitCursorTodoUpdateForState(current);
+    };
+
     const isExecuteTool = isExecuteLikeTool(current);
     const command = extractCommand(current.rawInput);
+    const searchParams = toolPresentation.searchParams ?? extractSearchParams(current.rawInput) ?? undefined;
 
     if (!current.startedEmitted) {
       current.startedEmitted = true;
@@ -1303,7 +1984,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
         toolUseId,
         parentToolUseId: null,
         ...(editTarget ? { editTarget } : {}),
-        ...(toolPresentation.searchParams ? { searchParams: toolPresentation.searchParams } : {}),
+        ...(searchParams ? { searchParams } : {}),
         ...(isExecuteTool
           ? {
               ...(command ? { command } : {}),
@@ -1353,7 +2034,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
         precedingToolUseIds: [toolUseId],
         ...(editTarget ? { editTarget } : {}),
         ...(coerceObject(current.rawInput) ? { toolInput: coerceObject(current.rawInput)! } : {}),
-        ...(toolPresentation.searchParams ? { searchParams: toolPresentation.searchParams } : {}),
+        ...(searchParams ? { searchParams } : {}),
         ...(isExecuteTool
           ? {
               ...(command ? { command } : {}),
@@ -1365,6 +2046,8 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
         ...(toolError ? { error: toolError } : {}),
       });
     }
+
+    await maybeEmitCursorTodoUpdate();
   };
 
   let child: ChildProcessWithoutNullStreams | null = null;
@@ -1434,15 +2117,17 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
             const normalizedEntries = normalizeCursorPlanEntries(update.entries);
             planMarkdown = buildCursorPlanMarkdown(normalizedEntries);
             if (normalizedEntries.length > 0) {
+              const planItems = normalizedEntries.map((entry, index) => ({
+                id: `${todoGroupId}:${index}`,
+                content: entry.content,
+                status: entry.status,
+              }));
+              lastKnownTodoItems = planItems;
               await onTodoUpdate?.({
                 agent: "cursor",
                 groupId: todoGroupId,
                 explanation: null,
-                items: normalizedEntries.map((entry, index) => ({
-                  id: `${todoGroupId}:${index}`,
-                  content: entry.content,
-                  status: entry.status,
-                })),
+                items: planItems,
               });
             }
             return;
@@ -1638,6 +2323,8 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       throw createAbortError();
     }
 
+    await flushPendingCursorTodoUpdatesFromStore();
+
     logCursorDebug("prompt.completed", {
       stopReason: result.stopReason,
       outputLength: output.length,
@@ -1676,8 +2363,10 @@ export const __testing = {
   buildCursorPrompt,
   cursorAcpSupportsQuestionElicitation: true,
   cursorAcpSupportsSubagentLifecycle: false,
+  extractTodoItemsFromCursorStoreRecord,
   normalizeCursorToolCallId,
   parseCursorPlanSavedPath,
+  parseCursorPlanTodosFromExecutePrompt,
   resolveCursorRuntimeMode,
   stripCursorModelVariant,
   toolNameFromCursorKind,

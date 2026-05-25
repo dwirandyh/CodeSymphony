@@ -28,7 +28,8 @@ fn ensure_bun_placeholder(root: &PathBuf, file_name: &str) {
 }
 
 fn main() {
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir"));
+    let manifest_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir"));
 
     ensure_bun_placeholder(&manifest_dir, "bun-aarch64-apple-darwin");
     ensure_bun_placeholder(&manifest_dir, "bun-x86_64-apple-darwin");

@@ -41,6 +41,11 @@ vi.mock("node:module", () => ({
   })),
 }));
 
+vi.mock("../src/claude/shellEnv.js", () => ({
+  buildClaudeRuntimeEnv: vi.fn((baseEnv: NodeJS.ProcessEnv) => ({ ...baseEnv })),
+}));
+
+import { buildClaudeRuntimeEnv } from "../src/claude/shellEnv.js";
 import { buildExecShellArgs, createTerminalService } from "../src/services/terminalService";
 
 describe("terminalService", () => {
@@ -106,16 +111,87 @@ describe("terminalService", () => {
       expect(oldPty.kill).toHaveBeenCalled();
     });
 
+    it("strips NO_COLOR from terminal env so CLI tools can emit ANSI colors", () => {
+      const originalNoColor = process.env.NO_COLOR;
+      const originalShell = process.env.SHELL;
+      process.env.NO_COLOR = "1";
+      process.env.SHELL = "/bin/zsh";
+
+      try {
+        service.spawn("s1", "/tmp", { replace: true });
+
+        const spawnCall = vi.mocked(pty.spawn).mock.calls.at(-1);
+        const env = spawnCall?.[2]?.env as Record<string, string> | undefined;
+        expect(env?.NO_COLOR).toBeUndefined();
+        expect(env?.FORCE_COLOR).toBe("1");
+      } finally {
+        process.env.NO_COLOR = originalNoColor;
+        process.env.SHELL = originalShell;
+      }
+    });
+
+    it("strips Cursor agent env from terminal spawn so shell rc does not disable colors", () => {
+      const originals = {
+        NO_COLOR: process.env.NO_COLOR,
+        FORCE_COLOR: process.env.FORCE_COLOR,
+        CURSOR_AGENT: process.env.CURSOR_AGENT,
+        CURSOR_INVOKED_AS: process.env.CURSOR_INVOKED_AS,
+        TERM_PROGRAM: process.env.TERM_PROGRAM,
+        SHELL: process.env.SHELL,
+      };
+      process.env.NO_COLOR = "1";
+      process.env.FORCE_COLOR = "0";
+      process.env.CURSOR_AGENT = "1";
+      process.env.CURSOR_INVOKED_AS = "agent";
+      process.env.TERM_PROGRAM = "zed";
+      process.env.SHELL = "/bin/zsh";
+
+      try {
+        service.spawn("s1", "/tmp", { replace: true });
+
+        const env = vi.mocked(pty.spawn).mock.calls.at(-1)?.[2]?.env as Record<string, string> | undefined;
+        expect(env?.NO_COLOR).toBeUndefined();
+        expect(env?.FORCE_COLOR).toBe("1");
+        expect(env?.CURSOR_AGENT).toBeUndefined();
+        expect(env?.CURSOR_INVOKED_AS).toBeUndefined();
+        expect(env?.TERM_PROGRAM).toBe("CodeSymphony");
+        expect(env?.ZDOTDIR).toContain("terminal-zsh");
+      } finally {
+        for (const [key, value] of Object.entries(originals)) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+      }
+    });
+
     it("starts interactive shells as login shells", () => {
+      const originalShell = process.env.SHELL;
+      process.env.SHELL = "/bin/zsh";
+
+      try {
       service.spawn("s1", "/tmp");
 
+      expect(buildClaudeRuntimeEnv).toHaveBeenCalled();
       expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
         expect.any(String),
-        ["-l"],
+        ["-o", "nopromptsp"],
         expect.objectContaining({
           cwd: "/tmp",
+          env: expect.objectContaining({
+            TERM: "xterm-256color",
+            COLORTERM: "truecolor",
+            FORCE_COLOR: "1",
+            CLICOLOR_FORCE: "1",
+            TERM_PROGRAM: "CodeSymphony",
+          }),
         }),
       );
+      } finally {
+        process.env.SHELL = originalShell;
+      }
     });
 
     it("keeps exec mode on login shell command execution", () => {
@@ -146,7 +222,9 @@ describe("terminalService", () => {
 
     it("falls back when no cwd is provided", () => {
       const originalHome = process.env.HOME;
+      const originalShell = process.env.SHELL;
       process.env.HOME = "/Users/tester";
+      process.env.SHELL = "/bin/zsh";
 
       try {
         const session = service.spawn("s1");
@@ -154,13 +232,14 @@ describe("terminalService", () => {
         expect(session.resolvedCwd).toBe("/Users/tester");
         expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
           expect.any(String),
-          ["-l"],
+          ["-o", "nopromptsp"],
           expect.objectContaining({
             cwd: "/Users/tester",
           }),
         );
       } finally {
         process.env.HOME = originalHome;
+        process.env.SHELL = originalShell;
       }
     });
   });

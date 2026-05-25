@@ -63,7 +63,7 @@ prune_bundle_root() {
     name="$(basename "${entry}")"
 
     case "${name}" in
-      .|..|android-helpers|android-ws-scrcpy|dist|node_modules|package.json|prisma|simulator-bridge|web-dist)
+      .|..|android-helpers|android-ws-scrcpy|dist|node_modules|package.json|prisma|simulator-bridge|terminal-zsh|web-dist)
         continue
         ;;
     esac
@@ -197,6 +197,10 @@ install_runtime_bundle_dependencies
 echo "=== Copying compiled JS ==="
 rm -rf "${BUNDLE_DIR}/dist"
 cp -r "${WORKSPACE_ROOT}/apps/runtime/dist" "${BUNDLE_DIR}/dist"
+
+echo "=== Copying terminal zsh bootstrap ==="
+rm -rf "${BUNDLE_DIR}/terminal-zsh"
+cp -R "${WORKSPACE_ROOT}/apps/runtime/terminal-zsh" "${BUNDLE_DIR}/terminal-zsh"
 
 echo "=== Copying workspace runtime dependencies ==="
 copy_workspace_package "@codesymphony/shared-types" "${WORKSPACE_ROOT}/packages/shared-types"

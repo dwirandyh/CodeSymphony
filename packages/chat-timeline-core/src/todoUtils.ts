@@ -1,5 +1,5 @@
 import type { ChatEvent, CliAgent } from "@codesymphony/shared-types";
-import { isRecord, payloadStringOrNull } from "./eventUtils.js";
+import { isRecord, isTodoWriteToolEvent, payloadStringOrNull } from "./eventUtils.js";
 import type { TimelineTodoItem, TimelineTodoStatus, TodoListGroup, TodoProgressGroup } from "./types.js";
 
 function normalizeTodoStatus(value: unknown): TimelineTodoStatus | null {
@@ -84,7 +84,104 @@ function todoProgressKey(item: TimelineTodoItem): string {
   return item.id?.trim() || item.content.trim();
 }
 
-export function extractTodoListGroups(events: ChatEvent[]): TodoListGroup[] {
+function buildToolStartIdxByUseId(events: ChatEvent[]): Map<string, number> {
+  const toolStartIdxByUseId = new Map<string, number>();
+
+  for (const event of events) {
+    if (event.type !== "tool.started") {
+      continue;
+    }
+
+    const toolUseId = payloadStringOrNull(event.payload.toolUseId)?.trim();
+    if (!toolUseId) {
+      continue;
+    }
+
+    toolStartIdxByUseId.set(toolUseId, event.idx);
+  }
+
+  return toolStartIdxByUseId;
+}
+
+function buildLateTodoProgressAnchorByEventId(events: ChatEvent[]): Map<string, number> {
+  const todoWriteToolStarts: Array<{ idx: number; toolUseId: string }> = [];
+  const lateTodoUpdates: Array<{ eventId: string; idx: number }> = [];
+
+  for (const event of events) {
+    if (event.type === "tool.started" && isTodoWriteToolEvent(event)) {
+      const toolUseId = payloadStringOrNull(event.payload.toolUseId)?.trim();
+      if (toolUseId) {
+        todoWriteToolStarts.push({ idx: event.idx, toolUseId });
+      }
+    }
+  }
+
+  if (todoWriteToolStarts.length === 0) {
+    return new Map();
+  }
+
+  const firstTodoWriteIdx = todoWriteToolStarts[0]?.idx ?? Number.POSITIVE_INFINITY;
+
+  for (const event of events) {
+    const snapshot = normalizeTodoSnapshot(event);
+    if (!snapshot) {
+      continue;
+    }
+
+    if (!snapshot.items.some((item) => item.status === "in_progress")) {
+      continue;
+    }
+
+    if (payloadStringOrNull(event.payload.anchorToolUseId)?.trim()) {
+      continue;
+    }
+
+    if (snapshot.idx <= firstTodoWriteIdx) {
+      continue;
+    }
+
+    lateTodoUpdates.push({ eventId: event.id, idx: snapshot.idx });
+  }
+
+  const anchorByEventId = new Map<string, number>();
+  for (let index = 0; index < lateTodoUpdates.length && index < todoWriteToolStarts.length; index += 1) {
+    const todoUpdate = lateTodoUpdates[index];
+    const toolStart = todoWriteToolStarts[index];
+    if (!todoUpdate || !toolStart) {
+      continue;
+    }
+
+    anchorByEventId.set(todoUpdate.eventId, toolStart.idx);
+  }
+
+  return anchorByEventId;
+}
+
+function resolveTodoEventAnchorIdx(
+  event: ChatEvent,
+  fallbackIdx: number,
+  toolStartIdxByUseId: Map<string, number>,
+  lateTodoProgressAnchorByEventId: Map<string, number>,
+): number {
+  const anchorToolUseId = payloadStringOrNull(event.payload.anchorToolUseId)?.trim();
+  if (anchorToolUseId) {
+    const explicitAnchorIdx = toolStartIdxByUseId.get(anchorToolUseId);
+    if (explicitAnchorIdx != null) {
+      return explicitAnchorIdx;
+    }
+  }
+
+  const inferredAnchorIdx = lateTodoProgressAnchorByEventId.get(event.id);
+  if (inferredAnchorIdx != null) {
+    return inferredAnchorIdx;
+  }
+
+  return fallbackIdx;
+}
+
+export function extractTodoListGroups(events: ChatEvent[], anchorEvents: ChatEvent[] = events): TodoListGroup[] {
+  const toolStartIdxByUseId = buildToolStartIdxByUseId(anchorEvents);
+  const lateTodoProgressAnchorByEventId = buildLateTodoProgressAnchorByEventId(anchorEvents);
   const groups = new Map<string, TodoListGroup>();
 
   for (const event of events) {
@@ -94,6 +191,12 @@ export function extractTodoListGroups(events: ChatEvent[]): TodoListGroup[] {
     }
 
     const key = todoGroupKey(snapshot.agent, snapshot.groupId);
+    const anchorIdx = resolveTodoEventAnchorIdx(
+      event,
+      snapshot.idx,
+      toolStartIdxByUseId,
+      lateTodoProgressAnchorByEventId,
+    );
     const existing = groups.get(key);
     if (!existing) {
       groups.set(key, {
@@ -103,8 +206,8 @@ export function extractTodoListGroups(events: ChatEvent[]): TodoListGroup[] {
         explanation: snapshot.explanation,
         status: resolveTodoListStatus(snapshot.items),
         items: snapshot.items,
-        startIdx: snapshot.idx,
-        anchorIdx: snapshot.idx,
+        startIdx: anchorIdx,
+        anchorIdx,
         createdAt: snapshot.createdAt,
         eventIds: new Set<string>([snapshot.eventId]),
       });
@@ -120,9 +223,11 @@ export function extractTodoListGroups(events: ChatEvent[]): TodoListGroup[] {
   return [...groups.values()].sort((a, b) => a.startIdx - b.startIdx);
 }
 
-export function extractTodoProgressGroups(events: ChatEvent[]): TodoProgressGroup[] {
+export function extractTodoProgressGroups(events: ChatEvent[], anchorEvents: ChatEvent[] = events): TodoProgressGroup[] {
   const progressGroups: TodoProgressGroup[] = [];
   const previousActiveTodoByGroup = new Map<string, string>();
+  const toolStartIdxByUseId = buildToolStartIdxByUseId(anchorEvents);
+  const lateTodoProgressAnchorByEventId = buildLateTodoProgressAnchorByEventId(anchorEvents);
 
   for (const event of events) {
     const snapshot = normalizeTodoSnapshot(event);
@@ -141,6 +246,13 @@ export function extractTodoProgressGroups(events: ChatEvent[]): TodoProgressGrou
       continue;
     }
 
+    const anchorIdx = resolveTodoEventAnchorIdx(
+      event,
+      snapshot.idx,
+      toolStartIdxByUseId,
+      lateTodoProgressAnchorByEventId,
+    );
+
     previousActiveTodoByGroup.set(groupKey, activeKey);
     progressGroups.push({
       id: `${groupKey}:${snapshot.eventId}`,
@@ -148,8 +260,8 @@ export function extractTodoProgressGroups(events: ChatEvent[]): TodoProgressGrou
       agent: snapshot.agent,
       todoId: activeTodo.id ?? null,
       content: activeTodo.content,
-      startIdx: snapshot.idx,
-      anchorIdx: snapshot.idx,
+      startIdx: anchorIdx,
+      anchorIdx,
       createdAt: snapshot.createdAt,
       eventIds: new Set<string>([snapshot.eventId]),
     });

@@ -1,5 +1,7 @@
 import { existsSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildClaudeRuntimeEnv } from "../claude/shellEnv.js";
 import { isPtyIoError, spawnPty, type PtyProcess } from "./ptyBackend.js";
 
 const MAX_SCROLLBACK_BYTES = 50_000;
@@ -33,9 +35,82 @@ function buildShellArgs(shell: string | undefined, options?: SpawnOptions): stri
         return buildExecShellArgs(shell, options?.command ?? "");
     }
 
-    // Match macOS Terminal/iTerm login-shell behavior so PATH and shell init files
-    // resolve tools the same way as an interactive terminal window.
-    return ["-l"];
+    const shellName = shell ? basename(shell) : "";
+    if (process.platform !== "win32" && shellName === "zsh") {
+        return ["-o", "nopromptsp"];
+    }
+
+    return [];
+}
+
+const TERMINAL_ENV_STRIP_EXACT = new Set([
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "CURSOR_AGENT",
+    "CURSOR_INVOKED_AS",
+    "CURSOR_ASKPASS_SECRET",
+    "CURSOR_ASKPASS_SOCKET",
+    "ZED_TERM",
+]);
+
+const TERMINAL_ENV_STRIP_PREFIXES = ["CURSOR_"];
+
+function stripAgentEnvForTerminal(env: Record<string, string>): void {
+    for (const key of Object.keys(env)) {
+        if (
+            TERMINAL_ENV_STRIP_EXACT.has(key)
+            || TERMINAL_ENV_STRIP_PREFIXES.some((prefix) => key.startsWith(prefix))
+        ) {
+            delete env[key];
+        }
+    }
+}
+
+function resolveTerminalZdotdir(): string | undefined {
+    if (process.platform === "win32") {
+        return undefined;
+    }
+
+    // Desktop sidecar sets WEB_DIST_PATH to runtime-bundle/web-dist; avoid existsSync on the
+    // app bundle path (can fail under sandbox) so ZDOTDIR is always wired for packaged builds.
+    const webDistPath = process.env.WEB_DIST_PATH?.trim();
+    if (webDistPath) {
+        return join(dirname(webDistPath), "terminal-zsh");
+    }
+
+    const moduleDir = dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+        join(moduleDir, "../../terminal-zsh"),
+        join(process.cwd(), "terminal-zsh"),
+    ];
+
+    for (const candidate of candidates) {
+        if (existsSync(join(candidate, ".zshrc"))) {
+            return candidate;
+        }
+    }
+
+    return undefined;
+}
+
+function buildTerminalEnv(): Record<string, string> {
+    const merged = buildClaudeRuntimeEnv(process.env) as Record<string, string>;
+    // Cursor/Zed/agent parents set NO_COLOR=1; shell rc often re-applies when CURSOR_AGENT leaks in.
+    stripAgentEnvForTerminal(merged);
+
+    const terminalZdotdir = resolveTerminalZdotdir();
+    if (terminalZdotdir) {
+        merged.ZDOTDIR = terminalZdotdir;
+    }
+
+    return {
+        ...merged,
+        TERM: "xterm-256color",
+        COLORTERM: "truecolor",
+        FORCE_COLOR: "1",
+        CLICOLOR_FORCE: "1",
+        TERM_PROGRAM: "CodeSymphony",
+    };
 }
 
 function normalizeCwd(cwd?: string): string | undefined {
@@ -96,11 +171,7 @@ export function createTerminalService() {
                             cols: 80,
                             rows: 24,
                             cwd: candidateCwd,
-                            env: {
-                                ...process.env,
-                                TERM: "xterm-256color",
-                                COLORTERM: "truecolor",
-                            } as Record<string, string>,
+                            env: buildTerminalEnv(),
                         }),
                         resolvedCwd: candidateCwd,
                     };

@@ -1578,7 +1578,7 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Started to-do");
+    expect(container.textContent).toContain("Started to-do:");
     expect(container.textContent).toContain("Render todo row");
     expect(container.textContent).not.toContain("Codex");
   });

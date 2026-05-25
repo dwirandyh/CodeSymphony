@@ -107,3 +107,18 @@ The web app has a client-to-server debug logging system for diagnosing render lo
 - **Browser extract**: `copy(JSON.stringify(window.__CS_DEBUG_LOG__.slice(0, 200), null, 2))`
 
 To debug a new issue: add `debugLog("source", "message", data)` calls at relevant state-transition points, reproduce, then read `debug.log`.
+
+## Terminal PTY Architecture
+
+`apps/runtime/src/services/ptyBackend.ts` mirrors t3code terminal PTY selection:
+
+1. **Bun native PTY** — when running under Bun, uses `Bun.spawn` with `terminal: { cols, rows, data }` (real PTY via Bun runtime, not the `bun-pty` npm package).
+2. **node-pty** — when running under Node (e.g. Vitest). Fixes spawn-helper permissions in Tauri bundles first.
+
+### Terminal Frontend (Web)
+
+`apps/web/src/components/workspace/TerminalTab.tsx` — xterm.js React component.
+- Terminal input goes through xterm `onData` → raw WebSocket text frames.
+- **Critical**: The xterm textarea must be focused for keyboard input. `runtime.focus()` is called on mount at line 459. Add `onMouseDown` handler on root div to refocus on click (line 522).
+- Search overlay (`Cmd+F`) steals focus — `closeSearch()` refocuses terminal.
+- The xterm textarea is rendered offscreen (`x=-159684`) via xterm's hidden textarea hack — this is normal.
