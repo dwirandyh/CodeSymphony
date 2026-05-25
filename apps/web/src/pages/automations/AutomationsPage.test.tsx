@@ -126,6 +126,33 @@ vi.mock("../../components/ui/popover", () => ({
   }) => <div {...props}>{children}</div>,
 }));
 
+vi.mock("./AutomationPromptEditor", () => ({
+  AutomationPromptEditor: ({
+    value,
+    onChange,
+    placeholder,
+    className,
+    disabled,
+    testId,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    placeholder: string;
+    className?: string;
+    disabled?: boolean;
+    testId?: string;
+  }) => (
+    <textarea
+      data-testid={testId}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      className={className}
+      disabled={disabled}
+    />
+  ),
+}));
+
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
@@ -360,7 +387,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 
   useRepositoriesMock.useRepositories.mockReturnValue({
     data: [makeRepository()],
@@ -394,6 +421,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  queryClient.clear();
   container.remove();
   vi.clearAllMocks();
 });

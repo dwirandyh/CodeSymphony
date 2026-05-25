@@ -109,8 +109,8 @@ describe("deviceService.utils", () => {
 
   it("detects ad-hoc nested binary signatures from codesign output", () => {
     expect(parseCodesignSignatureState([
-      "Executable=/Applications/CodeSymphony.app/Contents/MacOS/node",
-      "Identifier=node",
+      "Executable=/Applications/CodeSymphony.app/Contents/MacOS/bun-aarch64-apple-darwin",
+      "Identifier=bun-aarch64-apple-darwin",
       "Signature=adhoc",
       "TeamIdentifier=not set",
     ].join("\n"))).toBe("adhoc");
@@ -120,7 +120,7 @@ describe("deviceService.utils", () => {
     expect(annotateIosSimulatorBridgeTccError(
       "The user declined TCCs for application, window, display capture",
       {
-        bundledRuntimePath: "/Applications/CodeSymphony.app/Contents/MacOS/node",
+        bundledRuntimePath: "/Applications/CodeSymphony.app/Contents/MacOS/bun-aarch64-apple-darwin",
         bundledRuntimeSignature: "adhoc",
       },
     )).toContain("ad-hoc signed");

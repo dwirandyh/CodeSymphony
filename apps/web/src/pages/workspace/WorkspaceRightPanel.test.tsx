@@ -121,8 +121,8 @@ describe("WorkspaceRightPanel", () => {
     expect(nav.parentElement.className).not.toContain("hidden lg:flex");
   });
 
-  it("shields panel interactions while the right panel is being resized", () => {
-    act(() => {
+  it("shields panel interactions while the right panel is being resized", async () => {
+    await act(async () => {
       root.render(
         <WorkspaceRightPanel
           rightPanelId="device"
@@ -153,6 +153,7 @@ describe("WorkspaceRightPanel", () => {
           onOpenReadFile={() => {}}
         />,
       );
+      await Promise.resolve();
     });
 
     const resizeHandle = container.querySelector('button[aria-label="Resize right panel"]');

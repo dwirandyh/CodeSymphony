@@ -952,7 +952,7 @@ describe("SettingsDialog", () => {
         id: "r2",
         name: "other-repo",
         defaultBranch: "develop",
-        runScript: ["pnpm test"],
+        runScript: ["bun test"],
       }),
     ]);
     await flushEffects();

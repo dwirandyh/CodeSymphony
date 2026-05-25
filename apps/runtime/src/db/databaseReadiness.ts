@@ -45,7 +45,7 @@ export async function assertDatabaseReady(prisma: PrismaClient): Promise<void> {
   } catch (error) {
     if (isPrismaSchemaNotReadyError(error)) {
       throw new DatabaseNotReadyError(
-        `Runtime database schema is not initialized or is out of date: ${describeSchemaError(error)}. Run \`pnpm db:migrate\` before starting the runtime.`,
+        `Runtime database schema is not initialized or is out of date: ${describeSchemaError(error)}. Run \`bun run db:migrate\` before starting the runtime.`,
         { cause: error },
       );
     }

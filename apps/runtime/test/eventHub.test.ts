@@ -87,6 +87,27 @@ describe("eventHub", () => {
       const indices = events.map(e => e.idx).sort((a, b) => a - b);
       expect(indices).toEqual([0, 1, 2, 3, 4]);
     });
+
+    it("recovers idx allocation when two hubs emit to the same thread", async () => {
+      const leftHub = createEventHub(prisma);
+      const rightHub = createEventHub(prisma);
+      const threadId = await seedThread();
+
+      const events = await Promise.all([
+        leftHub.emit(threadId, "chat.completed", { source: "left" }),
+        rightHub.emit(threadId, "chat.completed", { source: "right" }),
+      ]);
+
+      const indices = events.map((event) => event.idx).sort((a, b) => a - b);
+      const persisted = await prisma.chatEvent.findMany({
+        where: { threadId },
+        orderBy: { idx: "asc" },
+        select: { idx: true },
+      });
+
+      expect(indices).toEqual([0, 1]);
+      expect(persisted.map((event) => event.idx)).toEqual([0, 1]);
+    });
   });
 
   describe("list", () => {

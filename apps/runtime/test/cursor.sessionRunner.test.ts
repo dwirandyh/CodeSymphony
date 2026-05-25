@@ -371,6 +371,432 @@ describe("cursor session runner", () => {
     });
   });
 
+  it("emits todo updates from Cursor TodoWrite tool results", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "todo_1",
+          title: "TodoWrite",
+          status: "pending",
+          _meta: {
+            args: {
+              todos: [
+                { id: "update-timestamp", content: "Update README timestamp", status: "completed" },
+                { id: "remove-last-edited", content: "Remove Last Edited", status: "completed" },
+                { id: "verify-diff", content: "Verify diff", status: "in_progress" },
+              ],
+            },
+          },
+          content: [],
+        } as never);
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "todo_1",
+          title: "TodoWrite",
+          status: "completed",
+          rawOutput: {
+            success: {
+              todos: [
+                { id: "update-timestamp", content: "Update README timestamp", status: "TODO_STATUS_COMPLETED" },
+                { id: "remove-last-edited", content: "Remove Last Edited", status: "TODO_STATUS_COMPLETED" },
+                { id: "verify-diff", content: "Verify diff", status: "TODO_STATUS_IN_PROGRESS" },
+              ],
+            },
+          },
+          content: [],
+        } as never);
+
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "todo_2",
+          title: "TodoWrite",
+          status: "pending",
+          rawInput: {
+            merge: true,
+            todos: [
+              { id: "verify-diff", content: "Verify diff", status: "completed" },
+            ],
+          },
+          content: [],
+        } as never);
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "todo_2",
+          title: "TodoWrite",
+          status: "completed",
+          rawOutput: {
+            output: {
+              success: {
+                todos: [
+                  { id: "update-timestamp", content: "Update README timestamp", status: "TODO_STATUS_COMPLETED" },
+                  { id: "remove-last-edited", content: "Remove Last Edited", status: "TODO_STATUS_COMPLETED" },
+                  { id: "verify-diff", content: "Verify diff", status: "TODO_STATUS_COMPLETED" },
+                ],
+              },
+            },
+          },
+          content: [],
+        } as never);
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const todoUpdates: Array<Record<string, unknown>> = [];
+
+    await runCursorWithStreaming({
+      prompt: "Implement approved plan.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onTodoUpdate: (event) => {
+        todoUpdates.push(event as unknown as Record<string, unknown>);
+      },
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(todoUpdates).toHaveLength(2);
+    expect(todoUpdates[0]?.groupId).toBe(todoUpdates[1]?.groupId);
+    expect(todoUpdates[0]).toMatchObject({
+      agent: "cursor",
+      explanation: null,
+      items: [
+        { id: "update-timestamp", content: "Update README timestamp", status: "completed" },
+        { id: "remove-last-edited", content: "Remove Last Edited", status: "completed" },
+        { id: "verify-diff", content: "Verify diff", status: "in_progress" },
+      ],
+    });
+    expect(todoUpdates[1]).toMatchObject({
+      agent: "cursor",
+      items: [
+        { id: "update-timestamp", content: "Update README timestamp", status: "completed" },
+        { id: "remove-last-edited", content: "Remove Last Edited", status: "completed" },
+        { id: "verify-diff", content: "Verify diff", status: "completed" },
+      ],
+    });
+  });
+
+  it("emits todo updates from Cursor Update TODOs tool presentation", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "tool_c03e64e3-1b7e-4c92-ab61-be9a92fe83e",
+          title: "Update TODOs",
+          status: "pending",
+          rawInput: {
+            _toolName: "updateTodos",
+            merge: true,
+            todos: [
+              { id: "read-timestamp", status: "completed" },
+              { id: "update-readme", status: "in_progress" },
+            ],
+          },
+          content: [],
+        } as never);
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tool_c03e64e3-1b7e-4c92-ab61-be9a92fe83e",
+          title: "Update TODOs",
+          status: "completed",
+          rawOutput: {
+            success: {
+              todos: [
+                { id: "read-timestamp", content: "Ambil waktu lokal saat implementasi", status: "TODO_STATUS_COMPLETED" },
+                { id: "update-readme", content: "Ganti baris **Last Updated:** di README.md", status: "TODO_STATUS_IN_PROGRESS" },
+                { id: "verify-readme", content: "Verifikasi README.md menampilkan timestamp terbaru", status: "TODO_STATUS_PENDING" },
+              ],
+            },
+          },
+          content: [],
+        } as never);
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const todoUpdates: Array<Record<string, unknown>> = [];
+    const toolFinishes: Array<Record<string, unknown>> = [];
+
+    await runCursorWithStreaming({
+      prompt: "Implement approved plan.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: (event) => {
+        toolFinishes.push(event as unknown as Record<string, unknown>);
+      },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onTodoUpdate: (event) => {
+        todoUpdates.push(event as unknown as Record<string, unknown>);
+      },
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(todoUpdates).toHaveLength(1);
+    expect(todoUpdates[0]).toMatchObject({
+      agent: "cursor",
+      explanation: null,
+      items: [
+        { id: "read-timestamp", content: "Ambil waktu lokal saat implementasi", status: "completed" },
+        { id: "update-readme", content: "Ganti baris **Last Updated:** di README.md", status: "in_progress" },
+        { id: "verify-readme", content: "Verifikasi README.md menampilkan timestamp terbaru", status: "pending" },
+      ],
+    });
+    expect(toolFinishes.map((entry) => entry.toolName)).toEqual(["Update TODOs"]);
+  });
+
+  it("emits todo updates from Cursor Update TODOs highLevelToolCallResult meta", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "tool_0f260d1f-881f-42ce-99e4-d9c045632fe",
+          title: "Update TODOs",
+          status: "pending",
+          rawInput: { _toolName: "updateTodos", merge: true, todos: [{ id: "update-timestamp", status: "completed" }] },
+          content: [],
+        } as never);
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tool_0f260d1f-881f-42ce-99e4-d9c045632fe",
+          title: "Update TODOs",
+          status: "completed",
+          _meta: {
+            highLevelToolCallResult: {
+              output: {
+                success: {
+                  todos: [
+                    {
+                      id: "update-timestamp",
+                      content: "Update baris **Last Updated:** di README.md",
+                      status: "TODO_STATUS_COMPLETED",
+                    },
+                  ],
+                },
+              },
+              isError: false,
+            },
+          },
+          content: [],
+        } as never);
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const todoUpdates: Array<Record<string, unknown>> = [];
+
+    await runCursorWithStreaming({
+      prompt: "Implement approved plan.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onTodoUpdate: (event) => {
+        todoUpdates.push(event as unknown as Record<string, unknown>);
+      },
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(todoUpdates).toHaveLength(1);
+    expect(todoUpdates[0]).toMatchObject({
+      agent: "cursor",
+      items: [
+        { id: "update-timestamp", content: "Update baris **Last Updated:** di README.md", status: "completed" },
+      ],
+    });
+  });
+
+  it("emits todo updates from Cursor Update TODOs tool result content text", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "tool_0f260d1f-881f-42ce-99e4-d9c045632fe",
+          title: "Update TODOs",
+          status: "pending",
+          rawInput: { _toolName: "updateTodos" },
+          content: [],
+        } as never);
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tool_0f260d1f-881f-42ce-99e4-d9c045632fe",
+          title: "Update TODOs",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Successfully updated TODOs.\n\nHere are the latest contents of your todo list:\n- **COMPLETED**: Update baris `**Last Updated:**` di README.md ke waktu saat implementasi (format YYYY-MM-DD HH:MM) (id: update-timestamp)",
+              },
+            },
+          ],
+        } as never);
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const todoUpdates: Array<Record<string, unknown>> = [];
+
+    await runCursorWithStreaming({
+      prompt: "Implement approved plan.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onTodoUpdate: (event) => {
+        todoUpdates.push(event as unknown as Record<string, unknown>);
+      },
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(todoUpdates).toHaveLength(1);
+    expect(todoUpdates[0]).toMatchObject({
+      agent: "cursor",
+      items: [
+        {
+          id: "update-timestamp",
+          content: "Update baris `**Last Updated:**` di README.md ke waktu saat implementasi (format YYYY-MM-DD HH:MM)",
+          status: "completed",
+        },
+      ],
+    });
+  });
+
+  it("preserves TodoWrite args when completed update strips rawInput to _toolName", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "tool_927699af-97db-43c1-a96c-e6b657807d6",
+          title: "Update TODOs",
+          status: "pending",
+          rawInput: {
+            _toolName: "updateTodos",
+            merge: true,
+            todos: [
+              {
+                id: "update-timestamp",
+                content: "Edit README.md line 20: **Last Updated:** to current local datetime (YYYY-MM-DD HH:MM)",
+                status: "completed",
+              },
+              {
+                id: "verify-diff",
+                content: "Confirm git diff shows only the timestamp line changed",
+                status: "completed",
+              },
+            ],
+          },
+          content: [],
+        } as never);
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tool_927699af-97db-43c1-a96c-e6b657807d6",
+          title: "Update TODOs",
+          status: "in_progress",
+          content: [],
+        } as never);
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tool_927699af-97db-43c1-a96c-e6b657807d6",
+          title: "Update TODOs",
+          status: "completed",
+          rawInput: {
+            _toolName: "updateTodos",
+          },
+          content: [],
+        } as never);
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const todoUpdates: Array<Record<string, unknown>> = [];
+
+    await runCursorWithStreaming({
+      prompt: "Implement approved plan.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onTodoUpdate: (event) => {
+        todoUpdates.push(event as unknown as Record<string, unknown>);
+      },
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(todoUpdates).toHaveLength(1);
+    expect(todoUpdates[0]).toMatchObject({
+      agent: "cursor",
+      items: [
+        {
+          id: "update-timestamp",
+          content: "Edit README.md line 20: **Last Updated:** to current local datetime (YYYY-MM-DD HH:MM)",
+          status: "completed",
+        },
+        {
+          id: "verify-diff",
+          content: "Confirm git diff shows only the timestamp line changed",
+          status: "completed",
+        },
+      ],
+    });
+  });
+
   it("enriches Cursor terminal tool calls from rawOutput instead of the generic Terminal placeholder", async () => {
     const spawnMock = vi.fn(() => createMockCursorChild({
       onPrompt: async ({ agent, sessionId }) => {
@@ -445,6 +871,120 @@ describe("cursor session runner", () => {
       },
     ]);
     expect(toolFinishes[0]?.command).toBeUndefined();
+  });
+
+  it("preserves Cursor vendor-shaped tool args and raw text results", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "read_1",
+          title: "Read File",
+          kind: "read",
+          status: "pending",
+          _meta: {
+            args: {
+              path: "/tmp/project/README.md",
+            },
+          },
+          content: [],
+        } as never);
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "read_1",
+          status: "completed",
+          rawOutput: {
+            content: "# README",
+          },
+          content: [],
+        });
+
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "grep_1",
+          title: "Grep",
+          kind: "search",
+          status: "pending",
+          _meta: {
+            args: {
+              pattern: "Last Updated",
+              path: "/tmp/project",
+            },
+          },
+          content: [],
+        } as never);
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "grep_1",
+          status: "completed",
+          rawOutput: {
+            result: "./README.md\n  20:**Last Updated:** 2026-04-02 16:33",
+          },
+          content: [],
+        });
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const toolStarts: Array<Record<string, unknown>> = [];
+    const toolFinishes: Array<Record<string, unknown>> = [];
+
+    await runCursorWithStreaming({
+      prompt: "Inspect README.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: (event) => {
+        toolStarts.push(event as unknown as Record<string, unknown>);
+      },
+      onToolOutput: () => {},
+      onToolFinished: (event) => {
+        toolFinishes.push(event as unknown as Record<string, unknown>);
+      },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(toolStarts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolUseId: "read_1",
+        toolName: "Read",
+        editTarget: "/tmp/project/README.md",
+      }),
+      expect.objectContaining({
+        toolUseId: "grep_1",
+        toolName: "Grep",
+        searchParams: "Last Updated",
+      }),
+    ]));
+    expect(toolFinishes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        precedingToolUseIds: ["read_1"],
+        summary: "Read /tmp/project/README.md",
+        toolInput: {
+          path: "/tmp/project/README.md",
+        },
+        output: "# README",
+      }),
+      expect.objectContaining({
+        precedingToolUseIds: ["grep_1"],
+        summary: "Searched /tmp/project",
+        toolInput: {
+          pattern: "Last Updated",
+          path: "/tmp/project",
+        },
+        searchParams: "Last Updated",
+        output: "./README.md\n  20:**Last Updated:** 2026-04-02 16:33",
+      }),
+    ]));
   });
 
   it("normalizes Cursor MCP and web-search tool calls for the timeline", async () => {
@@ -837,6 +1377,65 @@ describe("cursor session runner", () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
+  it("routes reused Cursor ACP connection updates to the current run callbacks", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId, promptText }) => {
+        await agent.emitText(sessionId, `reply:${promptText}`);
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const firstChunks: string[] = [];
+    const secondChunks: string[] = [];
+
+    const first = await runCursorWithStreaming({
+      prompt: "first",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: (chunk) => {
+        firstChunks.push(chunk);
+      },
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    await runCursorWithStreaming({
+      prompt: "second",
+      sessionId: first.sessionId,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: (chunk) => {
+        secondChunks.push(chunk);
+      },
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(firstChunks).toHaveLength(1);
+    expect(secondChunks).toHaveLength(1);
+    expect(firstChunks[0]).toContain("User request:\nfirst");
+    expect(secondChunks[0]).toContain("User request:\nsecond");
+  });
+
   it("rejects unsupported provider overrides with an actionable Cursor-specific error", async () => {
     const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
 
@@ -1038,6 +1637,33 @@ describe("cursor session runner", () => {
     expect(__testing.stripCursorModelVariant("gpt-5.4[context=272k,reasoning=medium]")).toBe("gpt-5.4");
     expect(__testing.cursorAcpSupportsQuestionElicitation).toBe(true);
     expect(__testing.cursorAcpSupportsSubagentLifecycle).toBe(false);
+
+    expect(__testing.parseCursorPlanTodosFromExecutePrompt(
+      "The user has approved the following plan. Please execute it now:\n\n1. Update README timestamp\n2. Verify diff (in progress)",
+    )).toEqual([
+      { id: null, content: "Update README timestamp", status: "pending" },
+      { id: null, content: "Verify diff", status: "in_progress" },
+    ]);
+
+    expect(__testing.extractTodoItemsFromCursorStoreRecord({
+      role: "tool",
+      id: "tool_abc",
+      providerOptions: {
+        cursor: {
+          highLevelToolCallResult: {
+            output: {
+              success: {
+                todos: [
+                  { id: "todo-1", content: "Ship it", status: "TODO_STATUS_COMPLETED" },
+                ],
+              },
+            },
+          },
+        },
+      },
+    }, "tool_abc", [])).toEqual([
+      { id: "todo-1", content: "Ship it", status: "completed" },
+    ]);
   });
 
   it("sends native image prompt blocks when Cursor advertises image prompt support", async () => {

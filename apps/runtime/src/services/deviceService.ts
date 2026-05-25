@@ -222,24 +222,24 @@ function quotePosixShellArg(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function buildNodeEntryCommand(nodePath: string, entryPath: string, envEntries: Record<string, string>): string {
+function buildRuntimeEntryCommand(runtimePath: string, entryPath: string, envEntries: Record<string, string>): string {
   const envAssignments = Object.entries(envEntries)
     .map(([key, value]) => `${key}=${quotePosixShellArg(value)}`)
     .join(" ");
   const prefix = envAssignments.length > 0 ? `${envAssignments} ` : "";
-  return `${prefix}${quotePosixShellArg(nodePath)} ${quotePosixShellArg(entryPath)}`;
+  return `${prefix}${quotePosixShellArg(runtimePath)} ${quotePosixShellArg(entryPath)}`;
 }
 
 function resolvePackagedAndroidSidecarCommand(): string {
   const entryPath = fileURLToPath(new URL("../../android-ws-scrcpy/dist/index.js", import.meta.url));
   const configPath = fileURLToPath(new URL("../../android-ws-scrcpy/ws-scrcpy.config.yaml", import.meta.url));
-  const nodePath = process.execPath;
+  const runtimePath = process.execPath;
 
-  if (!existsSync(entryPath) || !existsSync(configPath) || !existsSync(nodePath)) {
+  if (!existsSync(entryPath) || !existsSync(configPath) || !existsSync(runtimePath)) {
     return "";
   }
 
-  return buildNodeEntryCommand(nodePath, entryPath, {
+  return buildRuntimeEntryCommand(runtimePath, entryPath, {
     WS_SCRCPY_CONFIG: configPath,
   });
 }
@@ -442,9 +442,9 @@ function createIosSimulatorBridgeSpawnSpec(udid: string): {
   return { ...localSpec, shell: false };
 }
 
-function resolveBundledRuntimeNodePath(): string | null {
+function resolveBundledRuntimeBinaryPath(): string | null {
   const normalizedExecPath = process.execPath.trim();
-  if (!normalizedExecPath.endsWith("/Contents/MacOS/node")) {
+  if (!/\/Contents\/MacOS\/(?:bun(?:-[^/]+)?|node(?:-[^/]+)?)$/.test(normalizedExecPath)) {
     return null;
   }
 
@@ -467,7 +467,7 @@ async function inspectCodesignSignatureState(targetPath: string): Promise<"adhoc
 }
 
 async function annotateIosSimulatorBridgeError(message: string): Promise<string> {
-  const bundledRuntimePath = resolveBundledRuntimeNodePath();
+  const bundledRuntimePath = resolveBundledRuntimeBinaryPath();
   if (!bundledRuntimePath) {
     return message;
   }

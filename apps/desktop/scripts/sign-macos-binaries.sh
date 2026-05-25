@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_PATH="${1:-}"
 SIGNING_IDENTITY="${CODESYMPHONY_MACOS_SIGN_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
 ALLOW_ADHOC_SIGNING="${CODESYMPHONY_ALLOW_ADHOC_SIGNING:-0}"
-NODE_ENTITLEMENTS="${SCRIPT_DIR}/../src-tauri/entitlements/node.plist"
+JS_RUNTIME_ENTITLEMENTS="${SCRIPT_DIR}/../src-tauri/entitlements/node.plist"
 SIMULATOR_BRIDGE_ENTITLEMENTS="${SCRIPT_DIR}/../src-tauri/entitlements/simulator-bridge.plist"
 
 if [[ -z "${TARGET_PATH}" ]]; then
@@ -44,8 +44,8 @@ sign_macho() {
   fi
 
   filename="$(basename "${path}")"
-  if [[ "${filename}" == "node" || "${filename}" == node-* ]]; then
-    entitlements_path="${NODE_ENTITLEMENTS}"
+  if [[ "${filename}" == "bun" || "${filename}" == bun-* || "${filename}" == "node" || "${filename}" == node-* ]]; then
+    entitlements_path="${JS_RUNTIME_ENTITLEMENTS}"
   elif [[ "${filename}" == "SimulatorBridge" ]]; then
     entitlements_path="${SIMULATOR_BRIDGE_ENTITLEMENTS}"
   fi

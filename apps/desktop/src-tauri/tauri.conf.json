@@ -5,7 +5,7 @@
   "identifier": "com.codesymphony.app",
   "build": {
     "beforeDevCommand": "bash scripts/start-web-dev.sh",
-    "beforeBuildCommand": "pnpm --filter @codesymphony/web build",
+    "beforeBuildCommand": "bash scripts/build-web.sh",
     "devUrl": "http://127.0.0.1:5174",
     "frontendDist": "../../web/dist"
   },
@@ -39,7 +39,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/node"
+      "binaries/bun"
     ],
     "resources": [
       "runtime-bundle/**/*"

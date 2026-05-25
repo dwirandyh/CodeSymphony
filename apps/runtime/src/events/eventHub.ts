@@ -76,7 +76,6 @@ type ListenerMap = Map<string, Set<(event: ChatEvent) => void>>;
 type ThreadState = {
   nextIdx: number | null;
   nextIdxPromise: Promise<number> | null;
-  volatileEvents: Map<number, ChatEvent>;
 };
 
 export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
@@ -85,9 +84,6 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
 
   // Per-thread serial queue for idx allocation + listener delivery.
   const dispatchQueues = new Map<string, Promise<unknown>>();
-  // Per-thread serial queue for DB persistence ordering.
-  const persistenceQueues = new Map<string, Promise<unknown>>();
-
   function enqueueForThread<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
     const prev = dispatchQueues.get(threadId) ?? Promise.resolve();
     const next = prev.then(fn, fn);
@@ -105,7 +101,6 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
       state = {
         nextIdx: null,
         nextIdxPromise: null,
-        volatileEvents: new Map<number, ChatEvent>(),
       };
       threadStates.set(threadId, state);
     }
@@ -137,39 +132,47 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
     return idx;
   }
 
-  function schedulePersistence(threadId: string, event: ChatEvent): Promise<void> {
-    const state = getThreadState(threadId);
-    const previous = persistenceQueues.get(threadId) ?? Promise.resolve();
-    const next = previous.then(async () => {
-      await prisma.chatEvent.create({
-        data: {
-          id: event.id,
-          threadId,
-          idx: event.idx,
-          type: typeToDb[event.type],
-          payload: event.payload as PrismaNamespace.InputJsonValue,
-          createdAt: new Date(event.createdAt),
-        },
-      });
-      state.volatileEvents.delete(event.idx);
-      if (state.volatileEvents.size === 0 && state.nextIdx === null) {
-        threadStates.delete(threadId);
-      }
+  function isThreadIdxCollision(error: unknown): boolean {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+      return false;
+    }
+
+    const target = error.meta?.target;
+    return Array.isArray(target) && target.includes("threadId") && target.includes("idx");
+  }
+
+  async function persistEvent(threadId: string, event: ChatEvent): Promise<void> {
+    await prisma.chatEvent.create({
+      data: {
+        id: event.id,
+        threadId,
+        idx: event.idx,
+        type: typeToDb[event.type],
+        payload: event.payload as PrismaNamespace.InputJsonValue,
+        createdAt: new Date(event.createdAt),
+      },
     });
-    persistenceQueues.set(threadId, next);
-    next.then(
-      () => {
-        if (persistenceQueues.get(threadId) === next) {
-          persistenceQueues.delete(threadId);
+  }
+
+  async function persistEventWithIdxRetry(threadId: string, event: ChatEvent): Promise<void> {
+    const state = getThreadState(threadId);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await persistEvent(threadId, event);
+        return;
+      } catch (error) {
+        if (!isThreadIdxCollision(error)) {
+          throw error;
         }
-      },
-      () => {
-        if (persistenceQueues.get(threadId) === next) {
-          persistenceQueues.delete(threadId);
-        }
-      },
-    );
-    return next;
+
+        const nextIdx = await resolveInitialNextIdx(threadId);
+        state.nextIdx = nextIdx + 1;
+        event.idx = nextIdx;
+      }
+    }
+
+    await persistEvent(threadId, event);
   }
 
   async function emit(threadId: string, type: ChatEventType, payload: Record<string, unknown>): Promise<ChatEvent> {
@@ -184,19 +187,10 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
         createdAt: new Date().toISOString(),
       };
 
-      const state = getThreadState(threadId);
-      state.volatileEvents.set(event.idx, event);
+      await persistEventWithIdxRetry(threadId, event);
 
       const threadListeners = listeners.get(threadId);
       threadListeners?.forEach((listener) => listener(event));
-
-      const persistence = schedulePersistence(threadId, event);
-      if (type === "message.delta") {
-        void persistence.catch(() => {});
-        return event;
-      }
-
-      await persistence;
       return event;
     });
   }
@@ -210,22 +204,7 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
         return mapped ? [mapped] : [];
       });
 
-      const state = threadStates.get(threadId);
-      if (!state || state.volatileEvents.size === 0) {
-        return mappedDbEvents;
-      }
-
-      const seenIdx = new Set(mappedDbEvents.map((event) => event.idx));
-      const volatileEvents = Array.from(state.volatileEvents.values())
-        .filter((event) => (typeof afterIdx === "number" ? event.idx > afterIdx : true))
-        .filter((event) => !seenIdx.has(event.idx))
-        .sort((left, right) => left.idx - right.idx);
-
-      if (volatileEvents.length === 0) {
-        return mappedDbEvents;
-      }
-
-      return [...mappedDbEvents, ...volatileEvents].sort((left, right) => left.idx - right.idx);
+      return mappedDbEvents;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientUnknownRequestError) {
         return [];

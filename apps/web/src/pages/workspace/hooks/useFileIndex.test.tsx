@@ -31,26 +31,28 @@ function TestComponent({ worktreeId }: { worktreeId: string | null }) {
 }
 
 describe("useFileIndex", () => {
-  it("returns empty entries initially", () => {
+  it("returns empty entries initially", async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    act(() => {
+    await act(async () => {
       root.render(
         <QueryClientProvider client={qc}>
           <TestComponent worktreeId="w1" />
         </QueryClientProvider>
       );
+      await Promise.resolve();
     });
     expect(container.textContent).toMatch(/loading|count:\d+/);
   });
 
-  it("returns empty entries for null worktreeId", () => {
+  it("returns empty entries for null worktreeId", async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    act(() => {
+    await act(async () => {
       root.render(
         <QueryClientProvider client={qc}>
           <TestComponent worktreeId={null} />
         </QueryClientProvider>
       );
+      await Promise.resolve();
     });
     expect(container.textContent).toBeTruthy();
   });

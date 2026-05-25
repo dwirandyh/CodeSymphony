@@ -418,15 +418,20 @@ describe("usePendingGates", () => {
       }));
       render([makeEvent(0, "permission.requested", { requestId: "req-1", toolName: "Bash" })]);
 
-      const firstCall = hookResult.resolvePermission("req-1", "deny");
-      const secondCall = hookResult.resolvePermission("req-1", "deny");
+      let firstCall: Promise<void>;
+      let secondCall: Promise<void>;
+      await act(async () => {
+        firstCall = hookResult.resolvePermission("req-1", "deny");
+        secondCall = hookResult.resolvePermission("req-1", "deny");
+        await Promise.resolve();
+      });
 
       expect(mockResolvePermission).toHaveBeenCalledTimes(1);
       const resolvePending = release as (() => void) | null;
       resolvePending?.();
 
       await act(async () => {
-        await Promise.all([firstCall, secondCall]);
+        await Promise.all([firstCall!, secondCall!]);
       });
 
       expect(mockResolvePermission).toHaveBeenCalledTimes(1);

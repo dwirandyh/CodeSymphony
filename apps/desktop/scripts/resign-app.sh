@@ -37,7 +37,7 @@ fi
 if [[ -d "${APP_MACOS_DIR}" ]]; then
   while IFS= read -r -d '' path; do
     bash "${SIGN_MACOS_BINARIES_SCRIPT}" "${path}"
-  done < <(find "${APP_MACOS_DIR}" -maxdepth 1 -type f \( -name "node" -o -name "node-*" \) -print0)
+  done < <(find "${APP_MACOS_DIR}" -maxdepth 1 -type f \( -name "bun" -o -name "bun-*" -o -name "node" -o -name "node-*" \) -print0)
 fi
 if [[ "${SIGNING_IDENTITY}" == "-" ]]; then
   codesign --force --sign "${SIGNING_IDENTITY}" "${APP_PATH}"

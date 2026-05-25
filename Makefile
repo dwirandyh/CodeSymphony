@@ -1,4 +1,4 @@
-PNPM ?= $(shell if command -v pnpm >/dev/null 2>&1; then printf '%s' pnpm; elif command -v npx >/dev/null 2>&1; then printf '%s' "npx pnpm"; else printf '%s' pnpm; fi)
+BUN ?= $(shell if command -v bun >/dev/null 2>&1; then printf '%s' bun; elif [ -x "$$HOME/.bun/bin/bun" ]; then printf '%s' "$$HOME/.bun/bin/bun"; else printf '%s' bun; fi)
 WORKTREE_DEV_STATE_DIR ?= .codesymphony/dev
 MACOS_APP_PATH ?= apps/desktop/src-tauri/target/release/bundle/macos/CodeSymphony.app
 MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT ?= apps/desktop/scripts/resolve-signing-identity.sh
@@ -41,30 +41,30 @@ help:
 	@echo "  If no identity is set, the desktop build scripts auto-detect a usable non-adhoc identity."
 
 install:
-	$(PNPM) install
+	$(BUN) install
 
 stop-dev:
 	-@pkill -f "turbo run dev --parallel --filter=@codesymphony/runtime --filter=@codesymphony/web"
-	-@pkill -f "pnpm --filter @codesymphony/runtime dev"
-	-@pkill -f "tsx watch --env-file .env src/index.ts"
-	-@pkill -f "tsx --env-file .env src/index.ts"
-	-@pkill -f "pnpm --filter @codesymphony/runtime start"
-	-@pkill -f "pnpm --filter @codesymphony/web dev"
-	-@pkill -f "pnpm --filter @codesymphony/desktop dev"
+	-@pkill -f "bun run --filter @codesymphony/runtime dev"
+	-@pkill -f "bun --watch --env-file=.env src/index.ts"
+	-@pkill -f "bun --env-file=.env src/index.ts"
+	-@pkill -f "bun run --filter @codesymphony/runtime start"
+	-@pkill -f "bun run --filter @codesymphony/web dev"
+	-@pkill -f "bun run --filter @codesymphony/desktop dev"
 	-@pkill -f "vite"
 	-@pkill -f "tauri dev"
 
 dev:
-	$(PNPM) dev
+	$(BUN) run dev
 
 dev-runtime:
-	$(PNPM) dev:runtime
+	$(BUN) run dev:runtime
 
 dev-web:
-	$(PNPM) dev:web
+	$(BUN) run dev:web
 
 dev-desktop:
-	$(PNPM) dev:desktop
+	$(BUN) run dev:desktop
 
 setup-android-streaming:
 	./scripts/setup-ws-scrcpy.sh
@@ -73,33 +73,33 @@ start-android-streaming:
 	./scripts/start-ws-scrcpy.sh
 
 run: stop-dev
-	$(PNPM) run run
+	$(BUN) run run
 
 run-runtime:
-	$(PNPM) run:runtime
+	$(BUN) run run:runtime
 
 run-web:
-	$(PNPM) run:web
+	$(BUN) run run:web
 
 db-generate:
-	$(PNPM) db:generate
+	$(BUN) run db:generate
 
 db-migrate:
-	$(PNPM) db:migrate
+	$(BUN) run db:migrate
 
 db-seed:
-	$(PNPM) db:seed
+	$(BUN) run db:seed
 
 db-init: db-generate db-migrate db-seed
 
 lint:
-	$(PNPM) lint
+	$(BUN) run lint
 
 test:
-	$(PNPM) test
+	$(BUN) run test
 
 build:
-	$(PNPM) build
+	$(BUN) run build
 
 macos-signing-identity:
 	@set -e; \
@@ -115,7 +115,7 @@ build-macos-prod-app:
 	set +a; \
 	SIGNING_IDENTITY="$${CODESYMPHONY_MACOS_SIGN_IDENTITY:-$${APPLE_SIGNING_IDENTITY:-$$(bash "$(MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT)")}}"; \
 	echo "Using macOS signing identity: $$SIGNING_IDENTITY"; \
-	CODESYMPHONY_MACOS_SIGN_IDENTITY="$$SIGNING_IDENTITY" $(PNPM) --filter @codesymphony/desktop build:app
+	CODESYMPHONY_MACOS_SIGN_IDENTITY="$$SIGNING_IDENTITY" $(BUN) run --filter @codesymphony/desktop build:app
 
 build-macos-prod:
 	@set -e; \
@@ -124,7 +124,7 @@ build-macos-prod:
 	set +a; \
 	SIGNING_IDENTITY="$${CODESYMPHONY_MACOS_SIGN_IDENTITY:-$${APPLE_SIGNING_IDENTITY:-$$(bash "$(MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT)")}}"; \
 	echo "Using macOS signing identity: $$SIGNING_IDENTITY"; \
-	CODESYMPHONY_MACOS_SIGN_IDENTITY="$$SIGNING_IDENTITY" $(PNPM) --filter @codesymphony/desktop build
+	CODESYMPHONY_MACOS_SIGN_IDENTITY="$$SIGNING_IDENTITY" $(BUN) run --filter @codesymphony/desktop build
 
 verify-macos-signing:
 	@set -e; \
@@ -149,24 +149,24 @@ endif
 	echo ""; \
 	if [ ! -d node_modules ]; then \
 		echo "Installing workspace dependencies..."; \
-		$(PNPM) install; \
+		$(BUN) install; \
 	fi; \
 	cp -n apps/runtime/.env.example apps/runtime/.env 2>/dev/null || true; \
 	sed -i '' "s/^RUNTIME_PORT=.*/RUNTIME_PORT=$$RUNTIME_PORT/" apps/runtime/.env; \
 	printf "VITE_DEV_PORT=%s\nVITE_RUNTIME_PORT=%s\n" "$$WEB_PORT" "$$RUNTIME_PORT" > apps/web/.env; \
 	echo "Generating Prisma client..."; \
-	$(PNPM) --filter @codesymphony/runtime prisma:generate; \
+	$(BUN) run --filter @codesymphony/runtime prisma:generate; \
 	echo "Applying Prisma migrations..."; \
-	(cd apps/runtime && DATABASE_URL="file:./dev.db" $(PNPM) exec prisma migrate deploy); \
+	(cd apps/runtime && DATABASE_URL="file:./dev.db" $(BUN) x prisma migrate deploy); \
 	echo "Generating route tree..."; \
-	(cd apps/web && npx @tanstack/router-cli generate); \
+	(cd apps/web && $(BUN) x @tanstack/router-cli generate); \
 	echo "Done! Run 'make dev' to start."
 
 setup-worktree-up:
 ifndef PORT
 	$(error PORT is required. Usage: make setup-worktree-up PORT=4322)
 endif
-	@$(MAKE) setup-worktree PORT=$(PORT) PNPM='$(PNPM)'
+	@$(MAKE) setup-worktree PORT=$(PORT) BUN='$(BUN)'
 	@set -e; \
 	RUNTIME_PORT=$(PORT); \
 	WEB_PORT=$$(( $(PORT) + 1000 )); \
@@ -178,7 +178,7 @@ endif
 		echo "Detached dev already running for runtime port $$RUNTIME_PORT (pid $$(cat "$$PID_PATH"))"; \
 	else \
 		echo "Starting detached dev. Logs: $$LOG_PATH"; \
-		nohup $(MAKE) dev PNPM='$(PNPM)' >"$$LOG_PATH" 2>&1 & \
+		nohup $(MAKE) dev BUN='$(BUN)' >"$$LOG_PATH" 2>&1 & \
 		echo $$! > "$$PID_PATH"; \
 	fi; \
 	echo "Waiting for runtime http://127.0.0.1:$$RUNTIME_PORT/health"; \

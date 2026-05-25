@@ -67,9 +67,10 @@ describe("BottomPanel", () => {
   const findPanelBody = () => container.querySelector<HTMLElement>('[data-testid="bottom-panel-body"]');
   const findResizeHandle = () => container.querySelector<HTMLElement>('[data-testid="bottom-panel-resize-handle"]');
 
-  it("renders Setup Script, Terminal, Run, and Debug Console tab buttons", () => {
-    act(() => {
+  it("renders Setup Script, Terminal, Run, and Debug Console tab buttons", async () => {
+    await act(async () => {
       root.render(<BottomPanel {...baseProps} />);
+      await Promise.resolve();
     });
     expect(container.textContent).toContain("Setup Script");
     expect(container.textContent).toContain("Terminal");

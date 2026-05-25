@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRepositoryService } from "../src/services/repositoryService";
 import { createWorktreeService } from "../src/services/worktreeService";
 
@@ -22,18 +22,20 @@ const prisma = new PrismaClient({
 });
 
 const tempDirs: string[] = [];
+let originalConsoleWarn: typeof console.warn;
+const QUIET_GIT_OPTIONS = { stdio: "ignore" as const };
 
 function createGitRepository(): string {
   const repositoryPath = mkdtempSync(join(tmpdir(), "codesymphony-repository-service-"));
   tempDirs.push(repositoryPath);
 
-  execFileSync("git", ["init", "-q"], { cwd: repositoryPath });
-  execFileSync("git", ["checkout", "-b", "main"], { cwd: repositoryPath });
-  execFileSync("git", ["config", "user.email", "tests@example.com"], { cwd: repositoryPath });
-  execFileSync("git", ["config", "user.name", "Codesymphony Tests"], { cwd: repositoryPath });
+  execFileSync("git", ["init", "-q"], { cwd: repositoryPath, ...QUIET_GIT_OPTIONS });
+  execFileSync("git", ["checkout", "-b", "main"], { cwd: repositoryPath, ...QUIET_GIT_OPTIONS });
+  execFileSync("git", ["config", "user.email", "tests@example.com"], { cwd: repositoryPath, ...QUIET_GIT_OPTIONS });
+  execFileSync("git", ["config", "user.name", "Codesymphony Tests"], { cwd: repositoryPath, ...QUIET_GIT_OPTIONS });
   writeFileSync(join(repositoryPath, "README.md"), "# test\n", "utf8");
-  execFileSync("git", ["add", "-A"], { cwd: repositoryPath });
-  execFileSync("git", ["commit", "-m", "Initial commit", "-q"], { cwd: repositoryPath });
+  execFileSync("git", ["add", "-A"], { cwd: repositoryPath, ...QUIET_GIT_OPTIONS });
+  execFileSync("git", ["commit", "-m", "Initial commit", "-q"], { cwd: repositoryPath, ...QUIET_GIT_OPTIONS });
 
   return repositoryPath;
 }
@@ -49,6 +51,25 @@ async function resetDatabase(): Promise<void> {
 describe("repositoryService primary root workspace", () => {
   beforeEach(async () => {
     await resetDatabase();
+    originalConsoleWarn = console.warn;
+    vi.spyOn(console, "warn").mockImplementation((...args: Parameters<typeof console.warn>) => {
+      const [message] = args;
+      if (
+        typeof message === "string"
+        && (
+          message.startsWith("[repositoryService] recovered-missing-primary-worktree")
+          || message.startsWith("[repositoryService] reactivated-primary-worktree")
+        )
+      ) {
+        return;
+      }
+
+      originalConsoleWarn(...args);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   afterAll(async () => {
@@ -86,7 +107,7 @@ describe("repositoryService primary root workspace", () => {
     const rootWorktree = created.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
     expect(rootWorktree).toBeDefined();
 
-    execFileSync("git", ["checkout", "-b", "feature/root-sync"], { cwd: repositoryPath });
+    execFileSync("git", ["checkout", "-b", "feature/root-sync"], { cwd: repositoryPath, ...QUIET_GIT_OPTIONS });
 
     const listed = await repositoryService.list();
     const listedRepository = listed.find((repository) => repository.id === created.id);

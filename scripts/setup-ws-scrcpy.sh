@@ -39,10 +39,14 @@ EOF
 }
 
 patch_package_json() {
-  node - "$SIDECAR_DIR/package.json" <<'EOF'
+  PACKAGE_JSON_PATH="$SIDECAR_DIR/package.json" bun -e '
 const fs = require("node:fs");
 
-const packageJsonPath = process.argv[2];
+const packageJsonPath = process.env.PACKAGE_JSON_PATH;
+if (!packageJsonPath) {
+  throw new Error("PACKAGE_JSON_PATH is required");
+}
+
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 
 if (packageJson.dependencies && Object.hasOwn(packageJson.dependencies, "node-pty")) {
@@ -50,7 +54,7 @@ if (packageJson.dependencies && Object.hasOwn(packageJson.dependencies, "node-pt
 }
 
 fs.writeFileSync(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
-EOF
+'
 }
 
 write_build_override() {
@@ -108,7 +112,7 @@ ensure_dist_runtime_dependencies() {
 
   (
     cd "$SIDECAR_DIR/dist"
-    npm install --omit=dev --no-audit --no-fund
+    bun install --production --no-progress
   )
 }
 
@@ -150,8 +154,7 @@ needs_rebuild() {
 
 main() {
   require_command git
-  require_command node
-  require_command npm
+  require_command bun
   require_command adb
 
   ensure_checkout
@@ -164,8 +167,8 @@ main() {
   if needs_rebuild; then
     (
       cd "$SIDECAR_DIR"
-      npm install --no-audit --no-fund
-      npm run dist
+      bun install --no-progress
+      bun run dist
     )
     printf '%s\n' "$BUILD_STAMP_VALUE" >"$BUILD_STAMP_PATH"
   fi

@@ -9,4 +9,4 @@ readonly CONFIG_PATH="$SIDECAR_ROOT/ws-scrcpy.config.yaml"
 "$SCRIPT_DIR/setup-ws-scrcpy.sh"
 
 cd "$SIDECAR_DIR/dist"
-exec env WS_SCRCPY_CONFIG="$CONFIG_PATH" node ./index.js
+exec env WS_SCRCPY_CONFIG="$CONFIG_PATH" bun ./index.js

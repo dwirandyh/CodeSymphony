@@ -217,7 +217,7 @@ function toApiUrl(apiBase: string, path: string): string {
 function toRuntimeUnavailableError(cause: unknown): Error {
   const triedBases = getCandidateApiBases().join(", ");
   const error = new Error(
-    `Runtime API unavailable. Tried ${triedBases}. Start runtime with "pnpm dev:runtime" or set VITE_RUNTIME_URL.`,
+    `Runtime API unavailable. Tried ${triedBases}. Start runtime with "bun run dev:runtime" or set VITE_RUNTIME_URL.`,
   );
   if (cause instanceof Error && cause.stack) {
     error.stack = cause.stack;

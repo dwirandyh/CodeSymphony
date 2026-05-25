@@ -6,41 +6,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install dependencies
-pnpm install
+bun install
 
 # Start runtime + web together (primary dev workflow)
-pnpm dev
+bun run dev
 
 # Start individual apps
-pnpm dev:runtime    # Fastify backend on :4331
-pnpm dev:web        # Vite dev server on :5173
-pnpm dev:desktop    # Tauri shell (requires Rust/Cargo)
+bun run dev:runtime    # Fastify backend on :4331
+bun run dev:web        # Vite dev server on :5173
+bun run dev:desktop    # Tauri shell (requires Rust/Cargo)
 
 # Database setup (required before first run)
-pnpm db:generate && pnpm db:migrate && pnpm db:seed
+bun run db:generate && bun run db:migrate && bun run db:seed
 
 # Build, test, lint (all workspaces via Turbo)
-pnpm build
-pnpm test
-pnpm lint           # TypeScript typecheck (tsc --noEmit)
+bun run build
+bun run test
+bun run lint           # TypeScript typecheck (tsc --noEmit)
 
 # Run tests for a single workspace
-pnpm --filter @codesymphony/runtime test
-pnpm --filter @codesymphony/web test
+bun run --filter @codesymphony/runtime test
+bun run --filter @codesymphony/web test
 
 # Run a specific test file
-pnpm --filter @codesymphony/runtime test -- chatService.permissions.test.ts
+bun run --filter @codesymphony/runtime test -- chatService.permissions.test.ts
 
 # Build a single workspace
-pnpm --filter @codesymphony/web build
-pnpm --filter @codesymphony/runtime build
+bun run --filter @codesymphony/web build
+bun run --filter @codesymphony/runtime build
 ```
 
 Makefile shortcuts are also available (`make dev`, `make test`, `make lint`, `make build`, `make db-init`).
 
 ## Architecture
 
-Local-first monorepo (pnpm workspaces + Turbo) for a conductor.build-style AI coding workspace.
+Local-first monorepo (Bun workspaces + Turbo) for a conductor.build-style AI coding workspace.
 
 ### Apps
 
@@ -87,9 +87,9 @@ Local-first monorepo (pnpm workspaces + Turbo) for a conductor.build-style AI co
 
 ## Environment Setup
 
-- Node.js 22+, pnpm 10+, Git in PATH, Claude Code CLI authenticated (`claude login`)
+- Bun 1.3+, Git in PATH, Claude Code CLI authenticated (`claude login`)
 - Copy `apps/runtime/.env.example` to `apps/runtime/.env` before first run
-- Runtime scripts use `tsx --env-file .env` so `DATABASE_URL` is always loaded
+- Runtime scripts use Bun with `--env-file=.env` so `DATABASE_URL` is always loaded
 - Runtime tests use a separate `prisma/test.db` (set via `DATABASE_URL="file:./test.db"` in the test script)
 - Sanitize env before `query()`: unset `CLAUDECODE` and remove empty `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` to avoid CLI errors
 
@@ -107,3 +107,18 @@ The web app has a client-to-server debug logging system for diagnosing render lo
 - **Browser extract**: `copy(JSON.stringify(window.__CS_DEBUG_LOG__.slice(0, 200), null, 2))`
 
 To debug a new issue: add `debugLog("source", "message", data)` calls at relevant state-transition points, reproduce, then read `debug.log`.
+
+## Terminal PTY Architecture
+
+`apps/runtime/src/services/ptyBackend.ts` mirrors t3code terminal PTY selection:
+
+1. **Bun native PTY** — when running under Bun, uses `Bun.spawn` with `terminal: { cols, rows, data }` (real PTY via Bun runtime, not the `bun-pty` npm package).
+2. **node-pty** — when running under Node (e.g. Vitest). Fixes spawn-helper permissions in Tauri bundles first.
+
+### Terminal Frontend (Web)
+
+`apps/web/src/components/workspace/TerminalTab.tsx` — xterm.js React component.
+- Terminal input goes through xterm `onData` → raw WebSocket text frames.
+- **Critical**: The xterm textarea must be focused for keyboard input. `runtime.focus()` is called on mount at line 459. Add `onMouseDown` handler on root div to refocus on click (line 522).
+- Search overlay (`Cmd+F`) steals focus — `closeSearch()` refocuses terminal.
+- The xterm textarea is rendered offscreen (`x=-159684`) via xterm's hidden textarea hack — this is normal.

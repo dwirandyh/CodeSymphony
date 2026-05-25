@@ -9,6 +9,7 @@ import { CodeEditorPanel, insertSoftTabOrIndentSelection } from "./CodeEditorPan
 describe("CodeEditorPanel", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let rangeGetClientRectsDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -16,12 +17,24 @@ describe("CodeEditorPanel", () => {
     container.style.height = "600px";
     document.body.appendChild(container);
     root = createRoot(container);
+    rangeGetClientRectsDescriptor = Object.getOwnPropertyDescriptor(Range.prototype, "getClientRects");
+    Object.defineProperty(Range.prototype, "getClientRects", {
+      configurable: true,
+      value: () => [],
+    });
   });
 
   afterEach(() => {
     act(() => {
       root.unmount();
     });
+    if (rangeGetClientRectsDescriptor) {
+      Object.defineProperty(Range.prototype, "getClientRects", rangeGetClientRectsDescriptor);
+    } else {
+      // Match the baseline jsdom environment when this method is absent.
+      // @ts-expect-error test-only cleanup for missing Range#getClientRects
+      delete Range.prototype.getClientRects;
+    }
     container.remove();
     vi.clearAllMocks();
   });

@@ -62,4 +62,5 @@ if lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
   fi
 fi
 
-exec pnpm --filter @codesymphony/runtime dev
+cd "${WORKSPACE_ROOT}"
+exec bun run --filter @codesymphony/runtime dev

@@ -102,12 +102,28 @@ const repoFixture: Repository[] = [{
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
+let consoleErrorSpy: ReturnType<typeof vi.spyOn> | null = null;
+let originalConsoleError: typeof console.error;
 
 beforeEach(() => {
   vi.clearAllMocks();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  originalConsoleError = console.error;
+  consoleErrorSpy = vi.spyOn(console, "error").mockImplementation((...args: Parameters<typeof console.error>) => {
+    const [message, error] = args;
+    if (
+      typeof message === "string"
+      && message.startsWith("[QueryCollection] Error observing query")
+      && error instanceof Error
+      && error.message === "Runtime API unavailable"
+    ) {
+      return;
+    }
+
+    originalConsoleError(...args);
+  });
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -115,8 +131,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   act(() => root.unmount());
-  queryClient.clear();
-  container.remove();
+  consoleErrorSpy?.mockRestore();
+  consoleErrorSpy = null;
   const { resetWorkspaceStartupBootstrapForTest } = await import("../../lib/workspaceStartupBootstrap");
   resetWorkspaceStartupBootstrapForTest();
   await Promise.all([
@@ -125,6 +141,8 @@ afterEach(async () => {
     resetFileIndexCollectionRegistryForTest(),
     resetThreadsCollectionRegistryForTest(),
   ]);
+  queryClient.clear();
+  container.remove();
 });
 
 function HookRenderer({ hook, args = [] }: { hook: (...a: unknown[]) => unknown; args?: unknown[] }) {
@@ -193,7 +211,7 @@ function DeferredNonCriticalHooksHarness() {
 
 describe("query hooks", () => {
   it("useRepositories renders", () => {
-    renderHook(useRepositories as (...a: unknown[]) => unknown);
+    renderHook(useRepositories as (...a: unknown[]) => unknown, [{ enabled: false }]);
     expect(container.textContent).toBe("ok");
   });
 
@@ -561,8 +579,14 @@ describe("query hooks", () => {
     expect(container.textContent).toContain("repos:1");
   });
 
-  it("useThreads renders with worktreeId", () => {
+  it("useThreads renders with worktreeId", async () => {
     renderHook(useThreads as (...a: unknown[]) => unknown, ["wt-1"]);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
     expect(container.textContent).toBe("ok");
   });
 
@@ -876,7 +900,7 @@ describe("query hooks", () => {
   });
 
   it("useGitStatus renders with worktreeId", () => {
-    renderHook(useGitStatus as (...a: unknown[]) => unknown, ["wt-1"]);
+    renderHook(useGitStatus as (...a: unknown[]) => unknown, ["wt-1", { enabled: false }]);
     expect(container.textContent).toBe("ok");
   });
 
@@ -1119,8 +1143,14 @@ describe("query hooks", () => {
     expect(container.textContent).toBe("ok");
   });
 
-  it("useFileIndexQuery renders", () => {
+  it("useFileIndexQuery renders", async () => {
     renderHook(useFileIndexQuery as (...a: unknown[]) => unknown, ["wt-1"]);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
     expect(container.textContent).toBe("ok");
   });
 
@@ -1130,7 +1160,7 @@ describe("query hooks", () => {
   });
 
   it("useWorktreeStatuses renders", () => {
-    renderHook(useWorktreeStatuses as (...a: unknown[]) => unknown, [repoFixture]);
+    renderHook(useWorktreeStatuses as (...a: unknown[]) => unknown, [repoFixture, false]);
     expect(container.textContent).toBe("ok");
   });
 

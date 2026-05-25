@@ -70,7 +70,7 @@ describe("parseUserMentions", () => {
     const result = parseUserMentions("run /commit now");
     expect(result).toEqual([
       { kind: "text", value: "run " },
-      { kind: "slash-command", name: "commit" },
+      { kind: "slash-command", name: "commit", trigger: "/" },
       { kind: "text", value: " now" },
     ]);
   });

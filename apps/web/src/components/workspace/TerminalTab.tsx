@@ -456,6 +456,7 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
     runtime.setOpenFileHandler(onOpenFileRef.current ?? null);
     runtime.attach(container);
     runtime.scheduleFitBurst();
+    runtime.focus();
 
     setConnected(runtime.connected);
     setHasConnectedOnce(runtime.connected);
@@ -518,6 +519,7 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onMouseDown={() => runtimeRef.current?.focus()}
       onKeyDownCapture={(event) => {
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
           event.preventDefault();
