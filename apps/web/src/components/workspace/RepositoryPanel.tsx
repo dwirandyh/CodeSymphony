@@ -151,6 +151,10 @@ function resolvePriorityThreadId(
     : null;
 }
 
+function hasNonIdleWorktreeStatus(status: WorktreeStatusSummary | undefined): boolean {
+  return status != null && status.kind !== "idle";
+}
+
 const WORKTREE_STATUS_PRIORITY: WorktreeThreadUiStatus[] = [
   "waiting_approval",
   "review_plan",
@@ -506,13 +510,13 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     previewVisibleRepositoryIdsRef.current = previewVisibleRepositoryIds;
   }, [previewVisibleRepositoryIds]);
 
-  const repositoryWorktreeIndex = useMemo(
+  const metadataRepositoryWorktreeIndex = useMemo(
     () => buildRepositoryWorktreeIndex(metadataRepositories),
     [metadataRepositories],
   );
   const activeWorktreeSummaries = useMemo(
-    () => repositoryWorktreeIndex.activeWorktreeIds.flatMap((worktreeId) => {
-      const worktree = repositoryWorktreeIndex.worktreeById.get(worktreeId);
+    () => metadataRepositoryWorktreeIndex.activeWorktreeIds.flatMap((worktreeId) => {
+      const worktree = metadataRepositoryWorktreeIndex.worktreeById.get(worktreeId);
       if (!worktree) {
         return [];
       }
@@ -522,9 +526,9 @@ export const RepositoryPanel = memo(function RepositoryPanel({
         baseBranch: worktree.baseBranch || worktree.repository.defaultBranch,
       }];
     }),
-    [repositoryWorktreeIndex],
+    [metadataRepositoryWorktreeIndex],
   );
-  const worktreeStatuses = useWorktreeStatuses(metadataRepositories, enableMetadataQueries, threadSnapshot);
+  const worktreeStatuses = useWorktreeStatuses(visibleRepositories, enableMetadataQueries, threadSnapshot);
   const displayWorktreeStatuses = useMemo(
     () => mergeSelectedWorktreeStatusOverride({
       worktreeStatuses,
@@ -1130,7 +1134,9 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                   (worktree) => worktree.id !== rootWorkspace.id,
                 )
               : visibleWorktrees;
-            const isExpanded = expandedByRepo[repository.id] ?? isSelected;
+            const repositoryHasLiveStatus = visibleWorktrees.some((worktree) =>
+              hasNonIdleWorktreeStatus(displayWorktreeStatuses[worktree.id]));
+            const isExpanded = expandedByRepo[repository.id] ?? (isSelected || repositoryHasLiveStatus);
             const rootPriorityThreadId = rootWorkspace
               ? resolvePriorityThreadId(displayWorktreeStatuses[rootWorkspace.id])
               : null;

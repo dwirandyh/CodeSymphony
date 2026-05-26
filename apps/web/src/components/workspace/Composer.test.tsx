@@ -303,6 +303,16 @@ describe("Composer", () => {
     expect(editor.getAttribute("contenteditable")).not.toBe("false");
   });
 
+  it("focuses the editor when the focus signal changes", () => {
+    renderComposer();
+    const editor = getEditor();
+    editor.blur();
+
+    renderComposer({ focusSignal: 1 });
+
+    expect(document.activeElement).toBe(editor);
+  });
+
   it("applies responsive max-height with internal scroll", () => {
     renderComposer();
     const editor = getEditor();

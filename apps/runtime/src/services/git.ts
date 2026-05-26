@@ -1,6 +1,6 @@
 import path from "node:path";
 import { existsSync, statSync } from "node:fs";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { lstat, readdir, readFile, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { execFile as execFileRaw } from "node:child_process";
 import type { ReviewProvider, ReviewState } from "@codesymphony/shared-types";
@@ -553,6 +553,42 @@ function parseNumstatOutput(output: string): Map<string, { insertions: number; d
   return statsMap;
 }
 
+async function getUntrackedFileStats(cwd: string, filePath: string): Promise<{ insertions: number; deletions: number }> {
+  const emptyStats = { insertions: 0, deletions: 0 };
+  const resolvedRoot = path.resolve(cwd);
+  const resolvedPath = path.resolve(resolvedRoot, filePath);
+
+  if (!isPathInsideRoot(resolvedRoot, resolvedPath)) {
+    return emptyStats;
+  }
+
+  const fileStat = await lstat(resolvedPath).catch(() => null);
+  if (!fileStat?.isFile()) {
+    return emptyStats;
+  }
+
+  const buffer = await readFile(resolvedPath).catch(() => null);
+  if (!buffer || buffer.includes(0)) {
+    return emptyStats;
+  }
+
+  if (buffer.length === 0) {
+    return emptyStats;
+  }
+
+  let lineBreaks = 0;
+  for (const byte of buffer) {
+    if (byte === 10) {
+      lineBreaks += 1;
+    }
+  }
+
+  return {
+    insertions: lineBreaks + (buffer[buffer.length - 1] === 10 ? 0 : 1),
+    deletions: 0,
+  };
+}
+
 async function resolveBranchDiffBaseRef(cwd: string, baseBranch: string): Promise<string | null> {
   const candidates = Array.from(new Set([baseBranch, `origin/${baseBranch}`]));
 
@@ -626,7 +662,9 @@ export async function getGitStatus(cwd: string): Promise<{
     else if (x === "R" || y === "R") status = "renamed";
     else status = "modified";
 
-    const stats = statsMap.get(filePath) || { insertions: 0, deletions: 0 };
+    const stats = statsMap.get(filePath) || (status === "untracked"
+      ? await getUntrackedFileStats(cwd, filePath)
+      : { insertions: 0, deletions: 0 });
     entries.push({ path: filePath, status, ...stats });
   }
 

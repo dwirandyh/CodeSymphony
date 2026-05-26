@@ -15,15 +15,15 @@ function uniqueSuffix(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-async function seedThread(): Promise<string> {
+async function seedThread(client: PrismaClient = prisma): Promise<string> {
   const suffix = uniqueSuffix();
-  const repo = await prisma.repository.create({
+  const repo = await client.repository.create({
     data: { name: `repo-${suffix}`, rootPath: `/tmp/repo-${suffix}`, defaultBranch: "main" },
   });
-  const wt = await prisma.worktree.create({
+  const wt = await client.worktree.create({
     data: { repositoryId: repo.id, branch: "main", baseBranch: "main", path: `/tmp/wt-${suffix}`, status: "active" },
   });
-  const thread = await prisma.chatThread.create({
+  const thread = await client.chatThread.create({
     data: { worktreeId: wt.id, title: "Test" },
   });
   return thread.id;
@@ -107,6 +107,82 @@ describe("eventHub", () => {
 
       expect(indices).toEqual([0, 1]);
       expect(persisted.map((event) => event.idx)).toEqual([0, 1]);
+    });
+
+    it("keeps retrying idx collisions until persistence succeeds", async () => {
+      const collisionPrisma = new PrismaClient({
+        datasources: { db: { url: TEST_DATABASE_URL } },
+      });
+
+      try {
+        const hub = createEventHub(collisionPrisma);
+        const threadId = await seedThread(collisionPrisma);
+        const actualCreate = collisionPrisma.chatEvent.create.bind(collisionPrisma.chatEvent);
+
+        const collisionThreadId = await seedThread(collisionPrisma);
+        await actualCreate({
+          data: {
+            id: `collision-seed-${uniqueSuffix()}`,
+            threadId: collisionThreadId,
+            idx: 0,
+            type: "message_delta",
+            payload: {},
+            createdAt: new Date(),
+          },
+        });
+
+        let collisionError: unknown;
+        try {
+          await actualCreate({
+            data: {
+              id: `collision-trigger-${uniqueSuffix()}`,
+              threadId: collisionThreadId,
+              idx: 0,
+              type: "message_delta",
+              payload: {},
+              createdAt: new Date(),
+            },
+          });
+        } catch (error) {
+          collisionError = error;
+        }
+
+        expect(collisionError).toBeTruthy();
+
+        let collisionCount = 0;
+        const createSpy = vi.spyOn(collisionPrisma.chatEvent, "create").mockImplementation(async (...args) => {
+          if (collisionCount < 4) {
+            await actualCreate({
+              data: {
+                id: `collision-row-${collisionCount}-${uniqueSuffix()}`,
+                threadId,
+                idx: collisionCount,
+                type: "message_delta",
+                payload: {},
+                createdAt: new Date(),
+              },
+            });
+            collisionCount += 1;
+            throw collisionError;
+          }
+
+          return actualCreate(...args);
+        });
+
+        const event = await hub.emit(threadId, "message.delta", { text: "eventual-success" });
+        createSpy.mockRestore();
+
+        const persisted = await collisionPrisma.chatEvent.findMany({
+          where: { threadId },
+          orderBy: { idx: "asc" },
+          select: { idx: true },
+        });
+
+        expect(event.idx).toBe(4);
+        expect(persisted.map((row) => row.idx)).toEqual([0, 1, 2, 3, 4]);
+      } finally {
+        await collisionPrisma.$disconnect();
+      }
     });
   });
 

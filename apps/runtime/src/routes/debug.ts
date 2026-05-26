@@ -1,5 +1,5 @@
 import { type FastifyInstance } from "fastify";
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,24 @@ function resolveDebugLogPath(): string {
 
 const LOG_PATH = resolveDebugLogPath();
 const LOG_DIR = path.dirname(LOG_PATH);
+const DEBUG_LOG_FILE_MAX_BYTES = 16 * 1024 * 1024;
+
+function truncateDebugLogFileIfOversized(additionalBytes = 0) {
+  if (!existsSync(LOG_PATH)) {
+    return;
+  }
+
+  const currentSize = statSync(LOG_PATH).size;
+  if (currentSize + additionalBytes <= DEBUG_LOG_FILE_MAX_BYTES) {
+    return;
+  }
+
+  writeFileSync(
+    LOG_PATH,
+    `\n=== runtime debug log truncated ${new Date().toISOString()} maxBytes=${DEBUG_LOG_FILE_MAX_BYTES} ===\n`,
+    "utf-8",
+  );
+}
 
 try {
   if (!existsSync(LOG_DIR)) {
@@ -25,6 +43,7 @@ try {
   if (!existsSync(LOG_PATH)) {
     writeFileSync(LOG_PATH, "", "utf-8");
   }
+  truncateDebugLogFileIfOversized(128);
   appendFileSync(
     LOG_PATH,
     `\n=== runtime session started ${new Date().toISOString()} pid=${process.pid} cwd=${process.cwd()} execPath=${process.execPath} ===\n`,
@@ -85,9 +104,11 @@ function appendDebugLogEntries(entries: DebugLogEntry[]): number {
         `#${e.seq} [${e.ts.toFixed(1)}ms] ${e.source} | ${e.message} | ${JSON.stringify(e.data)}`,
     )
     .join("\n");
+  const payload = `${lines}\n`;
 
   try {
-    appendFileSync(LOG_PATH, lines + "\n", "utf-8");
+    truncateDebugLogFileIfOversized(Buffer.byteLength(payload, "utf-8"));
+    appendFileSync(LOG_PATH, payload, "utf-8");
     lastDebugLogAppendError = null;
   } catch (error) {
     lastDebugLogAppendError = error instanceof Error ? error.message : String(error);

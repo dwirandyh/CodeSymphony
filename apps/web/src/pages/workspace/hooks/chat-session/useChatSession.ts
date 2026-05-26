@@ -1014,6 +1014,10 @@ export function useChatSession(
       return queriedThreads;
     }
 
+    if (queriedThreadsFetching && queriedThreads?.length === 0 && threads.length > 0) {
+      return threads;
+    }
+
     const bootstrapTargetThreadId = selectedThreadId ?? requestedThreadId;
     if (
       bootstrapTargetThreadId != null
@@ -1023,7 +1027,16 @@ export function useChatSession(
     }
 
     return queriedThreads ?? EMPTY_THREADS;
-  }, [cachedThreadsQuery, queriedThreads, rawRequestedThreadId, selectedThreadId]);
+  }, [
+    allowUnselectedThread,
+    autoCreateInitialThread,
+    cachedThreadsQuery,
+    queriedThreads,
+    queriedThreadsFetching,
+    rawRequestedThreadId,
+    selectedThreadId,
+    threads,
+  ]);
 
   const requestedThreadId =
     rawRequestedThreadId != null

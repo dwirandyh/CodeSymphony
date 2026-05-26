@@ -86,6 +86,7 @@ type ComposerProps = {
   showStop: boolean;
   stopping: boolean;
   attachedTop?: boolean;
+  focusSignal?: number;
   threadId: string | null;
   worktreeId: string | null;
   mode: ChatMode;
@@ -243,6 +244,7 @@ function ComposerContent({
   showStop,
   stopping,
   attachedTop = false,
+  focusSignal,
   threadId,
   worktreeId,
   mode,
@@ -578,6 +580,20 @@ function ComposerContent({
       setAttachmentPreviewId(null);
     }
   }, [attachmentPreviewId, selectedAttachmentPreview]);
+
+  useEffect(() => {
+    if (focusSignal === undefined || disabled) {
+      return;
+    }
+
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    editor.focus();
+    moveComposerCaretToEnd(editor);
+  }, [disabled, focusSignal]);
 
   const handleInput = useCallback(() => {
     if (suppressInputRef.current) return;

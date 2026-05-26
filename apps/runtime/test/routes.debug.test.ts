@@ -1,21 +1,34 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { existsSyncMock, statSyncMock } = vi.hoisted(() => ({
+  existsSyncMock: vi.fn(() => true),
+  statSyncMock: vi.fn(() => ({ size: 0 })),
+}));
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
     ...actual,
+    existsSync: existsSyncMock,
+    statSync: statSyncMock,
     appendFileSync: vi.fn(),
     writeFileSync: vi.fn(),
   };
 });
 
+import { appendFileSync, writeFileSync } from "node:fs";
 import { registerDebugRoutes } from "../src/routes/debug";
 
 describe("debug routes", () => {
   let app: FastifyInstance;
 
   beforeEach(async () => {
+    vi.mocked(appendFileSync).mockClear();
+    vi.mocked(writeFileSync).mockClear();
+    existsSyncMock.mockReturnValue(true);
+    statSyncMock.mockReturnValue({ size: 0 });
+
     app = Fastify({ logger: false });
     await app.register(registerDebugRoutes, { prefix: "/api" });
     await app.ready();
@@ -50,6 +63,25 @@ describe("debug routes", () => {
         payload: { not: "array" },
       });
       expect(res.statusCode).toBe(400);
+    });
+
+    it("truncates the on-disk debug log before appending when it grows too large", async () => {
+      statSyncMock.mockReturnValue({ size: 32 * 1024 * 1024 });
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/debug/log",
+        payload: [
+          { seq: 1, ts: 100.5, source: "test", message: "hello", data: null },
+        ],
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(vi.mocked(writeFileSync)).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.stringContaining("runtime debug log truncated"),
+        "utf-8",
+      );
     });
   });
 

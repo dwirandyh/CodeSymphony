@@ -861,6 +861,10 @@ export function buildActivitySteps(context: ChatEvent[]): ActivityTraceStep[] {
   const candidates: StepCandidate[] = [];
 
   for (const event of context) {
+    if (isMetadataToolEvent(event)) {
+      continue;
+    }
+
     if (event.type === "chat.failed") {
       const detail = toolEventDetail(event);
       candidates.push({

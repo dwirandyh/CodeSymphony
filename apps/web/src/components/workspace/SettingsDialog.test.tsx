@@ -263,6 +263,20 @@ async function openWorkspaceTab() {
   await flushEffects();
 }
 
+async function openShortcutsTab() {
+  const shortcutsButton = Array.from(document.body.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Shortcuts",
+  );
+  if (!shortcutsButton) {
+    throw new Error("Shortcuts tab not found");
+  }
+
+  await act(async () => {
+    shortcutsButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+}
+
 async function flushEffects() {
   await act(async () => {
     if (vi.isFakeTimers()) {
@@ -405,7 +419,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Settings");
   });
 
-  it("shows General, Workspace, Models, and Licenses tabs", async () => {
+  it("shows General, Workspace, Models, Shortcuts, and Licenses tabs", async () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -424,6 +438,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("General");
     expect(document.body.textContent).toContain("Workspace");
     expect(document.body.textContent).toContain("Models");
+    expect(document.body.textContent).toContain("Shortcuts");
     expect(document.body.textContent).toContain("Licenses");
   });
 
@@ -447,6 +462,17 @@ describe("SettingsDialog", () => {
 
     expect(document.body.textContent).toContain("Send messages with");
     expect(document.body.textContent).not.toContain("Default Branch");
+  });
+
+  it("renders the shortcut reference list", async () => {
+    renderDialog([makeRepo()]);
+    await openShortcutsTab();
+
+    expect(document.body.textContent).toContain("Open settings");
+    expect(document.body.textContent).toContain("Toggle repositories sidebar");
+    expect(document.body.textContent).toContain("Focus chat input");
+    expect(document.body.textContent).toContain("Open quick file picker");
+    expect(document.body.textContent).toContain("Find in terminal");
   });
 
   it("updates send-message preference from the General tab", async () => {

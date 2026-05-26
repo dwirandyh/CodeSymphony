@@ -1610,6 +1610,32 @@ describe("useChatSession", () => {
     expect(onThreadChange).toHaveBeenLastCalledWith(null);
   });
 
+  it("keeps the current visible threads while the live thread list transiently refetches empty", () => {
+    const onThreadChange = vi.fn();
+    threadsState.data = [makeThread("thread-a", true), makeThread("thread-b")];
+    threadsState.isLoading = false;
+    threadsState.isFetching = false;
+
+    renderHook(undefined, null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+      onThreadChange,
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-b"]);
+
+    threadsState.data = [];
+    threadsState.isFetching = true;
+    renderHook(undefined, null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+      onThreadChange,
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-b"]);
+    expect(hookResult.messageListEmptyState).not.toBe("no-thread-selected");
+  });
+
   it("reuses an existing titled thread instead of creating a duplicate", async () => {
     threadsState.data = [
       {

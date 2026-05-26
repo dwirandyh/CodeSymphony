@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { resetThreadsCollectionRegistryForTest } from "../../collections/threads";
 import { mergeSelectedWorktreeStatusOverride, RepositoryPanel } from "./RepositoryPanel";
+import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
 
 const { listThreadsMock, getThreadStatusSnapshotMock, getGitBranchDiffSummaryMock, getRepositoryReviewsMock } = vi.hoisted(() => ({
   listThreadsMock: vi.fn(),
@@ -135,6 +136,16 @@ function makeStatusSnapshot(
   };
 }
 
+function makeThreadSnapshot(
+  threadsByWorktreeId: Record<string, ChatThread[]>,
+): ThreadsByWorktreeSnapshot {
+  return {
+    threadsByWorktreeId,
+    threadIds: Object.values(threadsByWorktreeId).flatMap((threads) => threads.map((thread) => thread.id)),
+    isLoading: false,
+  };
+}
+
 type RepositoryPanelComponentProps = Parameters<typeof RepositoryPanel>[0];
 
 function renderPanel(props: Partial<RepositoryPanelComponentProps> = {}) {
@@ -184,7 +195,7 @@ describe("RepositoryPanel", () => {
     expect(container.textContent).toContain("test-repo");
   });
 
-  it("limits metadata queries to the selected or expanded repositories", async () => {
+  it("limits diff and review metadata queries to the selected or expanded repositories while keeping visible worktree statuses warm", async () => {
     renderPanel({
       repositories: [
         makeRepo({ id: "r1", name: "repo-one" }),
@@ -205,11 +216,11 @@ describe("RepositoryPanel", () => {
     expect(getGitBranchDiffSummaryMock).toHaveBeenCalledWith("r1-wt-feat");
     expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-root");
     expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-feat");
+    expect(listThreadsMock).toHaveBeenCalledWith("r2-wt-root");
+    expect(listThreadsMock).toHaveBeenCalledWith("r2-wt-feat");
     expect(getRepositoryReviewsMock).not.toHaveBeenCalledWith("r2");
     expect(getGitBranchDiffSummaryMock).not.toHaveBeenCalledWith("r2-wt-root");
     expect(getGitBranchDiffSummaryMock).not.toHaveBeenCalledWith("r2-wt-feat");
-    expect(listThreadsMock).not.toHaveBeenCalledWith("r2-wt-root");
-    expect(listThreadsMock).not.toHaveBeenCalledWith("r2-wt-feat");
   });
 
   it("keeps metadata queries enabled for the selected repository even when it is collapsed", async () => {
@@ -230,6 +241,67 @@ describe("RepositoryPanel", () => {
     expect(getGitBranchDiffSummaryMock).toHaveBeenCalledWith("r1-wt-feat");
     expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-root");
     expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-feat");
+  });
+
+  it("keeps a visible running status on a non-selected repository after selection moves elsewhere", async () => {
+    const repoOne = makeRepo({ id: "r1", name: "repo-one" });
+    const repoTwo = makeRepo({ id: "r2", name: "repo-two" });
+
+    renderPanel({
+      repositories: [repoOne, repoTwo],
+      selectedRepositoryId: "r2",
+      selectedWorktreeId: "r2-wt-root",
+      threadSnapshot: makeThreadSnapshot({
+        "r1-wt-root": [],
+        "r1-wt-feat": [
+          makeThread({
+            id: "t-running-r1",
+            worktreeId: "r1-wt-feat",
+            active: true,
+          }),
+        ],
+        "r2-wt-root": [],
+        "r2-wt-feat": [],
+      }),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const repoOneWorktree = container.querySelector("[data-worktree-id='r1-wt-feat']") as HTMLElement | null;
+    expect(repoOneWorktree).toBeTruthy();
+    expect(repoOneWorktree?.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
+  });
+
+  it("keeps a visible running status when switching selected worktrees inside the same repository", async () => {
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-root",
+      threadSnapshot: makeThreadSnapshot({
+        "r1-wt-root": [],
+        "r1-wt-feat": [
+          makeThread({
+            id: "t-running-r1",
+            worktreeId: "r1-wt-feat",
+            active: true,
+          }),
+        ],
+      }),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const repoOneWorktree = container.querySelector("[data-worktree-id='r1-wt-feat']") as HTMLElement | null;
+    expect(repoOneWorktree).toBeTruthy();
+    expect(repoOneWorktree?.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
   });
 
   it("shows root and branch worktrees without section separators", () => {

@@ -51,8 +51,13 @@ import {
   formatFriendlyModelName,
   type AgentSelectionOption,
 } from "./composer/AgentModelSelector";
+import {
+  getVisibleWorkspaceShortcutSections,
+  getWorkspaceShortcutLabel,
+  resolveWorkspaceShortcutPlatform,
+} from "./keyboardShortcuts";
 
-type SettingsTab = "general" | "workspace" | "models" | "licenses";
+export type SettingsTab = "general" | "workspace" | "models" | "shortcuts" | "licenses";
 type SaveAutomationTemplate = "custom_generic" | "flutter_hot_reload";
 
 const DEFAULT_SAVE_AUTOMATION_TARGET = "active_run_session" as const;
@@ -1104,12 +1109,15 @@ export function SettingsDialog({
     ? `Use ${getShiftEnterHint()} for new lines.`
     : `Use Enter for new lines. Send with ${getModifierEnterHint()}.`;
   const completionAttentionHint = "Completion alerts are suppressed when the finished chat is already visible and focused.";
+  const shortcutPlatform = resolveWorkspaceShortcutPlatform();
+  const shortcutSections = getVisibleWorkspaceShortcutSections(shortcutPlatform);
   const primarySettingsTabs: Array<{ id: SettingsTab; label: string }> = [
     { id: "general", label: "General" },
     { id: "workspace", label: "Workspace" },
     { id: "models", label: "Models" },
   ];
   const referenceSettingsTabs: Array<{ id: SettingsTab; label: string }> = [
+    { id: "shortcuts", label: "Shortcuts" },
     { id: "licenses", label: "Licenses" },
   ];
 
@@ -1208,7 +1216,7 @@ export function SettingsDialog({
         <div className="flex flex-1 flex-col overflow-y-auto p-4">
           {macDesktopShell ? <SettingsDesktopAppBar /> : null}
 
-          <div className={`mx-auto w-full ${activeTab === "licenses" ? "max-w-4xl" : "max-w-5xl"}`}>
+          <div className={`mx-auto w-full ${activeTab === "licenses" || activeTab === "shortcuts" ? "max-w-4xl" : "max-w-5xl"}`}>
             {activeTab === "general" ? (
               <div className="space-y-5">
                 <div>
@@ -1939,6 +1947,57 @@ export function SettingsDialog({
                     </SettingsSection>
                   </div>
                 )}
+              </div>
+            ) : activeTab === "shortcuts" ? (
+              <div className="space-y-5">
+                <div>
+                  <h1 className="text-3xl font-semibold tracking-[-0.025em] text-foreground">Shortcuts</h1>
+                  <p className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
+                    This list includes the keyboard shortcuts that are currently available in CodeSymphony today.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  {shortcutSections.map((section) => (
+                    <section
+                      key={section.id}
+                      className="overflow-hidden rounded-xl border border-border/40 bg-secondary/10"
+                    >
+                      <div className="border-b border-border/30 px-4 py-3">
+                        <h2 className="text-sm font-semibold text-foreground">{section.label}</h2>
+                        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{section.description}</p>
+                      </div>
+
+                      <div className="divide-y divide-border/30">
+                        {section.shortcuts.map((shortcut) => {
+                          const label = getWorkspaceShortcutLabel(shortcut, shortcutPlatform);
+                          if (!label) {
+                            return null;
+                          }
+
+                          return (
+                            <div
+                              key={shortcut.id}
+                              className="flex items-start justify-between gap-4 px-4 py-3"
+                            >
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium text-foreground">{shortcut.label}</div>
+                                <div className="mt-1 text-[11px] leading-5 text-muted-foreground">
+                                  <span>{shortcut.description}</span>
+                                  <span className="mx-1.5 text-muted-foreground/50">·</span>
+                                  <span>{shortcut.scope}</span>
+                                </div>
+                              </div>
+                              <code className="shrink-0 rounded-md border border-border/50 bg-background/80 px-2 py-1 text-[11px] font-medium text-foreground">
+                                {label}
+                              </code>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ))}
+                </div>
               </div>
             ) : (
               <div className="space-y-4">

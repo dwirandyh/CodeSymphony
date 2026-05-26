@@ -77,6 +77,11 @@ const loadWorkspaceAutomationsPanel = () =>
 const WorkspaceAutomationsPanel = lazy(loadWorkspaceAutomationsPanel);
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
+import {
+  matchesFocusChatInputShortcut,
+  matchesOpenSettingsShortcut,
+  matchesToggleWorkspaceSidebarShortcut,
+} from "../components/workspace/keyboardShortcuts";
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
@@ -103,7 +108,7 @@ const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewP
 
 import { api, type RuntimeInfo } from "../lib/api";
 import { debugLog } from "../lib/debugLog";
-import { loadGeneralSettings, saveGeneralSettings, type GeneralSettings } from "../lib/generalSettings";
+import { isMacLikePlatform, loadGeneralSettings, saveGeneralSettings, type GeneralSettings } from "../lib/generalSettings";
 import { scheduleWindowIdleTask } from "../lib/idleTask";
 import {
   buildStartupShellRepositorySnapshots,
@@ -975,7 +980,7 @@ export function WorkspacePage() {
   const queryClient = useQueryClient();
 
   const backgroundStatusRepositories = enableNonCriticalWorkspaceData
-    ? metadataScopedRepositories
+    ? visibleRepositories
     : [];
   const backgroundStatusWorktreeIds = useMemo(
     () => buildRepositoryWorktreeIndex(backgroundStatusRepositories).activeWorktreeIds,
@@ -2087,6 +2092,7 @@ export function WorkspacePage() {
   }, []);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [focusComposerSignal, setFocusComposerSignal] = useState(0);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const openSettingsDialog = useCallback(() => {
     requestAllModelCatalogs();
@@ -2243,6 +2249,60 @@ export function WorkspacePage() {
     updateSearch,
   });
   pushStartupRenderProfileSection("workspace-file-editor");
+
+  const handleFocusChatInput = useCallback(() => {
+    if (activeView === "file" && !confirmSwitchAwayFromActiveFile()) {
+      return;
+    }
+
+    if (activeView !== "chat") {
+      updateSearch({
+        view: undefined,
+        file: undefined,
+        fileLine: undefined,
+        fileColumn: undefined,
+        automationId: undefined,
+        automationCreate: undefined,
+      });
+    }
+
+    setFocusComposerSignal((current) => current + 1);
+  }, [activeView, confirmSwitchAwayFromActiveFile, updateSearch]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (settingsOpen) {
+        return;
+      }
+
+      const isMac = isMacLikePlatform();
+
+      if (matchesOpenSettingsShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        openSettingsDialog();
+        return;
+      }
+
+      if (matchesToggleWorkspaceSidebarShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleToggleLeftSidebar();
+        return;
+      }
+
+      if (matchesFocusChatInputShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleFocusChatInput();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [handleFocusChatInput, handleToggleLeftSidebar, openSettingsDialog, settingsOpen]);
 
   const threadlessFallbackSurface = useMemo(
     () => resolveWorkspaceThreadlessFallbackSurface({
@@ -3820,6 +3880,7 @@ export function WorkspacePage() {
                     <Composer
                       attachedTop={false}
                       disabled={chat.composerDisabled || gates.planActionBusy}
+                      focusSignal={focusComposerSignal > 0 ? focusComposerSignal : undefined}
                       sending={chat.sendingMessage}
                       showStop={chat.showStopAction}
                       stopping={chat.stoppingRun}
