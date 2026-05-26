@@ -11,6 +11,7 @@ coverage
 apps/runtime/prisma/**/*.db
 apps/runtime/prisma/**/*.db-journal
 apps/runtime/.tmp
+apps/runtime/.tmp-subagent-transcript.jsonl
 apps/runtime/debug.log
 apps/web/src/routeTree.gen.ts
 apps/desktop/src-tauri/binaries/
