@@ -73,7 +73,7 @@ export async function approvePlanExecution(params: {
     const executionThread = await params.deps.prisma.chatThread.create({
       data: {
         worktreeId: thread.worktreeId,
-        title: thread.title,
+        title: "New Thread",
         kind: "default",
         permissionProfile: thread.permissionProfile,
         permissionMode: thread.permissionMode,
@@ -84,6 +84,20 @@ export async function approvePlanExecution(params: {
       },
     });
     executionThreadId = executionThread.id;
+
+    params.deps.logService?.log("debug", "chat.plan.handoff", "Created handoff execution thread", {
+      sourceThreadId: params.threadId,
+      executionThreadId,
+      worktreeId: executionThread.worktreeId,
+      title: executionThread.title,
+      planEventId: plan.eventId,
+      agent: selection.agent,
+      model: selection.model,
+      modelProviderId: selection.modelProviderId,
+    }, {
+      worktreeId: executionThread.worktreeId,
+      threadId: executionThreadId,
+    });
 
     if (params.deps.workspaceEventHub) {
       params.deps.workspaceEventHub.emit("thread.created", {

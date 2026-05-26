@@ -234,6 +234,22 @@ describe("WorkspaceHeader", () => {
     expect(onCreateThread).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a selected fallback thread tab visible while thread list catches up", () => {
+    renderHeader({
+      selectedThreadId: "thread-handoff",
+      selectedThreadFallbackTitle: "Plan handoff",
+    });
+
+    const selectedTab = container.querySelector<HTMLButtonElement>('button[role="tab"][aria-selected="true"]');
+    if (!selectedTab) {
+      throw new Error("Selected fallback tab not found");
+    }
+
+    expect(selectedTab.textContent).toContain("Plan handoff");
+    expect(selectedTab.title).toBe("Plan handoff");
+    expect(container.querySelector('button[aria-label="Close session Plan handoff"]')).not.toBeNull();
+  });
+
   it("recenters the selected thread tab when it renders too close to the tab-strip edge", async () => {
     const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
     const scrollIntoView = vi.fn();

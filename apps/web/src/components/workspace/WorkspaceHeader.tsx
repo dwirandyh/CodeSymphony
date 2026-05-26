@@ -53,6 +53,7 @@ type WorkspaceHeaderProps = {
   activeTerminalTabId?: string | null;
   terminalTabActive?: boolean;
   selectedThreadId: string | null;
+  selectedThreadFallbackTitle?: string | null;
   fileTabs: WorkspaceFileTab[];
   activeFilePath: string | null;
   disabled: boolean;
@@ -131,6 +132,7 @@ export function WorkspaceHeader({
   activeTerminalTabId = null,
   terminalTabActive = false,
   selectedThreadId,
+  selectedThreadFallbackTitle,
   fileTabs,
   activeFilePath,
   disabled,
@@ -184,6 +186,29 @@ export function WorkspaceHeader({
   const filteredTargetBranchOptions = normalizedTargetBranchFilter
     ? targetBranchOptions.filter((branchOption) => branchOption.toLowerCase().includes(normalizedTargetBranchFilter))
     : targetBranchOptions;
+  const selectedThreadMissingFromTabs = !!selectedThreadId && !threads.some((thread) => thread.id === selectedThreadId);
+  const threadTabs = selectedThreadMissingFromTabs
+    ? [
+      ...threads.map((thread) => ({ thread, pending: false })),
+      {
+        thread: {
+          id: selectedThreadId,
+          worktreeId: "",
+          title: selectedThreadFallbackTitle || "Loading thread...",
+          kind: "default" as const,
+          permissionProfile: "default" as const,
+          permissionMode: "default" as const,
+          mode: "default" as const,
+          titleEditedManually: false,
+          claudeSessionId: null,
+          active: false,
+          createdAt: new Date(0).toISOString(),
+          updatedAt: new Date(0).toISOString(),
+        },
+        pending: true,
+      },
+    ]
+    : threads.map((thread) => ({ thread, pending: false }));
 
   useEffect(() => {
     if (!editingThreadId) {
@@ -436,7 +461,7 @@ export function WorkspaceHeader({
           data-testid="session-tabs-scroll"
         >
           <div className="flex w-max min-w-full items-center gap-0.5 whitespace-nowrap">
-            {threads.map((thread) => {
+            {threadTabs.map(({ thread, pending }) => {
               const isSelected = thread.id === selectedThreadId && !reviewTabActive && !activeFilePath && !terminalTabActive;
               const isAnyThreadClosing = closingThreadId !== null;
               const isProtected = protectedThreadId === thread.id;
@@ -482,7 +507,11 @@ export function WorkspaceHeader({
                         isSelected && "text-foreground",
                       )}
                       onClick={() => onSelectThread(thread.id)}
-                      onDoubleClick={() => startThreadRename(thread.id, isSelected)}
+                      onDoubleClick={() => {
+                        if (!pending) {
+                          startThreadRename(thread.id, isSelected);
+                        }
+                      }}
                       onPointerEnter={() => onPrefetchThread?.(thread.id)}
                       onFocus={() => onPrefetchThread?.(thread.id)}
                       disabled={disabled}
@@ -500,7 +529,7 @@ export function WorkspaceHeader({
                       isSelected ? "opacity-100" : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
                     )}
                     onClick={() => onCloseThread(thread.id)}
-                    disabled={disabled || isAnyThreadClosing || isEditing || isProtected}
+                    disabled={disabled || pending || isAnyThreadClosing || isEditing || isProtected}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
