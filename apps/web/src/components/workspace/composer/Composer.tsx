@@ -1096,10 +1096,6 @@ function ComposerContent({
         return;
       }
 
-      if (showStop) {
-        return;
-      }
-
       if (isMobile) {
         return;
       }
@@ -1116,9 +1112,16 @@ function ComposerContent({
       }
 
       event.preventDefault();
+      if (showStop) {
+        if (!sending && !stopping && !cannotQueue) {
+          void handleQueueDraft();
+        }
+        return;
+      }
+
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashCommandSuggestions, selectedSlashCommandIndex, selectSlashCommandSuggestion, closeSlashCommand, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, sendMessagesWith, syncValueFromEditor, applyAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashCommandSuggestions, selectedSlashCommandIndex, selectSlashCommandSuggestion, closeSlashCommand, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, sendMessagesWith, sending, stopping, cannotQueue, handleQueueDraft, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {
