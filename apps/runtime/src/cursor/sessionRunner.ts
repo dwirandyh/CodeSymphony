@@ -356,7 +356,10 @@ function parseCursorPlanTodosFromPrompt(prompt: string): AgentTodoItem[] {
     const statusMatch = /^\s+status:\s+(.+)\s*$/.exec(line);
     if (statusMatch) {
       current = current ?? {};
-      current.status = normalizeCursorTodoStatus(parseYamlScalar(statusMatch[1] ?? ""));
+      const status = normalizeCursorTodoStatus(parseYamlScalar(statusMatch[1] ?? ""));
+      if (status) {
+        current.status = status;
+      }
     }
   }
 
