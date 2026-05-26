@@ -200,7 +200,8 @@ cp -r "${WORKSPACE_ROOT}/apps/runtime/dist" "${BUNDLE_DIR}/dist"
 
 echo "=== Copying terminal zsh bootstrap ==="
 rm -rf "${BUNDLE_DIR}/terminal-zsh"
-cp -R "${WORKSPACE_ROOT}/apps/runtime/terminal-zsh" "${BUNDLE_DIR}/terminal-zsh"
+mkdir -p "${BUNDLE_DIR}/terminal-zsh"
+cp "${WORKSPACE_ROOT}/apps/runtime/terminal-zsh/.zshrc" "${BUNDLE_DIR}/terminal-zsh/.zshrc"
 
 echo "=== Copying workspace runtime dependencies ==="
 copy_workspace_package "@codesymphony/shared-types" "${WORKSPACE_ROOT}/packages/shared-types"
