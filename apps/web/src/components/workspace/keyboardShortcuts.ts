@@ -6,10 +6,19 @@ export type WorkspaceShortcutId =
   | "focus_chat_input"
   | "quick_file_picker"
   | "close_active_surface"
+  | "create_terminal"
+  | "create_thread"
+  | "previous_session_tab"
+  | "next_session_tab"
+  | "previous_worktree"
+  | "next_worktree"
+  | "jump_worktree"
+  | "navigate_back"
+  | "navigate_forward"
   | "save_active_file"
   | "find_terminal";
 
-export type WorkspaceShortcutSectionId = "workspace" | "editor" | "terminal";
+export type WorkspaceShortcutSectionId = "workspace" | "sessions" | "worktrees" | "navigation" | "editor" | "terminal";
 
 type WorkspaceShortcutDefinition = {
   id: WorkspaceShortcutId;
@@ -82,6 +91,105 @@ export const WORKSPACE_SHORTCUTS: Record<WorkspaceShortcutId, WorkspaceShortcutD
       linux: null,
     },
   },
+  create_terminal: {
+    id: "create_terminal",
+    label: "Create new terminal",
+    description: "Create a terminal tab for the active worktree.",
+    scope: "Session tabs",
+    bindings: {
+      mac: "Cmd+Shift+T",
+      windows: "Ctrl+Shift+Alt+T",
+      linux: "Ctrl+Shift+Alt+T",
+    },
+  },
+  create_thread: {
+    id: "create_thread",
+    label: "Create new thread",
+    description: "Create a chat thread for the active worktree.",
+    scope: "Session tabs",
+    bindings: {
+      mac: "Cmd+T",
+      windows: "Ctrl+Shift+T",
+      linux: "Ctrl+Shift+T",
+    },
+  },
+  previous_session_tab: {
+    id: "previous_session_tab",
+    label: "Previous session tab",
+    description: "Move to the previous thread, terminal, review, or file tab.",
+    scope: "Session tabs",
+    bindings: {
+      mac: "Cmd+Alt+Left",
+      windows: "Ctrl+Shift+Alt+Left",
+      linux: "Ctrl+Shift+Alt+Left",
+    },
+  },
+  next_session_tab: {
+    id: "next_session_tab",
+    label: "Next session tab",
+    description: "Move to the next thread, terminal, review, or file tab.",
+    scope: "Session tabs",
+    bindings: {
+      mac: "Cmd+Alt+Right",
+      windows: "Ctrl+Shift+Alt+Right",
+      linux: "Ctrl+Shift+Alt+Right",
+    },
+  },
+  previous_worktree: {
+    id: "previous_worktree",
+    label: "Previous worktree",
+    description: "Select the previous visible worktree in the sidebar.",
+    scope: "Repository and worktree navigation",
+    bindings: {
+      mac: "Cmd+Alt+Up",
+      windows: "Ctrl+Shift+Alt+Up",
+      linux: "Ctrl+Shift+Alt+Up",
+    },
+  },
+  next_worktree: {
+    id: "next_worktree",
+    label: "Next worktree",
+    description: "Select the next visible worktree in the sidebar.",
+    scope: "Repository and worktree navigation",
+    bindings: {
+      mac: "Cmd+Alt+Down",
+      windows: "Ctrl+Shift+Alt+Down",
+      linux: "Ctrl+Shift+Alt+Down",
+    },
+  },
+  jump_worktree: {
+    id: "jump_worktree",
+    label: "Jump to worktree 1-9",
+    description: "Jump to a visible worktree by sidebar order.",
+    scope: "Repository and worktree navigation",
+    bindings: {
+      mac: "Cmd+1-9",
+      windows: "Ctrl+Shift+1-9",
+      linux: "Ctrl+Shift+1-9",
+    },
+  },
+  navigate_back: {
+    id: "navigate_back",
+    label: "Navigate back",
+    description: "Move back through workspace navigation history.",
+    scope: "Workspace navigation history",
+    bindings: {
+      mac: "Cmd+[",
+      windows: "Ctrl+Shift+[",
+      linux: "Ctrl+Shift+[",
+    },
+  },
+  navigate_forward: {
+    id: "navigate_forward",
+    label: "Navigate forward",
+    description: "Move forward through workspace navigation history.",
+    scope: "Workspace navigation history",
+    bindings: {
+      mac: "Cmd+]",
+      windows: "Ctrl+Shift+]",
+      linux: "Ctrl+Shift+]",
+    },
+  },
   save_active_file: {
     id: "save_active_file",
     label: "Save active file",
@@ -117,6 +225,36 @@ export const WORKSPACE_SHORTCUT_SECTIONS: WorkspaceShortcutSection[] = [
       "focus_chat_input",
       "quick_file_picker",
       "close_active_surface",
+    ],
+  },
+  {
+    id: "sessions",
+    label: "Sessions",
+    description: "Shortcuts for thread, terminal, review, and file tabs.",
+    shortcutIds: [
+      "create_terminal",
+      "create_thread",
+      "previous_session_tab",
+      "next_session_tab",
+    ],
+  },
+  {
+    id: "worktrees",
+    label: "Worktrees",
+    description: "Shortcuts for visible sidebar worktrees.",
+    shortcutIds: [
+      "previous_worktree",
+      "next_worktree",
+      "jump_worktree",
+    ],
+  },
+  {
+    id: "navigation",
+    label: "Navigation",
+    description: "Shortcuts for workspace navigation history.",
+    shortcutIds: [
+      "navigate_back",
+      "navigate_forward",
     ],
   },
   {
@@ -182,11 +320,57 @@ export function matchesFocusChatInputShortcut(event: ShortcutKeyboardEvent, isMa
   return matchesPrimaryShortcut(event, isMac, "j", { shift: !isMac });
 }
 
+export function matchesCreateTerminalShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "t", { shift: true, alt: !isMac });
+}
+
+export function matchesCreateThreadShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "t", { shift: !isMac });
+}
+
+export function matchesPreviousSessionTabShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "arrowleft", { alt: true, shift: !isMac });
+}
+
+export function matchesNextSessionTabShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "arrowright", { alt: true, shift: !isMac });
+}
+
+export function matchesPreviousWorktreeShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "arrowup", { alt: true, shift: !isMac });
+}
+
+export function matchesNextWorktreeShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "arrowdown", { alt: true, shift: !isMac });
+}
+
+export function getJumpToWorktreeShortcutIndex(event: ShortcutKeyboardEvent, isMac: boolean): number | null {
+  const key = event.key.length === 1 ? event.key : "";
+  if (!/^[1-9]$/.test(key)) {
+    return null;
+  }
+
+  if (!matchesPrimaryShortcut(event, isMac, key, { shift: !isMac })) {
+    return null;
+  }
+
+  return Number.parseInt(key, 10) - 1;
+}
+
+export function matchesNavigateBackShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "[", { shift: !isMac });
+}
+
+export function matchesNavigateForwardShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "]", { shift: !isMac });
+}
+
 function matchesPrimaryShortcut(
   event: ShortcutKeyboardEvent,
   isMac: boolean,
   key: string,
   options?: {
+    alt?: boolean;
     shift?: boolean;
   },
 ): boolean {
@@ -194,7 +378,7 @@ function matchesPrimaryShortcut(
     return false;
   }
 
-  if (event.altKey) {
+  if (event.altKey !== (options?.alt ?? false)) {
     return false;
   }
 
@@ -210,7 +394,7 @@ function matchesPrimaryShortcut(
     return false;
   }
 
-  return event.key.toLowerCase() === key;
+  return event.key.toLowerCase() === key.toLowerCase();
 }
 
 function readNavigatorPlatform(): string {

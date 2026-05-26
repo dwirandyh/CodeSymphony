@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Loader2, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Loader2, Pencil, Play, Plus, Search, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Slider } from "../ui/slider";
 import { api } from "../../lib/api";
@@ -582,6 +583,7 @@ export function SettingsDialog({
   const [desktopNotificationsMessage, setDesktopNotificationsMessage] = useState<string | null>(null);
   const [openingDesktopNotificationSettings, setOpeningDesktopNotificationSettings] = useState(false);
   const [testingCompletionSound, setTestingCompletionSound] = useState(false);
+  const [shortcutSearchQuery, setShortcutSearchQuery] = useState("");
 
   // ── Workspace tab state ──
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
@@ -934,6 +936,22 @@ export function SettingsDialog({
     onClose();
   }, [dirty, handleSave, onClose]);
 
+  useEffect(() => {
+    if (!open) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || showProviderDialog || showRemoveDialog) {
+        return;
+      }
+
+      event.preventDefault();
+      void handleCloseSettings();
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleCloseSettings, open, showProviderDialog, showRemoveDialog]);
+
   // Auto-save effect
   useEffect(() => {
     if (!dirty) return;
@@ -1111,13 +1129,25 @@ export function SettingsDialog({
   const completionAttentionHint = "Completion alerts are suppressed when the finished chat is already visible and focused.";
   const shortcutPlatform = resolveWorkspaceShortcutPlatform();
   const shortcutSections = getVisibleWorkspaceShortcutSections(shortcutPlatform);
+  const normalizedShortcutSearchQuery = shortcutSearchQuery.trim().toLowerCase();
+  const filteredShortcutSections = normalizedShortcutSearchQuery.length === 0
+    ? shortcutSections
+    : shortcutSections.map((section) => ({
+      ...section,
+      shortcuts: section.shortcuts.filter((shortcut) => (
+        shortcut.label.toLowerCase().includes(normalizedShortcutSearchQuery)
+        || shortcut.description.toLowerCase().includes(normalizedShortcutSearchQuery)
+        || shortcut.scope.toLowerCase().includes(normalizedShortcutSearchQuery)
+        || (getWorkspaceShortcutLabel(shortcut, shortcutPlatform)?.toLowerCase().includes(normalizedShortcutSearchQuery) ?? false)
+      )),
+    })).filter((section) => section.shortcuts.length > 0);
   const primarySettingsTabs: Array<{ id: SettingsTab; label: string }> = [
     { id: "general", label: "General" },
     { id: "workspace", label: "Workspace" },
     { id: "models", label: "Models" },
-  ];
-  const referenceSettingsTabs: Array<{ id: SettingsTab; label: string }> = [
     { id: "shortcuts", label: "Shortcuts" },
+  ];
+  const aboutSettingsTabs: Array<{ id: SettingsTab; label: string }> = [
     { id: "licenses", label: "Licenses" },
   ];
 
@@ -1127,16 +1157,16 @@ export function SettingsDialog({
     <>
       {/* Full-page overlay */}
       <div className="fixed inset-0 z-50 flex overflow-hidden bg-background">
-        {/* Left panel — sidebar style */}
         <aside
-          className={`flex w-[232px] shrink-0 flex-col border-r border-border/30 bg-card/60 px-4 pb-4 ${
-            macDesktopShell ? "pt-[46px]" : "pt-3"
-          }`}
+          className={cn(
+            "flex w-[232px] shrink-0 flex-col border-r border-border/30 bg-card/60 px-4 pb-4",
+            macDesktopShell ? "pt-[46px]" : "pt-3",
+          )}
           data-testid="settings-sidebar"
         >
           <button
             type="button"
-            className="mb-5 flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
+            className="mb-5 flex items-center gap-2 px-1 py-1 text-muted-foreground transition-colors hover:text-foreground"
             aria-label="Close settings"
             onClick={() => { void handleCloseSettings(); }}
           >
@@ -1144,10 +1174,10 @@ export function SettingsDialog({
             <span className="text-sm font-semibold text-foreground">Settings</span>
           </button>
 
-          <div className="space-y-5">
+          <div className="space-y-5" data-testid="settings-navigation">
             <div>
               <div className="mb-2 px-3 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground/65">
-                Preferences
+                Settings
               </div>
               <div className="space-y-1">
                 {primarySettingsTabs.map((tab) => (
@@ -1171,10 +1201,10 @@ export function SettingsDialog({
 
             <div>
               <div className="mb-2 px-3 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground/65">
-                Reference
+                About
               </div>
               <div className="space-y-1">
-                {referenceSettingsTabs.map((tab) => (
+                {aboutSettingsTabs.map((tab) => (
                   <button
                     key={tab.id}
                     type="button"
@@ -1212,7 +1242,6 @@ export function SettingsDialog({
           ) : null}
         </aside>
 
-        {/* Right panel */}
         <div className="flex flex-1 flex-col overflow-y-auto p-4">
           {macDesktopShell ? <SettingsDesktopAppBar /> : null}
 
@@ -1949,26 +1978,33 @@ export function SettingsDialog({
                 )}
               </div>
             ) : activeTab === "shortcuts" ? (
-              <div className="space-y-5">
-                <div>
-                  <h1 className="text-3xl font-semibold tracking-[-0.025em] text-foreground">Shortcuts</h1>
-                  <p className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
-                    This list includes the keyboard shortcuts that are currently available in CodeSymphony today.
-                  </p>
+              <div className="space-y-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h1 className="text-xl font-semibold text-foreground">Keyboard shortcuts</h1>
+                    <p className="mt-1 max-w-2xl text-sm leading-5 text-muted-foreground">
+                      Shortcuts available in the current workspace.
+                    </p>
+                  </div>
                 </div>
 
-                <div className="space-y-4">
-                  {shortcutSections.map((section) => (
-                    <section
-                      key={section.id}
-                      className="overflow-hidden rounded-xl border border-border/40 bg-secondary/10"
-                    >
-                      <div className="border-b border-border/30 px-4 py-3">
-                        <h2 className="text-sm font-semibold text-foreground">{section.label}</h2>
-                        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">{section.description}</p>
-                      </div>
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    type="text"
+                    value={shortcutSearchQuery}
+                    onChange={(event) => setShortcutSearchQuery(event.target.value)}
+                    placeholder="Search"
+                    aria-label="Search shortcuts"
+                    className="border-transparent bg-secondary/40 pl-9 shadow-none focus-visible:ring-1"
+                  />
+                </div>
 
-                      <div className="divide-y divide-border/30">
+                <div className="space-y-6">
+                  {filteredShortcutSections.map((section) => (
+                    <section key={section.id}>
+                      <h2 className="mb-2 text-sm font-medium text-muted-foreground">{section.label}</h2>
+                      <div className="overflow-hidden rounded-lg border border-border/60 bg-background divide-y divide-border/60">
                         {section.shortcuts.map((shortcut) => {
                           const label = getWorkspaceShortcutLabel(shortcut, shortcutPlatform);
                           if (!label) {
@@ -1978,17 +2014,15 @@ export function SettingsDialog({
                           return (
                             <div
                               key={shortcut.id}
-                              className="flex items-start justify-between gap-4 px-4 py-3"
+                              className="flex items-center justify-between gap-4 px-4 py-3 transition-colors hover:bg-secondary/20"
                             >
                               <div className="min-w-0">
-                                <div className="text-sm font-medium text-foreground">{shortcut.label}</div>
-                                <div className="mt-1 text-[11px] leading-5 text-muted-foreground">
-                                  <span>{shortcut.description}</span>
-                                  <span className="mx-1.5 text-muted-foreground/50">·</span>
-                                  <span>{shortcut.scope}</span>
+                                <div className="text-sm text-foreground">{shortcut.label}</div>
+                                <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                                  {shortcut.description}
                                 </div>
                               </div>
-                              <code className="shrink-0 rounded-md border border-border/50 bg-background/80 px-2 py-1 text-[11px] font-medium text-foreground">
+                              <code className="shrink-0 rounded-md border border-border/60 bg-secondary/30 px-2 py-1 text-[11px] font-medium text-foreground">
                                 {label}
                               </code>
                             </div>
@@ -1997,6 +2031,12 @@ export function SettingsDialog({
                       </div>
                     </section>
                   ))}
+
+                  {filteredShortcutSections.length === 0 ? (
+                    <div className="py-8 text-center text-sm text-muted-foreground">
+                      No shortcuts found matching "{shortcutSearchQuery}".
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ) : (

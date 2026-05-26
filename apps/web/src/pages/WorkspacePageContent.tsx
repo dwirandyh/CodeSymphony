@@ -5,6 +5,8 @@ import {
   type ChatThread,
   type ReviewRef,
   type ReviewKind,
+  type Repository,
+  type Worktree,
 } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
@@ -78,8 +80,17 @@ const WorkspaceAutomationsPanel = lazy(loadWorkspaceAutomationsPanel);
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import {
+  getJumpToWorktreeShortcutIndex,
+  matchesCreateTerminalShortcut,
+  matchesCreateThreadShortcut,
   matchesFocusChatInputShortcut,
+  matchesNavigateBackShortcut,
+  matchesNavigateForwardShortcut,
+  matchesNextSessionTabShortcut,
+  matchesNextWorktreeShortcut,
   matchesOpenSettingsShortcut,
+  matchesPreviousSessionTabShortcut,
+  matchesPreviousWorktreeShortcut,
   matchesToggleWorkspaceSidebarShortcut,
 } from "../components/workspace/keyboardShortcuts";
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
@@ -141,6 +152,7 @@ import {
   isOperationalWorktreeStatus,
   isPendingWorktreeStatus,
   isRootWorktree,
+  isSelectableWorktreeStatus,
 } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
 import type { ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
@@ -274,6 +286,102 @@ function formatRuntimeLabel(runtimeInfo: RuntimeInfo | null | undefined): string
   }
 
   return `Runtime :${port}`;
+}
+
+type SessionShortcutTarget =
+  | { kind: "thread"; id: string }
+  | { kind: "terminal"; id: string }
+  | { kind: "review" }
+  | { kind: "file"; path: string };
+
+type WorktreeShortcutTarget = {
+  repositoryId: string;
+  worktreeId: string;
+};
+
+function buildSessionShortcutTargets(input: {
+  threads: ChatThread[];
+  terminalTabs: WorkspaceTerminalTab[];
+  reviewTabOpen: boolean;
+  fileTabs: Array<{ path: string }>;
+}): SessionShortcutTarget[] {
+  return [
+    ...input.threads.map((thread) => ({ kind: "thread" as const, id: thread.id })),
+    ...input.terminalTabs.map((terminalTab) => ({ kind: "terminal" as const, id: terminalTab.id })),
+    ...(input.reviewTabOpen ? [{ kind: "review" as const }] : []),
+    ...input.fileTabs.map((fileTab) => ({ kind: "file" as const, path: fileTab.path })),
+  ];
+}
+
+function getActiveSessionShortcutTargetIndex(
+  targets: SessionShortcutTarget[],
+  active: {
+    activeView: "chat" | "file" | "review" | "automations";
+    selectedThreadId: string | null;
+    terminalViewActive: boolean;
+    activeTerminalTabId: string | null;
+    activeFilePath: string | null;
+  },
+): number {
+  return targets.findIndex((target) => {
+    if (target.kind === "thread") {
+      return (
+        active.activeView === "chat"
+        && !active.terminalViewActive
+        && target.id === active.selectedThreadId
+      );
+    }
+
+    if (target.kind === "terminal") {
+      return active.terminalViewActive && target.id === active.activeTerminalTabId;
+    }
+
+    if (target.kind === "review") {
+      return active.activeView === "review";
+    }
+
+    return active.activeView === "file" && target.path === active.activeFilePath;
+  });
+}
+
+function getWrappedIndex(currentIndex: number, length: number, direction: "previous" | "next"): number {
+  if (length <= 0) {
+    return -1;
+  }
+
+  if (currentIndex < 0) {
+    return direction === "previous" ? length - 1 : 0;
+  }
+
+  return direction === "previous"
+    ? (currentIndex - 1 + length) % length
+    : (currentIndex + 1) % length;
+}
+
+function buildVisibleWorktreeShortcutTargets(input: {
+  repositories: Repository[];
+  expandedByRepo: Record<string, boolean>;
+  selectedRepositoryId: string | null;
+}): WorktreeShortcutTarget[] {
+  return input.repositories.flatMap((repository) => {
+    const isExpanded = input.expandedByRepo[repository.id] ?? input.selectedRepositoryId === repository.id;
+    if (!isExpanded) {
+      return [];
+    }
+
+    const rootWorktree = findRootWorktree(repository);
+    const branchWorktrees = repository.worktrees.filter((worktree) => worktree.id !== rootWorktree?.id);
+    const visibleWorktrees = rootWorktree
+      ? [rootWorktree, ...branchWorktrees]
+      : branchWorktrees;
+
+    return visibleWorktrees
+      .filter((worktree: Worktree) => isSelectableWorktreeStatus(worktree.status))
+      .map((worktree) => ({
+        repositoryId: repository.id,
+        worktreeId: worktree.id,
+      }));
+  });
 }
 
 function formatRuntimeTitle(runtimeInfo: RuntimeInfo | null | undefined): string | null {
@@ -819,6 +927,14 @@ export function WorkspacePage() {
   const visibleRepositories = useMemo(
     () => orderedRepositories.filter((repository) => !hiddenRepositoryIdSet.has(repository.id)),
     [hiddenRepositoryIdSet, orderedRepositories],
+  );
+  const visibleWorktreeShortcutTargets = useMemo(
+    () => buildVisibleWorktreeShortcutTargets({
+      repositories: visibleRepositories,
+      expandedByRepo,
+      selectedRepositoryId: repos.selectedRepositoryId,
+    }),
+    [expandedByRepo, repos.selectedRepositoryId, visibleRepositories],
   );
   const metadataScopedRepositories = useMemo(
     () => filterRepositoriesForMetadataScope({
@@ -3145,6 +3261,189 @@ export function WorkspacePage() {
     },
     [chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, setWorkspaceLandingHold, updateSearch],
   );
+
+  const handleSelectSessionShortcutTarget = useCallback((target: SessionShortcutTarget) => {
+    if (target.kind === "thread") {
+      handleSelectThread(target.id);
+      return;
+    }
+
+    if (target.kind === "terminal") {
+      handleSelectTerminalTab(target.id);
+      return;
+    }
+
+    if (target.kind === "review") {
+      if (!confirmSwitchAwayFromActiveFile()) {
+        return;
+      }
+      updateSearch({ view: "review" });
+      return;
+    }
+
+    handleSelectFileTab(target.path);
+  }, [confirmSwitchAwayFromActiveFile, handleSelectFileTab, handleSelectTerminalTab, handleSelectThread, updateSearch]);
+
+  const handleMoveSessionTab = useCallback((direction: "previous" | "next") => {
+    const targets = buildSessionShortcutTargets({
+      threads: chat.threads,
+      terminalTabs: selectedTerminalTabsState.tabs,
+      reviewTabOpen,
+      fileTabs: workspaceFileTabs,
+    });
+    if (targets.length === 0) {
+      return;
+    }
+
+    const activeIndex = getActiveSessionShortcutTargetIndex(targets, {
+      activeView,
+      selectedThreadId: chat.selectedThreadId,
+      terminalViewActive,
+      activeTerminalTabId: activeTerminalTab?.id ?? null,
+      activeFilePath,
+    });
+    const nextIndex = getWrappedIndex(activeIndex, targets.length, direction);
+    const target = targets[nextIndex];
+    if (!target) {
+      return;
+    }
+
+    handleSelectSessionShortcutTarget(target);
+  }, [
+    activeFilePath,
+    activeTerminalTab?.id,
+    activeView,
+    chat.selectedThreadId,
+    chat.threads,
+    handleSelectSessionShortcutTarget,
+    reviewTabOpen,
+    selectedTerminalTabsState.tabs,
+    terminalViewActive,
+    workspaceFileTabs,
+  ]);
+
+  const handleMoveWorktree = useCallback((direction: "previous" | "next") => {
+    if (visibleWorktreeShortcutTargets.length === 0) {
+      return;
+    }
+
+    const activeIndex = visibleWorktreeShortcutTargets.findIndex((target) => (
+      target.worktreeId === repos.selectedWorktreeId
+    ));
+    const nextIndex = getWrappedIndex(activeIndex, visibleWorktreeShortcutTargets.length, direction);
+    const target = visibleWorktreeShortcutTargets[nextIndex];
+    if (!target) {
+      return;
+    }
+
+    handleSelectWorktree(target.repositoryId, target.worktreeId);
+  }, [handleSelectWorktree, repos.selectedWorktreeId, visibleWorktreeShortcutTargets]);
+
+  const handleJumpToWorktree = useCallback((index: number) => {
+    const target = visibleWorktreeShortcutTargets[index];
+    if (!target) {
+      return;
+    }
+
+    handleSelectWorktree(target.repositoryId, target.worktreeId);
+  }, [handleSelectWorktree, visibleWorktreeShortcutTargets]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (settingsOpen) {
+        return;
+      }
+
+      const isMac = isMacLikePlatform();
+      const jumpWorktreeIndex = getJumpToWorktreeShortcutIndex(event, isMac);
+
+      if (matchesCreateTerminalShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleCreateTerminalTab();
+        return;
+      }
+
+      if (matchesCreateThreadShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleCreateThreadFromHeader();
+        return;
+      }
+
+      if (matchesPreviousSessionTabShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleMoveSessionTab("previous");
+        return;
+      }
+
+      if (matchesNextSessionTabShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleMoveSessionTab("next");
+        return;
+      }
+
+      if (matchesPreviousWorktreeShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleMoveWorktree("previous");
+        return;
+      }
+
+      if (matchesNextWorktreeShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleMoveWorktree("next");
+        return;
+      }
+
+      if (jumpWorktreeIndex !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleJumpToWorktree(jumpWorktreeIndex);
+        return;
+      }
+
+      if (matchesNavigateBackShortcut(event, isMac)) {
+        if (!workspaceNavigation.canGoBack || !confirmSwitchAwayFromActiveFile()) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        workspaceNavigation.goBack();
+        return;
+      }
+
+      if (matchesNavigateForwardShortcut(event, isMac)) {
+        if (!workspaceNavigation.canGoForward || !confirmSwitchAwayFromActiveFile()) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        workspaceNavigation.goForward();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [
+    confirmSwitchAwayFromActiveFile,
+    handleCreateTerminalTab,
+    handleCreateThreadFromHeader,
+    handleJumpToWorktree,
+    handleMoveSessionTab,
+    handleMoveWorktree,
+    settingsOpen,
+    workspaceNavigation,
+  ]);
 
   const handleRequestCloseThread = useCallback((threadId: string) => {
     const needsConfirm = shouldConfirmCloseThread({
