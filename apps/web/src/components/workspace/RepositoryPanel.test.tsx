@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { resetThreadsCollectionRegistryForTest } from "../../collections/threads";
-import { RepositoryPanel } from "./RepositoryPanel";
+import { mergeSelectedWorktreeStatusOverride, RepositoryPanel } from "./RepositoryPanel";
 
 const { listThreadsMock, getThreadStatusSnapshotMock, getGitBranchDiffSummaryMock, getRepositoryReviewsMock } = vi.hoisted(() => ({
   listThreadsMock: vi.fn(),
@@ -210,6 +210,26 @@ describe("RepositoryPanel", () => {
     expect(getGitBranchDiffSummaryMock).not.toHaveBeenCalledWith("r2-wt-feat");
     expect(listThreadsMock).not.toHaveBeenCalledWith("r2-wt-root");
     expect(listThreadsMock).not.toHaveBeenCalledWith("r2-wt-feat");
+  });
+
+  it("keeps metadata queries enabled for the selected repository even when it is collapsed", async () => {
+    renderPanel({
+      repositories: [makeRepo({ id: "r1", name: "repo-one" })],
+      selectedRepositoryId: "r1",
+      expandedByRepo: { r1: false },
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getRepositoryReviewsMock).toHaveBeenCalledWith("r1");
+    expect(getGitBranchDiffSummaryMock).toHaveBeenCalledWith("r1-wt-root");
+    expect(getGitBranchDiffSummaryMock).toHaveBeenCalledWith("r1-wt-feat");
+    expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-root");
+    expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-feat");
   });
 
   it("shows root and branch worktrees without section separators", () => {
@@ -1296,6 +1316,65 @@ describe("RepositoryPanel", () => {
 
     expect(container.querySelector('[data-testid="worktree-status-idle"]')).toBeNull();
     expect(container.textContent).not.toContain("Idle");
+  });
+
+  it("renders the selected worktree live status override when metadata queries are disabled", () => {
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+      selectedWorktreeStatusOverride: {
+        kind: "running",
+        threadId: "t-live",
+      },
+    });
+
+    expect(container.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
+  });
+
+  it("forwards the selected live thread when the selected worktree override is review_plan", () => {
+    const onSelectWorktree = vi.fn();
+
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+      selectedWorktreeStatusOverride: {
+        kind: "review_plan",
+        threadId: "t-live-plan",
+      },
+      onSelectWorktree,
+    });
+
+    const featureRow = container.querySelector("[data-worktree-id='r1-wt-feat']") as HTMLElement | null;
+    expect(featureRow).toBeTruthy();
+
+    act(() => featureRow?.click());
+
+    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "r1-wt-feat", "t-live-plan");
+  });
+
+  it("keeps a higher-priority aggregated status over the selected worktree override", () => {
+    expect(mergeSelectedWorktreeStatusOverride({
+      worktreeStatuses: {
+        "r1-wt-feat": {
+          kind: "waiting_approval",
+          threadId: "t-pending",
+        },
+      },
+      selectedWorktreeId: "r1-wt-feat",
+      selectedWorktreeStatusOverride: {
+        kind: "running",
+        threadId: "t-live",
+      },
+    })).toEqual({
+      "r1-wt-feat": {
+        kind: "waiting_approval",
+        threadId: "t-pending",
+      },
+    });
   });
 
   it("styles the selected worktree as a flat fill without a selection ring", () => {

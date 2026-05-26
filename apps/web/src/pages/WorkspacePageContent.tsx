@@ -183,6 +183,7 @@ import {
   shouldReleaseStartupSelectionFallback,
   shouldPreserveStartupThreadFallback,
 } from "./workspace/startupShellPersistence";
+import { buildPlanHandoffSearchPatch } from "./workspace/planHandoffNavigation";
 import {
   shouldAutoLoadAllWorkspaceAgentCatalogs,
   shouldLoadWorkspaceAgentCatalog,
@@ -220,6 +221,7 @@ import {
   sortRepositoriesByPreference,
   type RepositoryPanelDropPosition,
 } from "./workspace/repositoryPanelPreferences";
+import { filterRepositoriesForMetadataScope } from "./workspace/repositoryMetadataScope";
 import {
   resolveUnavailableWorktreeSelection,
   resolveVisibleRepositorySelection,
@@ -814,9 +816,11 @@ export function WorkspacePage() {
     [hiddenRepositoryIdSet, orderedRepositories],
   );
   const metadataScopedRepositories = useMemo(
-    () => visibleRepositories.filter((repository) => (
-      expandedByRepo[repository.id] ?? repos.selectedRepositoryId === repository.id
-    )),
+    () => filterRepositoriesForMetadataScope({
+      repositories: visibleRepositories,
+      selectedRepositoryId: repos.selectedRepositoryId,
+      expandedByRepo,
+    }),
     [expandedByRepo, repos.selectedRepositoryId, visibleRepositories],
   );
   const desiredVisibleRepositoryId = useMemo(() => {
@@ -1213,6 +1217,20 @@ export function WorkspacePage() {
   }, [loadAllSlashCommandCatalogs, slashCommandCatalogsEnabled]);
   pushStartupRenderProfileSection("chat-session");
   const selectedThreadIdForLiveStatus = chat.selectedThreadIdForData ?? chat.selectedThreadId;
+  const selectedWorktreeStatusOverride = useMemo(() => {
+    if (
+      !repos.selectedWorktreeId
+      || !selectedThreadIdForLiveStatus
+      || chat.selectedThreadUiStatus === "idle"
+    ) {
+      return null;
+    }
+
+    return {
+      kind: chat.selectedThreadUiStatus,
+      threadId: selectedThreadIdForLiveStatus,
+    } as const;
+  }, [chat.selectedThreadUiStatus, repos.selectedWorktreeId, selectedThreadIdForLiveStatus]);
   const previousLiveScopeSelectionRef = useRef<WorkspaceLiveScopeSelection | null>(null);
   const [liveScopeSwitch, setLiveScopeSwitch] = useState<WorkspaceLiveScopeSwitch | null>(null);
 
@@ -1944,7 +1962,30 @@ export function WorkspacePage() {
     authoritativeThreadStatus: chat.authoritativeThreadStatus,
     onPlanApproved: (result) => {
       if (result.executionKind === "handoff") {
+        const handoffSearchPatch = buildPlanHandoffSearchPatch(result.executionThreadId);
+        hideTerminalView(repos.selectedWorktreeId);
+        setWorkspaceLandingHold(repos.selectedWorktreeId, false);
+        chat.registerPendingHandoffThread({
+          sourceThreadId: result.sourceThreadId,
+          executionThreadId: result.executionThreadId,
+          sourceThread: selectedThreadShell,
+        });
         chat.setSelectedThreadId(result.executionThreadId, { preserveWhileMissing: true });
+        chat.startWaitingAssistant(result.executionThreadId);
+        updateSearch(handoffSearchPatch);
+        debugLog("thread.plan.handoff", "navigated to handoff execution thread", {
+          sourceThreadId: result.sourceThreadId,
+          executionThreadId: result.executionThreadId,
+          selectedWorktreeId: repos.selectedWorktreeId,
+          activeView,
+          activeFilePath,
+          terminalViewActive,
+          searchPatch: handoffSearchPatch,
+        }, {
+          threadId: result.executionThreadId,
+          worktreeId: repos.selectedWorktreeId,
+          force: true,
+        });
       }
     },
   });
@@ -3224,6 +3265,7 @@ export function WorkspacePage() {
               repositories={orderedRepositories}
               selectedRepositoryId={repos.selectedRepositoryId}
               selectedWorktreeId={repos.selectedWorktreeId}
+              selectedWorktreeStatusOverride={selectedWorktreeStatusOverride}
               threadSnapshot={backgroundStatusThreadSnapshot}
               hiddenRepositoryIds={hiddenRepositoryIds}
               expandedByRepo={expandedByRepo}
@@ -3354,6 +3396,7 @@ export function WorkspacePage() {
                     activeTerminalTabId={activeTerminalTab?.id ?? null}
                     terminalTabActive={terminalViewActive}
                     selectedThreadId={chat.selectedThreadId}
+                    selectedThreadFallbackTitle={selectedThreadTitle}
                     fileTabs={workspaceFileTabs}
                     activeFilePath={activeFilePath}
                     disabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
@@ -3660,15 +3703,6 @@ export function WorkspacePage() {
             ) : (
               <>
                 <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  {selectedChatThread?.handoffSourceThreadId ? (
-                    <div className="mx-auto w-full max-w-3xl px-3 pb-2">
-                      <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                        Plan handoff thread
-                        {" · "}
-                        Created from approved plan in thread {selectedChatThread.handoffSourceThreadId.slice(0, 8)}
-                      </div>
-                    </div>
-                  ) : null}
                   <div className="min-h-0 min-w-0 flex-1">
                     <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
                       <ChatMessageList
@@ -4000,6 +4034,7 @@ export function WorkspacePage() {
                   repositories={orderedRepositories}
                   selectedRepositoryId={repos.selectedRepositoryId}
                   selectedWorktreeId={repos.selectedWorktreeId}
+                  selectedWorktreeStatusOverride={selectedWorktreeStatusOverride}
                   enableMetadataQueries={enableNonCriticalWorkspaceData}
                   threadSnapshot={backgroundStatusThreadSnapshot}
                   hiddenRepositoryIds={hiddenRepositoryIds}

@@ -433,6 +433,10 @@ describe("useChatSession", () => {
 
     renderHook("thread-a");
     expect(hookResult.selectedThreadId).toBe("thread-handoff");
+    expect(hookResult.selectedThreadIdForData).toBe("thread-handoff");
+    expect(useThreadEventStream).toHaveBeenLastCalledWith(expect.objectContaining({
+      selectedThreadId: "thread-handoff",
+    }));
 
     renderHook("thread-handoff");
     expect(hookResult.selectedThreadId).toBe("thread-handoff");
@@ -441,6 +445,96 @@ describe("useChatSession", () => {
     renderHook("thread-handoff");
 
     expect(hookResult.selectedThreadId).toBe("thread-handoff");
+  });
+
+  it("submits through a preserved thread selection while the thread list catches up", async () => {
+    threadsState.data = [makeThread("thread-a")];
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "user-1",
+      threadId: "thread-handoff",
+      seq: 0,
+      role: "user",
+      content: "Hello from pending thread",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:02Z",
+    });
+
+    renderHook("thread-a");
+
+    act(() => {
+      hookResult.setSelectedThreadId("thread-handoff", { preserveWhileMissing: true });
+    });
+
+    renderHook("thread-a");
+
+    expect(hookResult.selectedThreadId).toBe("thread-handoff");
+    expect(hookResult.selectedThreadIdForData).toBe("thread-handoff");
+
+    await act(async () => {
+      const submitted = await hookResult.submitMessage("Hello from pending thread", "default", []);
+      expect(submitted).toBe(true);
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith("thread-handoff", {
+      content: "Hello from pending thread",
+      mode: "default",
+      attachments: [],
+      expectedWorktreeId: "wt-1",
+    });
+    expect(onErrorMock).not.toHaveBeenCalledWith("Selected thread is stale for the active worktree. Please retry.");
+  });
+
+  it("keeps source and execution tabs visible immediately after handoff while thread list catches up", () => {
+    threadsState.data = [{
+      ...makeThread("thread-source"),
+      title: "Plan source",
+      mode: "plan",
+    }];
+
+    renderHook("thread-source");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-source"]);
+
+    act(() => {
+      hookResult.registerPendingHandoffThread({
+        sourceThreadId: "thread-source",
+        executionThreadId: "thread-handoff",
+        sourceThread: hookResult.threads[0],
+      });
+      hookResult.setSelectedThreadId("thread-handoff", { preserveWhileMissing: true });
+      hookResult.startWaitingAssistant("thread-handoff");
+    });
+
+    expect(hookResult.threads.map((thread) => [thread.id, thread.title, thread.active])).toEqual([
+      ["thread-source", "Plan source", false],
+      ["thread-handoff", "New Thread", true],
+    ]);
+    expect(hookResult.selectedThreadId).toBe("thread-handoff");
+    expect(hookResult.selectedThreadIdForData).toBe("thread-handoff");
+
+    threadsState.data = [{
+      ...makeThread("thread-handoff", true),
+      title: "New Thread",
+      handoffSourceThreadId: "thread-source",
+    }];
+    renderHook("thread-handoff");
+
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-handoff", "thread-source"]);
+
+    threadsState.data = [
+      {
+        ...makeThread("thread-source"),
+        title: "Plan source",
+        mode: "default",
+      },
+      {
+        ...makeThread("thread-handoff", true),
+        title: "New Thread",
+        handoffSourceThreadId: "thread-source",
+      },
+    ];
+    renderHook("thread-handoff");
+
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-source", "thread-handoff"]);
   });
 
   it("updates composer permission mode for the selected thread", async () => {
@@ -2336,6 +2430,58 @@ describe("useChatSession", () => {
     expect(hookResult.authoritativeThreadStatus).toBe("review_plan");
   });
 
+  it("keeps a running handoff thread non-empty while only a compact startup snapshot is available", async () => {
+    const compactTimelineItems: ChatTimelineItem[] = [
+      {
+        kind: "message",
+        message: {
+          id: "assistant-handoff",
+          threadId: "thread-a",
+          seq: 0,
+          role: "assistant",
+          content: "Handoff started.",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+        context: [],
+      },
+    ];
+
+    threadsState.data = [{ ...makeThread("thread-a", true), title: "Handoff thread" }];
+    snapshotState.compactData = makeSnapshot({
+      collectionsIncluded: false,
+      newestSeq: 0,
+      newestIdx: 3,
+      timelineItems: compactTimelineItems as ChatTimelineSnapshot["timelineItems"],
+      summary: {
+        oldestRenderableKey: "message:assistant-handoff",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-handoff",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+      messages: [],
+      events: [],
+    });
+    snapshotState.fullData = null;
+    statusSnapshotState.data = {
+      status: "running",
+      newestIdx: 3,
+    };
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadUiStatus).toBe("running");
+    expect(hookResult.timelineItems).toEqual(compactTimelineItems);
+    expect(hookResult.messageListEmptyState).toBeNull();
+  });
+
   it("keeps a direct-opened thread non-empty while deferred canonical hydration catches up", async () => {
     const compactToolEvent = makeEvent(3, "tool.finished", {
       messageId: "assistant-compact",
@@ -2579,6 +2725,49 @@ describe("useChatSession", () => {
 
     expect(hookResult.selectedThreadUiStatus).toBe("review_plan");
     expect(hookResult.events.map((event) => event.type)).toEqual(["plan.created", "chat.completed"]);
+  });
+
+  it("does not emit a null thread navigation during page reload while the selected thread rehydrates from query data", async () => {
+    const onThreadChange = vi.fn();
+
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 2,
+      messages: [{
+        id: "assistant-plan",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical plan summary",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [
+        makeEvent(1, "plan.created", {
+          content: "# Plan\n\n1. Ship it",
+          filePath: ".claude/plans/plan.md",
+        }),
+        makeEvent(2, "chat.completed", {}),
+      ],
+    });
+
+    renderHook("thread-a", null, "wt-1", undefined, "active", { onThreadChange });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    onThreadChange.mockClear();
+
+    simulatePageReload();
+    renderHook("thread-a", null, "wt-1", undefined, "active", { onThreadChange });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(onThreadChange).not.toHaveBeenCalledWith(null);
+    expect(hookResult.selectedThreadIdForData).toBe("thread-a");
   });
 
   it("clears a persisted pending plan after a page reload once the plan is approved", async () => {

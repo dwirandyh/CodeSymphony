@@ -48,11 +48,13 @@ import type {
   WorktreeThreadUiStatus,
 } from "../../pages/workspace/hooks/worktreeThreadStatus";
 import type { RepositoryPanelDropPosition } from "../../pages/workspace/repositoryPanelPreferences";
+import { filterRepositoriesForMetadataScope } from "../../pages/workspace/repositoryMetadataScope";
 
 type RepositoryPanelProps = {
   repositories: Repository[];
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
+  selectedWorktreeStatusOverride?: WorktreeStatusSummary | null;
   enableMetadataQueries?: boolean;
   threadSnapshot?: ThreadsByWorktreeSnapshot;
   hiddenRepositoryIds: string[];
@@ -147,6 +149,42 @@ function resolvePriorityThreadId(
   return status.kind === "waiting_approval" || status.kind === "review_plan"
     ? status.threadId
     : null;
+}
+
+const WORKTREE_STATUS_PRIORITY: WorktreeThreadUiStatus[] = [
+  "waiting_approval",
+  "review_plan",
+  "running",
+  "idle",
+];
+
+export function mergeSelectedWorktreeStatusOverride(params: {
+  worktreeStatuses: Record<string, WorktreeStatusSummary>;
+  selectedWorktreeId: string | null;
+  selectedWorktreeStatusOverride?: WorktreeStatusSummary | null;
+}): Record<string, WorktreeStatusSummary> {
+  const { worktreeStatuses, selectedWorktreeId, selectedWorktreeStatusOverride } = params;
+
+  if (
+    !selectedWorktreeId
+    || !selectedWorktreeStatusOverride
+    || selectedWorktreeStatusOverride.kind === "idle"
+  ) {
+    return worktreeStatuses;
+  }
+
+  const current = worktreeStatuses[selectedWorktreeId];
+  const currentPriority = current ? WORKTREE_STATUS_PRIORITY.indexOf(current.kind) : Number.POSITIVE_INFINITY;
+  const overridePriority = WORKTREE_STATUS_PRIORITY.indexOf(selectedWorktreeStatusOverride.kind);
+
+  if (current && currentPriority < overridePriority) {
+    return worktreeStatuses;
+  }
+
+  return {
+    ...worktreeStatuses,
+    [selectedWorktreeId]: selectedWorktreeStatusOverride,
+  };
 }
 
 function WorktreeStatusBadge({
@@ -379,6 +417,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   repositories,
   selectedRepositoryId,
   selectedWorktreeId,
+  selectedWorktreeStatusOverride = null,
   enableMetadataQueries = true,
   threadSnapshot,
   hiddenRepositoryIds,
@@ -448,9 +487,11 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     [visibleRepositories],
   );
   const metadataRepositories = useMemo(
-    () => visibleRepositories.filter((repository) => (
-      expandedByRepo[repository.id] ?? selectedRepositoryId === repository.id
-    )),
+    () => filterRepositoriesForMetadataScope({
+      repositories: visibleRepositories,
+      selectedRepositoryId,
+      expandedByRepo,
+    }),
     [expandedByRepo, selectedRepositoryId, visibleRepositories],
   );
   const renderedVisibleRepositoryIds = previewVisibleRepositoryIds ?? visibleRepositoryIds;
@@ -484,6 +525,14 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     [repositoryWorktreeIndex],
   );
   const worktreeStatuses = useWorktreeStatuses(metadataRepositories, enableMetadataQueries, threadSnapshot);
+  const displayWorktreeStatuses = useMemo(
+    () => mergeSelectedWorktreeStatusOverride({
+      worktreeStatuses,
+      selectedWorktreeId,
+      selectedWorktreeStatusOverride,
+    }),
+    [selectedWorktreeId, selectedWorktreeStatusOverride, worktreeStatuses],
+  );
   const gitBranchDiffQueries = useQueries({
     queries: activeWorktreeSummaries.map(({ worktreeId, baseBranch }) => ({
       ...gitBranchDiffSummaryQueryOptions(worktreeId, baseBranch),
@@ -1083,7 +1132,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
               : visibleWorktrees;
             const isExpanded = expandedByRepo[repository.id] ?? isSelected;
             const rootPriorityThreadId = rootWorkspace
-              ? resolvePriorityThreadId(worktreeStatuses[rootWorkspace.id])
+              ? resolvePriorityThreadId(displayWorktreeStatuses[rootWorkspace.id])
               : null;
             const repositoryReviews =
               reviewsByRepositoryId[repository.id] ?? {};
@@ -1220,7 +1269,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                   {rootWorkspace.branch}
                                 </span>
                               }
-                              status={worktreeStatuses[rootWorkspace.id]?.kind}
+                              status={displayWorktreeStatuses[rootWorkspace.id]?.kind}
                               review={
                                 repositoryReviews[rootWorkspace.branch] ?? null
                               }
@@ -1246,7 +1295,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                           const isWorktreeSelectable = isSelectableWorktreeStatus(worktree.status);
                           const stats = worktreeStats[worktree.id];
                           const priorityThreadId = resolvePriorityThreadId(
-                            worktreeStatuses[worktree.id],
+                            displayWorktreeStatuses[worktree.id],
                           );
                           const review =
                             repositoryReviews[worktree.branch] ?? null;
@@ -1391,7 +1440,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                       </span>
                                     )
                                   }
-                                  status={worktreeStatuses[worktree.id]?.kind}
+                                  status={displayWorktreeStatuses[worktree.id]?.kind}
                                   detailBadge={renderWorktreeLifecycleBadge(worktree)}
                                   review={review}
                                   reviewKind={repositoryReviewKind}

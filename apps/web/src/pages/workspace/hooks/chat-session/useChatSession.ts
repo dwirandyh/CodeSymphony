@@ -166,6 +166,7 @@ function mergeTrackedThreads(params: {
   queriedThreads: ChatThread[];
   currentThreads: ChatThread[];
   optimisticCreatedThreadIds: Set<string>;
+  preservedThreadShells?: Map<string, ChatThread>;
   locallyDeletedThreadIds: Set<string>;
   pendingAgentSelectionUpdateThreadIds?: Set<string>;
 }): ChatThread[] {
@@ -173,10 +174,12 @@ function mergeTrackedThreads(params: {
     queriedThreads,
     currentThreads,
     optimisticCreatedThreadIds,
+    preservedThreadShells = new Map<string, ChatThread>(),
     locallyDeletedThreadIds,
     pendingAgentSelectionUpdateThreadIds = new Set<string>(),
   } = params;
   const currentThreadsById = new Map(currentThreads.map((thread) => [thread.id, thread] as const));
+  const preservedThreads = Array.from(preservedThreadShells.values()).filter((thread) => !locallyDeletedThreadIds.has(thread.id));
   const optimisticThreads = currentThreads.filter((thread) =>
     optimisticCreatedThreadIds.has(thread.id) && !locallyDeletedThreadIds.has(thread.id),
   );
@@ -187,6 +190,12 @@ function mergeTrackedThreads(params: {
         ? currentThreadsById.get(thread.id) ?? thread
         : thread
     ));
+
+  for (const preservedThread of preservedThreads) {
+    if (!mergedThreads.some((thread) => thread.id === preservedThread.id)) {
+      mergedThreads.push(preservedThread);
+    }
+  }
 
   for (const optimisticThread of optimisticThreads) {
     if (!mergedThreads.some((thread) => thread.id === optimisticThread.id)) {
@@ -399,6 +408,47 @@ function findThreadForWorktree(
   }
 
   return thread;
+}
+
+function createThreadShell(params: {
+  threadId: string;
+  worktreeId: string;
+  title?: string;
+  permissionMode: ChatThreadPermissionMode;
+  selection: Pick<CreateChatThreadInput, "agent" | "model" | "modelProviderId">;
+  active?: boolean;
+  mode?: ChatMode;
+  kind?: ChatThread["kind"];
+  permissionProfile?: ChatThread["permissionProfile"];
+  titleEditedManually?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  sessionIds?: Pick<ChatThread, "claudeSessionId" | "codexSessionId" | "cursorSessionId" | "opencodeSessionId">;
+}): ChatThread {
+  const createdAt = params.createdAt ?? new Date().toISOString();
+  const updatedAt = params.updatedAt ?? createdAt;
+  const agent = params.selection.agent ?? "claude";
+
+  return {
+    id: params.threadId,
+    worktreeId: params.worktreeId,
+    title: params.title ?? DEFAULT_THREAD_TITLE,
+    kind: params.kind ?? "default",
+    permissionProfile: params.permissionProfile ?? "default",
+    permissionMode: params.permissionMode,
+    mode: params.mode ?? "default",
+    titleEditedManually: params.titleEditedManually ?? false,
+    agent,
+    model: params.selection.model ?? resolveAgentDefaultModel(agent),
+    modelProviderId: params.selection.modelProviderId ?? null,
+    claudeSessionId: params.sessionIds?.claudeSessionId ?? null,
+    codexSessionId: params.sessionIds?.codexSessionId ?? null,
+    cursorSessionId: params.sessionIds?.cursorSessionId ?? null,
+    opencodeSessionId: params.sessionIds?.opencodeSessionId ?? null,
+    active: params.active ?? false,
+    createdAt,
+    updatedAt,
+  };
 }
 
 function buildThreadSelectionInput(thread: ChatThread | null): Pick<CreateChatThreadInput, "agent" | "model" | "modelProviderId"> {
@@ -899,11 +949,13 @@ export function useChatSession(
   const bootstrapStateDebugSignatureRef = useRef<string | null>(null);
   const suspiciousBootstrapDebugSignatureRef = useRef<string | null>(null);
   const selectedThreadIdOverrideRef = useRef<string | null>(null);
-  const pendingSelectedThreadIdRef = useRef<string | null>(null);
+  const pendingSelectedThreadRef = useRef<{ threadId: string; worktreeId: string | null } | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
   const threadByIdRef = useRef<Map<string, ChatThread>>(new Map());
   const creatingThreadRef = useRef(false);
   const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
+  const preservedThreadShellsRef = useRef<Map<string, ChatThread>>(new Map());
+  const preservedHandoffSourceExecutionIdsRef = useRef<Map<string, string>>(new Map());
   const serverBackedThreadIdsRef = useRef<Set<string>>(new Set());
   const locallyDeletedThreadIdsRef = useRef<Set<string>>(new Set());
   const prevThreadIdRef = useRef<string | null>(null);
@@ -988,12 +1040,12 @@ export function useChatSession(
       || isPendingWorktreePlaceholderThreadId(threadId)
       || locallyDeletedThreadIdsRef.current.has(threadId)
     ) {
-      pendingSelectedThreadIdRef.current = null;
+      pendingSelectedThreadRef.current = null;
     } else {
       const threadExistsLocally = threadByIdRef.current.has(threadId);
-      pendingSelectedThreadIdRef.current =
+      pendingSelectedThreadRef.current =
         !threadExistsLocally || options?.preserveWhileMissing
-          ? threadId
+          ? { threadId, worktreeId: prevWorktreeIdRef2.current }
           : null;
     }
 
@@ -1016,13 +1068,13 @@ export function useChatSession(
   }, [onError, queriedThreadsError]);
 
   useEffect(() => {
-    const pendingThreadId = pendingSelectedThreadIdRef.current;
-    if (!pendingThreadId) {
+    const pendingThread = pendingSelectedThreadRef.current;
+    if (!pendingThread) {
       return;
     }
 
-    if (selectedThreadId !== pendingThreadId || threadByIdRef.current.has(pendingThreadId)) {
-      pendingSelectedThreadIdRef.current = null;
+    if (selectedThreadId !== pendingThread.threadId || threadByIdRef.current.has(pendingThread.threadId)) {
+      pendingSelectedThreadRef.current = null;
     }
   }, [selectedThreadId, threads]);
 
@@ -1150,9 +1202,15 @@ export function useChatSession(
     if (!queriedThreads) return;
 
     const reconciledOptimisticThreadIds: string[] = [];
+    const queriedThreadIds = new Set(queriedThreadsForSelection.map((thread) => thread.id));
     for (const thread of queriedThreadsForSelection) {
       if (optimisticCreatedThreadIdsRef.current.delete(thread.id)) {
         reconciledOptimisticThreadIds.push(thread.id);
+      }
+      const preservedHandoffExecutionId = preservedHandoffSourceExecutionIdsRef.current.get(thread.id);
+      if (!preservedHandoffExecutionId || queriedThreadIds.has(preservedHandoffExecutionId)) {
+        preservedThreadShellsRef.current.delete(thread.id);
+        preservedHandoffSourceExecutionIdsRef.current.delete(thread.id);
       }
     }
 
@@ -1173,6 +1231,7 @@ export function useChatSession(
         queriedThreads: queriedThreadsForSelection,
         currentThreads: current,
         optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+        preservedThreadShells: preservedThreadShellsRef.current,
         locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
         pendingAgentSelectionUpdateThreadIds: new Set(pendingAgentSelectionUpdatesRef.current.keys()),
       });
@@ -1201,6 +1260,7 @@ export function useChatSession(
       queriedThreads: queriedThreadsForSelection,
       currentThreads: threadsRef.current,
       optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+      preservedThreadShells: preservedThreadShellsRef.current,
       locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
       pendingAgentSelectionUpdateThreadIds: new Set(pendingAgentSelectionUpdatesRef.current.keys()),
     });
@@ -1299,7 +1359,7 @@ export function useChatSession(
       selectedThreadId != null && trackedThreads.some((thread) => thread.id === selectedThreadId);
     const selectedThreadPendingHydration =
       selectedThreadId != null
-      && pendingSelectedThreadIdRef.current === selectedThreadId
+      && pendingSelectedThreadRef.current?.threadId === selectedThreadId
       && !selectedThreadStillExists;
     const requestedThreadReappeared =
       requestedThreadId != null && requestedThreadExists && !prevRequestedThreadExistsRef.current;
@@ -1369,14 +1429,23 @@ export function useChatSession(
 
   const selectedThreadForData =
     selectedThreadId != null
-      ? threadByIdRef.current.get(selectedThreadId) ?? null
+      ? threadByIdRef.current.get(selectedThreadId)
+        ?? queriedThreadsForSelection.find((thread) => thread.id === selectedThreadId)
+        ?? null
       : null;
+  const pendingSelectedThread = pendingSelectedThreadRef.current;
+  const selectedThreadPendingHydrationForWorktree =
+    selectedThreadId != null
+    && pendingSelectedThread?.threadId === selectedThreadId
+    && pendingSelectedThread.worktreeId === selectedWorktreeId;
   const selectedThreadIdForData =
     selectedThreadId != null
     && !isPendingWorktreePlaceholderThreadId(selectedThreadId)
     && !locallyDeletedThreadIdsRef.current.has(selectedThreadId)
-    && selectedThreadForData != null
-    && selectedThreadForData.worktreeId === selectedWorktreeId
+    && (
+      (selectedThreadForData != null && selectedThreadForData.worktreeId === selectedWorktreeId)
+      || selectedThreadPendingHydrationForWorktree
+    )
       ? selectedThreadId
       : null;
   const requestedThreadResolutionPending =
@@ -1434,8 +1503,74 @@ export function useChatSession(
     selectedThreadId,
   ]);
   const selectedThread = selectedThreadId
-    ? threadByIdRef.current.get(selectedThreadId) ?? null
+    ? selectedThreadForData ?? null
     : null;
+
+  function resolveThreadForSend(threadId: string | null): {
+    thread: ChatThread | null;
+    resolution: "tracked" | "selected" | "query" | "pending-shell" | "missing";
+  } {
+    if (!threadId || !selectedWorktreeId) {
+      return { thread: null, resolution: "missing" };
+    }
+
+    const trackedThread = findThreadForWorktree(threadsRef.current, threadId, selectedWorktreeId);
+    if (trackedThread) {
+      return { thread: trackedThread, resolution: "tracked" };
+    }
+
+    if (selectedThreadId === threadId && selectedThread?.worktreeId === selectedWorktreeId) {
+      return { thread: selectedThread, resolution: "selected" };
+    }
+
+    const queriedThread = queriedThreadsForSelection.find(
+      (candidate) => candidate.id === threadId && candidate.worktreeId === selectedWorktreeId,
+    ) ?? null;
+    if (queriedThread) {
+      return { thread: queriedThread, resolution: "query" };
+    }
+
+    const pendingSelectedThread = pendingSelectedThreadRef.current;
+    if (pendingSelectedThread?.threadId !== threadId || pendingSelectedThread.worktreeId !== selectedWorktreeId) {
+      return { thread: null, resolution: "missing" };
+    }
+
+    const shellSource =
+      (selectedThreadId === threadId && selectedThread?.worktreeId === selectedWorktreeId)
+        ? selectedThread
+        : null;
+    const fallbackSelection = shellSource
+      ? buildThreadSelectionInput(shellSource)
+      : lastThreadSelectionRef.current?.worktreeId === selectedWorktreeId
+        ? lastThreadSelectionRef.current
+        : buildPreferredSelectionInput("newChat");
+
+    return {
+      thread: createThreadShell({
+        threadId,
+        worktreeId: selectedWorktreeId,
+        title: shellSource?.title,
+        permissionMode: shellSource?.permissionMode ?? pendingComposerPermissionMode,
+        selection: fallbackSelection,
+        active: shellSource?.active,
+        mode: shellSource?.mode,
+        kind: shellSource?.kind,
+        permissionProfile: shellSource?.permissionProfile,
+        titleEditedManually: shellSource?.titleEditedManually,
+        createdAt: shellSource?.createdAt,
+        updatedAt: shellSource?.updatedAt,
+        sessionIds: shellSource
+          ? {
+              claudeSessionId: shellSource.claudeSessionId,
+              codexSessionId: shellSource.codexSessionId,
+              cursorSessionId: shellSource.cursorSessionId,
+              opencodeSessionId: shellSource.opencodeSessionId,
+            }
+          : undefined,
+      }),
+      resolution: "pending-shell",
+    };
+  }
 
   function logNewThreadSendDebug(message: string, data?: Record<string, unknown>) {
     const threadId =
@@ -2506,6 +2641,66 @@ export function useChatSession(
     });
   }
 
+  function registerPendingHandoffThread(params: {
+    sourceThreadId: string;
+    executionThreadId: string;
+    sourceThread?: ChatThread | null;
+  }) {
+    const sourceThread =
+      params.sourceThread
+      ?? threadsRef.current.find((thread) => thread.id === params.sourceThreadId)
+      ?? null;
+    const worktreeId = sourceThread?.worktreeId ?? selectedWorktreeId;
+    if (!worktreeId) {
+      return;
+    }
+
+    const createdAt = new Date().toISOString();
+    const executionThread: ChatThread = {
+      id: params.executionThreadId,
+      worktreeId,
+      title: DEFAULT_THREAD_TITLE,
+      kind: "default",
+      isAutomation: false,
+      permissionProfile: sourceThread?.permissionProfile ?? "default",
+      permissionMode: sourceThread?.permissionMode ?? composerPermissionMode,
+      mode: "default",
+      titleEditedManually: false,
+      agent: composerAgent,
+      model: composerModel,
+      modelProviderId: composerModelProviderId,
+      handoffSourceThreadId: params.sourceThreadId,
+      handoffSourcePlanEventId: null,
+      claudeSessionId: null,
+      codexSessionId: null,
+      cursorSessionId: null,
+      opencodeSessionId: null,
+      active: true,
+      createdAt,
+      updatedAt: createdAt,
+    };
+
+    if (sourceThread) {
+      preservedThreadShellsRef.current.set(params.sourceThreadId, sourceThread);
+      preservedHandoffSourceExecutionIdsRef.current.set(params.sourceThreadId, params.executionThreadId);
+    }
+    optimisticCreatedThreadIdsRef.current.add(params.executionThreadId);
+    serverBackedThreadIdsRef.current.add(params.executionThreadId);
+    locallyDeletedThreadIdsRef.current.delete(params.sourceThreadId);
+    locallyDeletedThreadIdsRef.current.delete(params.executionThreadId);
+    activeThreadIdRef.current = params.executionThreadId;
+
+    setThreads((current) => {
+      let next = current;
+      if (sourceThread && !next.some((thread) => thread.id === sourceThread.id)) {
+        next = [...next, sourceThread];
+      }
+      return replaceThread(next, executionThread);
+    });
+    syncThreadIntoCache(worktreeId, executionThread);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(worktreeId) });
+  }
+
   useEffect(() => {
     const selectionBootstrapPending =
       requestedThreadResolutionPending
@@ -2520,6 +2715,12 @@ export function useChatSession(
     }
 
     const nextThreadIdForNavigation = selectedThreadIdForData ?? null;
+    const requestedThreadStillResolvable =
+      requestedThreadId != null
+      && queriedThreadsForSelection.some((thread) => thread.id === requestedThreadId);
+    if (nextThreadIdForNavigation == null && requestedThreadStillResolvable) {
+      return;
+    }
     const shouldClearRequestedThreadFromNavigation =
       requestedThreadId != null
       && !requestedThreadResolutionPending
@@ -2536,8 +2737,10 @@ export function useChatSession(
     autoCreateInitialThread,
     requestedThreadResolutionPending,
     requestedThreadId,
+    queriedThreadsForSelection,
     selectedThreadId,
     selectedThreadIdForData,
+    selectedWorktreeId,
   ]);
 
   useThreadEventStream({
@@ -3146,13 +3349,22 @@ export function useChatSession(
       await pendingAgentSelectionUpdate;
     }
 
-    const activeThread = findThreadForWorktree(threadsRef.current, threadId, selectedWorktreeId);
+    const { thread: activeThread, resolution: activeThreadResolution } = resolveThreadForSend(threadId);
     if (!activeThread) {
       onError("Selected thread is stale for the active worktree. Please retry.");
       logNewThreadSendDebug("submitMessage.aborted.staleSelection", {
         threadId,
+        resolution: activeThreadResolution,
       });
       return false;
+    }
+
+    if (activeThreadResolution !== "tracked") {
+      logNewThreadSendDebug("submitMessage.resolvedPendingSelection", {
+        threadId: activeThread.id,
+        resolution: activeThreadResolution,
+        resolvedWorktreeId: activeThread.worktreeId,
+      });
     }
 
     startWaitingAssistant(activeThread.id);
@@ -3314,7 +3526,7 @@ export function useChatSession(
       return false;
     }
 
-    const activeThread = findThreadForWorktree(threadsRef.current, threadId, selectedWorktreeId);
+    const { thread: activeThread } = resolveThreadForSend(threadId);
     if (!activeThread) {
       onError("Selected thread is stale for the active worktree. Please retry.");
       return false;
@@ -3442,7 +3654,7 @@ export function useChatSession(
   const selectedThreadNeedsBootstrapFromServer =
     selectedThreadId != null
     && !selectedThreadHasLocalState
-    && serverSnapshotContainsCanonicalState
+    && queriedThreadSnapshot != null
     && serverTimelineFreshEnough
     && serverSnapshotCoversLocalHead
     && serverTimelineItems.length > 0;
@@ -3995,11 +4207,23 @@ export function useChatSession(
     useServerTimeline,
   ]);
 
+  const visibleThreads = preservedThreadShellsRef.current.size > 0 || optimisticCreatedThreadIdsRef.current.size > 0
+    ? mergeTrackedThreads({
+      queriedThreads: threads,
+      currentThreads: threads,
+      optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+      preservedThreadShells: preservedThreadShellsRef.current,
+      locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
+      pendingAgentSelectionUpdateThreadIds: new Set(pendingAgentSelectionUpdatesRef.current.keys()),
+    })
+    : threads;
+
   return {
-    threads,
+    threads: visibleThreads,
     selectedThreadId,
     selectedThreadIdForData,
     setSelectedThreadId,
+    registerPendingHandoffThread,
     messages,
     events,
     closingThreadId,

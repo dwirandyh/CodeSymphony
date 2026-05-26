@@ -81,7 +81,9 @@ function resolveTerminalZdotdir(): string | undefined {
     const moduleDir = dirname(fileURLToPath(import.meta.url));
     const candidates = [
         join(moduleDir, "../../terminal-zsh"),
+        join(moduleDir, "../../assets/terminal-zsh"),
         join(process.cwd(), "terminal-zsh"),
+        join(process.cwd(), "assets/terminal-zsh"),
     ];
 
     for (const candidate of candidates) {
