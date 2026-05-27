@@ -297,6 +297,21 @@ describe("GitChangesPanel", () => {
     expect(container.textContent).toContain("-3");
   });
 
+  it("hides line counts for image files but keeps the status icon", () => {
+    const entries = [makeEntry({
+      path: "artifacts/settings-layout/settings-desktop.png",
+      status: "untracked",
+      insertions: 123,
+    })];
+    act(() => {
+      root.render(<GitChangesPanel {...baseProps} entries={entries} />);
+    });
+
+    expect(container.textContent).toContain("settings-desktop.png");
+    expect(container.textContent).not.toContain("+123");
+    expect(container.querySelector('[title="untracked"]')).toBeTruthy();
+  });
+
   it("shows committing state", () => {
     act(() => {
       root.render(<GitChangesPanel {...baseProps} committing={true} entries={[makeEntry()]} />);

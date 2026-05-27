@@ -163,6 +163,21 @@ describe("git utilities", () => {
       git("clean -f binary.bin");
     });
 
+    it("reports zero insertions for untracked PNG files", async () => {
+      await writeFile(join(repoDir, "screenshot.png"), Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d,
+      ]));
+
+      const status = await getGitStatus(repoDir);
+      const untracked = status.entries.find((entry) => entry.path === "screenshot.png");
+      expect(untracked).toBeTruthy();
+      expect(untracked?.status).toBe("untracked");
+      expect(untracked?.insertions).toBe(0);
+      expect(untracked?.deletions).toBe(0);
+      git("clean -f screenshot.png");
+    });
+
     it("reports upstream sync state", async () => {
       const { localRepo, remoteRepo } = await createRepoWithRemote();
       const peerRepo = await mkdtemp(join(tmpdir(), "cs-git-peer-"));

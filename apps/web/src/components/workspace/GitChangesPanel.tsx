@@ -44,6 +44,7 @@ const STATUS_CONFIG: Record<string, { icon: any; className: string }> = {
   renamed: { icon: Dot, className: "border-blue-500/40 text-blue-500 bg-blue-500/5" },
   untracked: { icon: Plus, className: "border-green-500/40 text-green-500 bg-green-500/5" },
 };
+const IMAGE_FILE_EXTENSION_PATTERN = /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|webp)$/i;
 const GIT_CHANGES_VLIST_BUFFER_SIZE = 480;
 
 function splitFilePath(filePath: string) {
@@ -63,6 +64,11 @@ function formatSyncSummary(ahead: number, behind: number) {
   return parts.join(" · ");
 }
 
+function shouldShowLineStats(entry: GitChangeEntry) {
+  return !IMAGE_FILE_EXTENSION_PATTERN.test(entry.path)
+    && (entry.insertions > 0 || entry.deletions > 0);
+}
+
 function GitChangeRow({
   entry,
   onDiscardChange,
@@ -80,6 +86,7 @@ function GitChangeRow({
   const config = STATUS_CONFIG[entry.status] ?? STATUS_CONFIG.modified;
   const isSelected = selectedFilePath === entry.path;
   const isDeleted = entry.status === "deleted";
+  const showLineStats = shouldShowLineStats(entry);
 
   return (
     <div className="group relative pb-px">
@@ -119,7 +126,7 @@ function GitChangeRow({
 
         <div className="relative ml-auto flex shrink-0 items-center justify-end">
           <div className="flex items-center gap-2 transition-opacity group-hover:pointer-events-none group-hover:opacity-0 group-focus-within:pointer-events-none group-focus-within:opacity-0">
-            {(entry.insertions > 0 || entry.deletions > 0) && (
+            {showLineStats && (
               <div className="flex items-center gap-1.5 whitespace-nowrap text-[10px] font-medium">
                 {entry.insertions > 0 && (
                   <span className="text-green-500/80">+{entry.insertions}</span>

@@ -63,7 +63,7 @@ vi.mock("../src/services/git.js", () => ({
   getGitStatus: vi.fn().mockResolvedValue({ entries: [], branch: "main", upstream: "origin/main", ahead: 0, behind: 0 }),
   getGitBranchDiffSummary: vi.fn().mockResolvedValue({ branch: "feature-x", baseBranch: "main", insertions: 10, deletions: 2, filesChanged: 1, available: true }),
   getGitDiff: vi.fn().mockResolvedValue("diff output"),
-  getFileAtHead: vi.fn().mockResolvedValue("old content"),
+  getFileAtHeadBuffer: vi.fn().mockResolvedValue(Buffer.from("old content")),
   gitCommitAll: vi.fn().mockResolvedValue("abc123"),
   syncCurrentBranch: vi.fn().mockResolvedValue({ result: "Synced with origin/main" }),
   discardGitChange: vi.fn().mockResolvedValue(undefined),

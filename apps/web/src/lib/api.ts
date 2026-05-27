@@ -877,7 +877,17 @@ export const api = {
   },
   getFileContents: (worktreeId: string, filePath: string) => {
     const params = `?path=${encodeURIComponent(filePath)}`;
-    return request<{ oldContent: string | null; newContent: string | null }>(
+    return request<{
+      oldContent: string | null;
+      newContent: string | null;
+      oldBase64: string | null;
+      newBase64: string | null;
+      oldSize: number | null;
+      newSize: number | null;
+      oldBinary: boolean;
+      newBinary: boolean;
+      mimeType: string;
+    }>(
       `/worktrees/${worktreeId}/git/file-contents${params}`
     );
   },

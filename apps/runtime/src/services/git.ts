@@ -9,6 +9,7 @@ const execFile = promisify(execFileRaw);
 const DEFAULT_GIT_TIMEOUT_MS = 15_000;
 const STATUS_GIT_TIMEOUT_MS = 4_000;
 const REVIEW_CLI_TIMEOUT_MS = 60_000;
+const BINARY_DETECTION_SAMPLE_BYTES = 8_000;
 const COMMON_EXECUTABLE_PATHS: Partial<Record<string, string[]>> = {
   gh: ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"],
   glab: ["/opt/homebrew/bin/glab", "/usr/local/bin/glab"],
@@ -109,6 +110,47 @@ async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Pr
     timeoutMs: options?.timeoutMs,
     allowedExitCodes: options?.allowedExitCodes,
   });
+}
+
+async function runCommandBuffer(command: string, args: string[], options?: Pick<RunCommandOptions, "cwd" | "timeoutMs">): Promise<Buffer> {
+  const candidates = buildCommandCandidates(command);
+
+  for (const candidate of candidates) {
+    try {
+      const { stdout } = await new Promise<{ stdout: Buffer; stderr: Buffer }>((resolve, reject) => {
+        execFileRaw(candidate, args, {
+          cwd: options?.cwd,
+          encoding: "buffer",
+          timeout: options?.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+          maxBuffer: 10 * 1024 * 1024,
+        }, (error, stdout, stderr) => {
+          if (error) {
+            reject(Object.assign(error, { stdout, stderr }));
+            return;
+          }
+
+          resolve({ stdout: Buffer.from(stdout), stderr: Buffer.from(stderr) });
+        });
+      });
+
+      return stdout;
+    } catch (error) {
+      if (isCommandNotFound(error)) {
+        continue;
+      }
+
+      const stderr = Buffer.isBuffer((error as { stderr?: unknown }).stderr)
+        ? (error as { stderr: Buffer }).stderr.toString("utf8").trim()
+        : "";
+      const stdout = Buffer.isBuffer((error as { stdout?: unknown }).stdout)
+        ? (error as { stdout: Buffer }).stdout.toString("utf8").trim()
+        : "";
+      const message = stderr || stdout || (error instanceof Error ? error.message : `${command} command failed`);
+      throw new Error(`${command} ${args.join(" ")} failed: ${message}`);
+    }
+  }
+
+  throw new Error(`${command} is not installed or not available in PATH`);
 }
 
 function assertWorktreePathAvailable(cwd: string) {
@@ -553,6 +595,21 @@ function parseNumstatOutput(output: string): Map<string, { insertions: number; d
   return statsMap;
 }
 
+function isProbablyBinaryBuffer(buffer: Buffer): boolean {
+  const sampleLength = Math.min(buffer.length, BINARY_DETECTION_SAMPLE_BYTES);
+
+  for (let index = 0; index < sampleLength; index += 1) {
+    const byte = buffer[index]!;
+    const isTextControlByte = byte === 9 || byte === 10 || byte === 12 || byte === 13 || byte === 27;
+
+    if (byte === 0 || (byte < 32 && !isTextControlByte)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function getUntrackedFileStats(cwd: string, filePath: string): Promise<{ insertions: number; deletions: number }> {
   const emptyStats = { insertions: 0, deletions: 0 };
   const resolvedRoot = path.resolve(cwd);
@@ -568,7 +625,7 @@ async function getUntrackedFileStats(cwd: string, filePath: string): Promise<{ i
   }
 
   const buffer = await readFile(resolvedPath).catch(() => null);
-  if (!buffer || buffer.includes(0)) {
+  if (!buffer || isProbablyBinaryBuffer(buffer)) {
     return emptyStats;
   }
 
@@ -822,6 +879,16 @@ export async function getFileAtHead(cwd: string, filePath: string): Promise<stri
     return await runCommand("git", ["show", `HEAD:${filePath}`], {
       cwd,
       trimStdout: false,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function getFileAtHeadBuffer(cwd: string, filePath: string): Promise<Buffer | null> {
+  try {
+    return await runCommandBuffer("git", ["show", `HEAD:${filePath}`], {
+      cwd,
     });
   } catch {
     return null;
