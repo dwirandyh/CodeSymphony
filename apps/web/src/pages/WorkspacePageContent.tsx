@@ -176,6 +176,14 @@ import {
 import { shouldEagerlyEnableCriticalWorkspaceData } from "./workspace/startupCriticalData";
 import { shouldScheduleWorkspacePanelPreload } from "./workspace/startupPanelPreload";
 import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
+import {
+  buildSessionShortcutCycleHistory,
+  buildSessionShortcutTargets,
+  getActiveSessionShortcutTarget,
+  getActiveSessionShortcutTargetIndex,
+  promoteSessionShortcutTarget,
+  type SessionShortcutTarget,
+} from "./workspace/sessionShortcutTargets";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
@@ -288,61 +296,10 @@ function formatRuntimeLabel(runtimeInfo: RuntimeInfo | null | undefined): string
   return `Runtime :${port}`;
 }
 
-type SessionShortcutTarget =
-  | { kind: "thread"; id: string }
-  | { kind: "terminal"; id: string }
-  | { kind: "review" }
-  | { kind: "file"; path: string };
-
 type WorktreeShortcutTarget = {
   repositoryId: string;
   worktreeId: string;
 };
-
-function buildSessionShortcutTargets(input: {
-  threads: ChatThread[];
-  terminalTabs: WorkspaceTerminalTab[];
-  reviewTabOpen: boolean;
-  fileTabs: Array<{ path: string }>;
-}): SessionShortcutTarget[] {
-  return [
-    ...input.threads.map((thread) => ({ kind: "thread" as const, id: thread.id })),
-    ...input.terminalTabs.map((terminalTab) => ({ kind: "terminal" as const, id: terminalTab.id })),
-    ...(input.reviewTabOpen ? [{ kind: "review" as const }] : []),
-    ...input.fileTabs.map((fileTab) => ({ kind: "file" as const, path: fileTab.path })),
-  ];
-}
-
-function getActiveSessionShortcutTargetIndex(
-  targets: SessionShortcutTarget[],
-  active: {
-    activeView: "chat" | "file" | "review" | "automations";
-    selectedThreadId: string | null;
-    terminalViewActive: boolean;
-    activeTerminalTabId: string | null;
-    activeFilePath: string | null;
-  },
-): number {
-  return targets.findIndex((target) => {
-    if (target.kind === "thread") {
-      return (
-        active.activeView === "chat"
-        && !active.terminalViewActive
-        && target.id === active.selectedThreadId
-      );
-    }
-
-    if (target.kind === "terminal") {
-      return active.terminalViewActive && target.id === active.activeTerminalTabId;
-    }
-
-    if (target.kind === "review") {
-      return active.activeView === "review";
-    }
-
-    return active.activeView === "file" && target.path === active.activeFilePath;
-  });
-}
 
 function getWrappedIndex(currentIndex: number, length: number, direction: "previous" | "next"): number {
   if (length <= 0) {
@@ -1092,6 +1049,11 @@ export function WorkspacePage() {
   const selectedTerminalTabsState = getTerminalTabsState(terminalTabsByWorktreeId, repos.selectedWorktreeId);
   const activeTerminalTab = selectedTerminalTabsState.tabs.find((tab) => tab.id === selectedTerminalTabsState.activeTabId) ?? null;
   const terminalViewActive = activeView === "chat" && selectedTerminalTabsState.visible && activeTerminalTab !== null;
+  const sessionShortcutHistoryRef = useRef<SessionShortcutTarget[]>([]);
+  const sessionCtrlTabCycleRef = useRef<{
+    baseHistory: SessionShortcutTarget[];
+    index: number;
+  } | null>(null);
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
 
@@ -2366,6 +2328,33 @@ export function WorkspacePage() {
   });
   pushStartupRenderProfileSection("workspace-file-editor");
 
+  const sessionShortcutTargets = useMemo(
+    () => buildSessionShortcutTargets({
+      threads: chat.threads,
+      terminalTabs: selectedTerminalTabsState.tabs,
+      reviewTabOpen,
+      fileTabs: workspaceFileTabs,
+    }),
+    [chat.threads, reviewTabOpen, selectedTerminalTabsState.tabs, workspaceFileTabs],
+  );
+  const activeSessionShortcutTarget = useMemo(
+    () => getActiveSessionShortcutTarget(sessionShortcutTargets, {
+      activeView,
+      selectedThreadId: chat.selectedThreadId,
+      terminalViewActive,
+      activeTerminalTabId: activeTerminalTab?.id ?? null,
+      activeFilePath,
+    }),
+    [
+      activeFilePath,
+      activeTerminalTab?.id,
+      activeView,
+      chat.selectedThreadId,
+      sessionShortcutTargets,
+      terminalViewActive,
+    ],
+  );
+
   const handleFocusChatInput = useCallback(() => {
     if (activeView === "file" && !confirmSwitchAwayFromActiveFile()) {
       return;
@@ -3284,13 +3273,101 @@ export function WorkspacePage() {
     handleSelectFileTab(target.path);
   }, [confirmSwitchAwayFromActiveFile, handleSelectFileTab, handleSelectTerminalTab, handleSelectThread, updateSearch]);
 
+  useEffect(() => {
+    if (!activeSessionShortcutTarget || sessionCtrlTabCycleRef.current) {
+      return;
+    }
+
+    sessionShortcutHistoryRef.current = promoteSessionShortcutTarget(
+      sessionShortcutHistoryRef.current,
+      activeSessionShortcutTarget,
+      sessionShortcutTargets,
+    );
+  }, [activeSessionShortcutTarget, sessionShortcutTargets]);
+
+  useEffect(() => {
+    if (!desktopApp) {
+      return;
+    }
+
+    const commitCtrlTabCycle = () => {
+      const cycle = sessionCtrlTabCycleRef.current;
+      if (!cycle) {
+        return;
+      }
+
+      const selectedTarget = cycle.baseHistory[cycle.index];
+      if (selectedTarget) {
+        sessionShortcutHistoryRef.current = promoteSessionShortcutTarget(
+          cycle.baseHistory,
+          selectedTarget,
+          sessionShortcutTargets,
+        );
+      }
+      sessionCtrlTabCycleRef.current = null;
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented
+        || !event.ctrlKey
+        || event.metaKey
+        || event.altKey
+        || event.key !== "Tab"
+      ) {
+        return;
+      }
+
+      const cycle = sessionCtrlTabCycleRef.current;
+      const baseHistory = cycle?.baseHistory
+        ?? buildSessionShortcutCycleHistory(
+          sessionShortcutHistoryRef.current,
+          sessionShortcutTargets,
+          activeSessionShortcutTarget,
+        );
+      if (baseHistory.length <= 1) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const direction = event.shiftKey ? "previous" : "next";
+      const index = cycle
+        ? getWrappedIndex(cycle.index, baseHistory.length, direction)
+        : direction === "previous"
+          ? baseHistory.length - 1
+          : 1;
+      const target = baseHistory[index];
+      if (!target) {
+        return;
+      }
+
+      sessionCtrlTabCycleRef.current = { baseHistory, index };
+      handleSelectSessionShortcutTarget(target);
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Control") {
+        commitCtrlTabCycle();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", commitCtrlTabCycle);
+    document.addEventListener("visibilitychange", commitCtrlTabCycle);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", commitCtrlTabCycle);
+      document.removeEventListener("visibilitychange", commitCtrlTabCycle);
+    };
+  }, [desktopApp, handleSelectSessionShortcutTarget, sessionShortcutTargets]);
+
   const handleMoveSessionTab = useCallback((direction: "previous" | "next") => {
-    const targets = buildSessionShortcutTargets({
-      threads: chat.threads,
-      terminalTabs: selectedTerminalTabsState.tabs,
-      reviewTabOpen,
-      fileTabs: workspaceFileTabs,
-    });
+    const targets = sessionShortcutTargets;
     if (targets.length === 0) {
       return;
     }
@@ -3314,12 +3391,9 @@ export function WorkspacePage() {
     activeTerminalTab?.id,
     activeView,
     chat.selectedThreadId,
-    chat.threads,
     handleSelectSessionShortcutTarget,
-    reviewTabOpen,
-    selectedTerminalTabsState.tabs,
+    sessionShortcutTargets,
     terminalViewActive,
-    workspaceFileTabs,
   ]);
 
   const handleMoveWorktree = useCallback((direction: "previous" | "next") => {
