@@ -475,6 +475,36 @@ describe("SettingsDialog", () => {
     expect(menuButtons[4]?.textContent?.trim()).toBe("Licenses");
   });
 
+  it("renders mobile settings as a menu that opens a detail page", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    const mobileMenu = document.body.querySelector<HTMLElement>('[data-testid="settings-mobile-menu"]');
+    if (!mobileMenu) {
+      throw new Error("Mobile settings menu not found");
+    }
+
+    expect(mobileMenu.textContent).toContain("General");
+    expect(mobileMenu.textContent).toContain("Repository defaults, scripts, and save automation.");
+
+    const workspaceButton = Array.from(mobileMenu.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Workspace"),
+    );
+    if (!workspaceButton) {
+      throw new Error("Mobile Workspace menu item not found");
+    }
+
+    await act(async () => {
+      workspaceButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const content = document.body.querySelector<HTMLElement>('[data-testid="settings-content"]');
+    expect(mobileMenu.className).toContain("hidden");
+    expect(content?.className).toContain("flex");
+    expect(document.body.querySelector('button[aria-label="Back to settings"]')).not.toBeNull();
+  });
+
   it("opens on the General tab by default", async () => {
     renderDialog([makeRepo()]);
     await flushEffects();

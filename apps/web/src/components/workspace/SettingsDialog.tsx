@@ -1,5 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Loader2, Pencil, Play, Plus, Search, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Bot,
+  ChevronRight,
+  FolderGit2,
+  Keyboard,
+  Loader2,
+  Pencil,
+  Play,
+  Plus,
+  ScrollText,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  X,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
@@ -60,6 +76,14 @@ import {
 
 export type SettingsTab = "general" | "workspace" | "models" | "shortcuts" | "licenses";
 type SaveAutomationTemplate = "custom_generic" | "flutter_hot_reload";
+
+const SETTINGS_TAB_DESCRIPTIONS: Record<SettingsTab, string> = {
+  general: "Preferences, notifications, and completion feedback.",
+  workspace: "Repository defaults, scripts, and save automation.",
+  models: "Default agents and custom model providers.",
+  shortcuts: "Keyboard shortcuts available in the workspace.",
+  licenses: "Open source licenses bundled with the app.",
+};
 
 const DEFAULT_SAVE_AUTOMATION_TARGET = "active_run_session" as const;
 const DEFAULT_SAVE_AUTOMATION_DEBOUNCE_MS = 400;
@@ -202,7 +226,7 @@ function GeneralPreferenceRow({
 }: GeneralPreferenceRowProps) {
   return (
     <section className="border-t border-border/30 py-5 first:border-t-0 first:pt-0">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold text-foreground">{title}</h2>
           <p id={descriptionId} className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
@@ -212,7 +236,7 @@ function GeneralPreferenceRow({
             <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground/80">{hint}</p>
           ) : null}
         </div>
-        <div className="shrink-0">{control}</div>
+        <div className="w-full shrink-0 sm:w-auto">{control}</div>
       </div>
     </section>
   );
@@ -580,6 +604,7 @@ export function SettingsDialog({
 }: SettingsDialogProps) {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
+  const [mobileActiveTab, setMobileActiveTab] = useState<SettingsTab | null>(null);
   const [desktopNotificationsMessage, setDesktopNotificationsMessage] = useState<string | null>(null);
   const [openingDesktopNotificationSettings, setOpeningDesktopNotificationSettings] = useState(false);
   const [testingCompletionSound, setTestingCompletionSound] = useState(false);
@@ -1150,16 +1175,24 @@ export function SettingsDialog({
   const aboutSettingsTabs: Array<{ id: SettingsTab; label: string }> = [
     { id: "licenses", label: "Licenses" },
   ];
+  const mobileSettingsTabs = [
+    { id: "general", label: "General", icon: SlidersHorizontal },
+    { id: "workspace", label: "Workspace", icon: FolderGit2 },
+    { id: "models", label: "Models", icon: Bot },
+    { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
+    { id: "licenses", label: "Licenses", icon: ScrollText },
+  ] satisfies Array<{ id: SettingsTab; label: string; icon: LucideIcon }>;
+  const activeTabLabel = mobileSettingsTabs.find((tab) => tab.id === activeTab)?.label ?? "Settings";
 
   if (!open) return null;
 
   return (
     <>
       {/* Full-page overlay */}
-      <div className="fixed inset-0 z-50 flex overflow-hidden bg-background">
+      <div className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-background md:flex-row">
         <aside
           className={cn(
-            "flex w-[232px] shrink-0 flex-col border-r border-border/30 bg-card/60 px-4 pb-4",
+            "hidden w-[232px] shrink-0 flex-col border-r border-border/30 bg-card/60 px-4 pb-4 md:flex",
             macDesktopShell ? "pt-[46px]" : "pt-3",
           )}
           data-testid="settings-sidebar"
@@ -1242,13 +1275,92 @@ export function SettingsDialog({
           ) : null}
         </aside>
 
-        <div className="flex flex-1 flex-col overflow-y-auto p-4">
+        <div className="flex shrink-0 flex-col border-b border-border/30 bg-card/60 md:hidden">
           {macDesktopShell ? <SettingsDesktopAppBar /> : null}
+          <div className="flex h-12 items-center justify-between px-3">
+            {mobileActiveTab ? (
+              <button
+                type="button"
+                className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-sm font-semibold text-foreground"
+                onClick={() => setMobileActiveTab(null)}
+                aria-label="Back to settings"
+              >
+                <ArrowLeft className="h-4 w-4 shrink-0" />
+                <span className="truncate">Settings</span>
+              </button>
+            ) : (
+              <div className="px-1.5 text-sm font-semibold text-foreground">Settings</div>
+            )}
+            <button
+              type="button"
+              className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+              aria-label="Close settings"
+              onClick={() => { void handleCloseSettings(); }}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+
+        <div
+          className={cn(
+            "min-h-0 flex-1 overflow-y-auto p-4",
+            mobileActiveTab ? "hidden" : "block",
+            "md:hidden",
+          )}
+          data-testid="settings-mobile-menu"
+        >
+          <div className="space-y-1">
+            {mobileSettingsTabs.map((tab) => {
+              const Icon = tab.icon;
+
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className="flex w-full items-center gap-3 rounded-lg px-2 py-3 text-left transition-colors hover:bg-secondary/40"
+                  onClick={() => {
+                    setActiveTab(tab.id);
+                    setMobileActiveTab(tab.id);
+                  }}
+                >
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border/50 bg-background/40 text-muted-foreground">
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] font-medium text-foreground">{tab.label}</span>
+                    <span className="mt-0.5 block text-[11px] leading-4 text-muted-foreground">
+                      {SETTINGS_TAB_DESCRIPTIONS[tab.id]}
+                    </span>
+                  </span>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/70" />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div
+          className={cn(
+            "min-h-0 flex-1 flex-col overflow-y-auto p-4",
+            mobileActiveTab ? "flex" : "hidden",
+            "md:flex",
+          )}
+          data-testid="settings-content"
+        >
+          {macDesktopShell ? <SettingsDesktopAppBar /> : null}
+
+          <div className="mb-4 md:hidden">
+            <h1 className="text-xl font-semibold text-foreground">{activeTabLabel}</h1>
+            <p className="mt-1 text-[12px] leading-5 text-muted-foreground">
+              {SETTINGS_TAB_DESCRIPTIONS[activeTab]}
+            </p>
+          </div>
 
           <div className={`mx-auto w-full ${activeTab === "licenses" || activeTab === "shortcuts" ? "max-w-4xl" : "max-w-5xl"}`}>
             {activeTab === "general" ? (
               <div className="space-y-5">
-                <div>
+                <div className="hidden md:block">
                   <h1 className="text-3xl font-semibold tracking-[-0.025em] text-foreground">General</h1>
                 </div>
 
@@ -1394,7 +1506,7 @@ export function SettingsDialog({
               </div>
             ) : activeTab === "workspace" ? (
               <div className="space-y-5">
-                <div>
+                <div className="hidden md:block">
                   <h1 className="text-3xl font-semibold tracking-[-0.025em] text-foreground">Workspace</h1>
                   <p className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
                     Configure repository defaults, save automation, and lifecycle scripts for your local workspace.
@@ -1638,7 +1750,7 @@ export function SettingsDialog({
               </div>
             ) : activeTab === "models" ? (
               <div className="space-y-5">
-                <div>
+                <div className="hidden md:block">
                   <h1 className="text-3xl font-semibold tracking-[-0.025em] text-foreground">Models</h1>
                   <p className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
                     Choose default agents for common flows and manage custom provider entries used by the app.
@@ -1979,7 +2091,7 @@ export function SettingsDialog({
               </div>
             ) : activeTab === "shortcuts" ? (
               <div className="space-y-6">
-                <div className="flex items-start justify-between gap-4">
+                <div className="hidden items-start justify-between gap-4 md:flex">
                   <div>
                     <h1 className="text-xl font-semibold text-foreground">Keyboard shortcuts</h1>
                     <p className="mt-1 max-w-2xl text-sm leading-5 text-muted-foreground">
@@ -2041,7 +2153,7 @@ export function SettingsDialog({
               </div>
             ) : (
               <div className="space-y-4">
-                <div>
+                <div className="hidden md:block">
                   <h2 className="text-sm font-semibold text-foreground">Open Source Licenses</h2>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Third-party assets bundled in the app should keep their original license and attribution notice.
