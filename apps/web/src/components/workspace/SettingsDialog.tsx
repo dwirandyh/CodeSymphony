@@ -13,7 +13,6 @@ import {
   Search,
   SlidersHorizontal,
   Trash2,
-  X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -726,6 +725,7 @@ export function SettingsDialog({
     wasOpenRef.current = true;
     hydratedRepoIdRef.current = null;
     setActiveTab("general");
+    setMobileActiveTab(null);
     setShowRemoveDialog(false);
     setSelectedRepoId(resolveInitialRepositoryId(repositories, selectedRepositoryId));
   }, [open, repositories, selectedRepositoryId]);
@@ -960,6 +960,15 @@ export function SettingsDialog({
     }
     onClose();
   }, [dirty, handleSave, onClose]);
+
+  const handleMobileBack = useCallback(() => {
+    if (mobileActiveTab) {
+      setMobileActiveTab(null);
+      return;
+    }
+
+    void handleCloseSettings();
+  }, [handleCloseSettings, mobileActiveTab]);
 
   useEffect(() => {
     if (!open) return;
@@ -1277,27 +1286,15 @@ export function SettingsDialog({
 
         <div className="flex shrink-0 flex-col border-b border-border/30 bg-card/60 md:hidden">
           {macDesktopShell ? <SettingsDesktopAppBar /> : null}
-          <div className="flex h-12 items-center justify-between px-3">
-            {mobileActiveTab ? (
-              <button
-                type="button"
-                className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-sm font-semibold text-foreground"
-                onClick={() => setMobileActiveTab(null)}
-                aria-label="Back to settings"
-              >
-                <ArrowLeft className="h-4 w-4 shrink-0" />
-                <span className="truncate">Settings</span>
-              </button>
-            ) : (
-              <div className="px-1.5 text-sm font-semibold text-foreground">Settings</div>
-            )}
+          <div className="flex h-12 items-center px-3">
             <button
               type="button"
-              className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
-              aria-label="Close settings"
-              onClick={() => { void handleCloseSettings(); }}
+              className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-sm font-semibold text-foreground"
+              onClick={handleMobileBack}
+              aria-label={mobileActiveTab ? "Back to settings" : "Close settings"}
             >
-              <X className="h-4 w-4" />
+              <ArrowLeft className="h-4 w-4 shrink-0" />
+              <span className="truncate">{mobileActiveTab ? activeTabLabel : "Settings"}</span>
             </button>
           </div>
         </div>
