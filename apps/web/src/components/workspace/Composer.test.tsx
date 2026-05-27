@@ -329,6 +329,22 @@ describe("Composer", () => {
     expect(document.activeElement).toBe(editor);
   });
 
+  it("renders the focus shortcut hint with the focus-within hiding rule", () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+
+    renderComposer();
+    const editor = getEditor();
+    const composerSection = editor.closest("section");
+    const hint = Array.from(composerSection?.querySelectorAll("span") ?? [])
+      .find((element) => element.textContent === "⌘J to focus");
+
+    expect(composerSection?.textContent).toContain("⌘J to focus");
+    expect(hint?.className).toContain("[:focus-within>&]:hidden");
+  });
+
   it("applies responsive max-height with internal scroll", () => {
     renderComposer();
     const editor = getEditor();

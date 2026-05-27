@@ -1,4 +1,5 @@
-import { act, useState } from "react";
+import { useState } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,6 +32,22 @@ vi.mock("../../lib/openExternalUrl", async () => {
     isTauriDesktop: isTauriDesktopMock,
   };
 });
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+  if (result && typeof (result as Promise<void>).then === "function") {
+    return (result as Promise<void>).then(async () => {
+      await Promise.resolve();
+      flushSync(() => {});
+    });
+  }
+  return undefined;
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -313,6 +330,116 @@ describe("RepositoryPanel", () => {
     });
     expect(container.textContent).toContain("main");
     expect(container.textContent).toContain("feature-x");
+  });
+
+  it("renders jump shortcut hints in the status slot while the shortcut modifier is held", () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-root",
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-shortcut"]')).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Meta", metaKey: true }));
+    });
+
+    const rootShortcut = container.querySelector<HTMLElement>('[data-testid="worktree-r1-wt-root-shortcut"]');
+    const branchShortcut = container.querySelector<HTMLElement>('[data-testid="worktree-r1-wt-feat-shortcut"]');
+
+    expect(rootShortcut?.textContent).toBe("⌘1");
+    expect(branchShortcut?.textContent).toBe("⌘2");
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "Meta", metaKey: false }));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-shortcut"]')).toBeNull();
+  });
+
+  it("does not render worktree shortcut hints for collapsed or hidden repositories", () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+      expandedByRepo: { r1: false, r2: true },
+      hiddenRepositoryIds: ["r2"],
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Meta", metaKey: true }));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r2-wt-root-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r2-wt-feat-shortcut"]')).toBeNull();
+  });
+
+  it("limits worktree jump shortcut hints to the first nine visible selectable rows", () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+
+    const repositoryId = "r1";
+    const rootWorktree = {
+      id: `${repositoryId}-wt-root`,
+      repositoryId,
+      branch: "main",
+      path: "/home/user/test-repo",
+      baseBranch: "main",
+      isAutomation: false,
+      status: "active" as const,
+      branchRenamed: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+    const branchWorktrees = Array.from({ length: 10 }, (_, index) => ({
+      id: `${repositoryId}-wt-feature-${index + 1}`,
+      repositoryId,
+      branch: `feature-${index + 1}`,
+      path: `/home/user/.cs/worktrees/test-repo/feature-${index + 1}`,
+      baseBranch: "main",
+      isAutomation: false,
+      status: "active" as const,
+      branchRenamed: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }));
+
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo({ worktrees: [rootWorktree, ...branchWorktrees] })],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-root",
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Meta", metaKey: true }));
+    });
+
+    expect(container.querySelector<HTMLElement>('[data-testid="worktree-r1-wt-root-shortcut"]')?.textContent).toBe("⌘1");
+    expect(container.querySelector<HTMLElement>('[data-testid="worktree-r1-wt-feature-8-shortcut"]')?.textContent).toBe("⌘9");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feature-9-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feature-10-shortcut"]')).toBeNull();
   });
 
   it("renders the automation icon for automation worktrees", () => {

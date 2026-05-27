@@ -26,7 +26,7 @@ describe("keyboardShortcuts", () => {
   });
 
   it("returns the current-platform label for a shortcut definition", () => {
-    expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_settings, "mac")).toBe("Cmd+,");
+    expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_settings, "mac")).toBe("⌘,");
     expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_settings, "windows")).toBe("Ctrl+,");
     expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.close_active_surface, "linux")).toBeNull();
   });

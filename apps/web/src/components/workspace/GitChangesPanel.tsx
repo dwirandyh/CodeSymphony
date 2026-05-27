@@ -272,7 +272,7 @@ export function GitChangesPanel({
         <Input
           value={commitMessage}
           onChange={(e) => setCommitMessage(e.target.value)}
-          placeholder={canSync ? "Working tree clean and ready to sync" : "Auto-generate if blank (Cmd+Enter)"}
+          placeholder={canSync ? "Working tree clean and ready to sync" : "Auto-generate if blank (⌘Enter)"}
           disabled={syncing}
           className="border-border/30 bg-secondary/10 px-2.5 py-1.5 text-xs placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-offset-0"
           onKeyDown={(e) => {

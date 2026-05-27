@@ -291,7 +291,11 @@ export function getWorkspaceShortcutLabel(
   const resolvedPlatform = platform === "mac" || platform === "windows" || platform === "linux"
     ? platform
     : resolveWorkspaceShortcutPlatform(platform);
-  return shortcut.bindings[resolvedPlatform];
+  const binding = shortcut.bindings[resolvedPlatform];
+  if (!binding) {
+    return null;
+  }
+  return resolvedPlatform === "mac" ? formatMacShortcutLabel(binding) : binding;
 }
 
 export function getVisibleWorkspaceShortcutSections(platform?: WorkspaceShortcutPlatform | string): Array<{
@@ -395,6 +399,34 @@ function matchesPrimaryShortcut(
   }
 
   return event.key.toLowerCase() === key.toLowerCase();
+}
+
+function formatMacShortcutLabel(binding: string): string {
+  return binding
+    .split("+")
+    .map((part) => {
+      switch (part) {
+        case "Cmd":
+          return "⌘";
+        case "Shift":
+          return "⇧";
+        case "Alt":
+          return "⌥";
+        case "Ctrl":
+          return "⌃";
+        case "Left":
+          return "←";
+        case "Right":
+          return "→";
+        case "Up":
+          return "↑";
+        case "Down":
+          return "↓";
+        default:
+          return part;
+      }
+    })
+    .join("");
 }
 
 function readNavigatorPlatform(): string {

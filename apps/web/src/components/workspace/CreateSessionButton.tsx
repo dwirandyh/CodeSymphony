@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, MessageSquarePlus, Plus, SquareTerminal } from "lucide-react";
+import { ChevronDown, MessageSquarePlus, Plus, SquareTerminal } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { getWorkspaceShortcutLabel, WORKSPACE_SHORTCUTS, type WorkspaceShortcutId } from "./keyboardShortcuts";
 
 export type SessionCreateAction = "thread" | "terminal";
 
@@ -11,6 +12,7 @@ type ActionMeta = {
   icon: typeof MessageSquarePlus;
   label: string;
   title: string;
+  shortcutId: WorkspaceShortcutId;
 };
 
 const ACTION_META: Record<SessionCreateAction, ActionMeta> = {
@@ -18,11 +20,13 @@ const ACTION_META: Record<SessionCreateAction, ActionMeta> = {
     icon: MessageSquarePlus,
     label: "Thread",
     title: "New thread",
+    shortcutId: "create_thread",
   },
   terminal: {
     icon: SquareTerminal,
     label: "Terminal",
     title: "New terminal",
+    shortcutId: "create_terminal",
   },
 };
 
@@ -158,6 +162,7 @@ export function CreateSessionButton({
             const Icon = meta.icon;
             const disabled = action === "thread" ? threadDisabled : terminalDisabled;
             const selected = action === preferredAction;
+            const shortcutLabel = getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS[meta.shortcutId]);
 
             return (
               <button
@@ -176,7 +181,11 @@ export function CreateSessionButton({
               >
                 <Icon className="h-3.5 w-3.5 shrink-0" />
                 <span className="flex-1 truncate">{meta.label}</span>
-                {selected ? <Check className="h-3.5 w-3.5 shrink-0 text-foreground/75" /> : null}
+                {shortcutLabel ? (
+                  <span className="shrink-0 text-[10px] font-mono tabular-nums text-muted-foreground/70">
+                    {shortcutLabel}
+                  </span>
+                ) : null}
               </button>
             );
           })}
