@@ -114,7 +114,7 @@ export function CreateSessionButton({
     <Popover open={menuOpen} onOpenChange={setMenuOpen}>
       <div
         className={cn(
-          "relative inline-flex h-7 shrink-0 items-center rounded-md bg-secondary text-secondary-foreground shadow-sm",
+          "relative inline-flex h-7 shrink-0 items-center rounded-md text-secondary-foreground",
           className,
         )}
         data-testid="create-session-button"
@@ -125,13 +125,11 @@ export function CreateSessionButton({
           title={`${preferredActionMeta.title} (default)`}
           disabled={mainActionDisabled}
           data-preferred-action={preferredAction}
-          className="flex h-full items-center justify-center rounded-l-md px-2 text-secondary-foreground/90 transition-colors hover:bg-black/5 hover:text-secondary-foreground disabled:pointer-events-none disabled:opacity-50 dark:hover:bg-white/8"
+          className="flex h-full items-center justify-center rounded-l-md pl-2 pr-1 text-secondary-foreground/90 transition-colors hover:text-secondary-foreground disabled:pointer-events-none disabled:opacity-50"
           onClick={() => invokeAction(preferredAction)}
         >
           <Plus className="h-3.5 w-3.5 shrink-0" />
         </button>
-
-        <div className="h-4 w-px bg-black/10 dark:bg-white/10" />
 
         <PopoverTrigger asChild>
           <button
@@ -139,7 +137,7 @@ export function CreateSessionButton({
             aria-label="Choose session type"
             title="Choose session type"
             disabled={menuDisabled}
-            className="flex h-full items-center justify-center rounded-r-md px-1.5 text-secondary-foreground/70 transition-colors hover:bg-black/5 hover:text-secondary-foreground disabled:pointer-events-none disabled:opacity-50 dark:hover:bg-white/8"
+            className="flex h-full items-center justify-center rounded-r-md pl-0.5 pr-1.5 text-secondary-foreground/70 transition-colors hover:text-secondary-foreground disabled:pointer-events-none disabled:opacity-50"
           >
             <ChevronDown className="h-3.5 w-3.5" />
           </button>
