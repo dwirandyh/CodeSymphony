@@ -78,6 +78,8 @@ type ThreadState = {
   nextIdxPromise: Promise<number> | null;
 };
 
+const MAX_EVENT_PERSIST_RETRY_ATTEMPTS = 25;
+
 export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
   const listeners: ListenerMap = new Map();
   const threadStates = new Map<string, ThreadState>();
@@ -157,7 +159,7 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
   async function persistEventWithIdxRetry(threadId: string, event: ChatEvent): Promise<void> {
     const state = getThreadState(threadId);
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_EVENT_PERSIST_RETRY_ATTEMPTS; attempt += 1) {
       try {
         await persistEvent(threadId, event);
         return;
@@ -167,8 +169,8 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
         }
 
         const nextIdx = await resolveInitialNextIdx(threadId);
-        state.nextIdx = nextIdx + 1;
         event.idx = nextIdx;
+        state.nextIdx = nextIdx + 1;
       }
     }
 

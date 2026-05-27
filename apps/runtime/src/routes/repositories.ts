@@ -11,7 +11,7 @@ import {
   UpdateWorktreeFileContentInputSchema,
 } from "@codesymphony/shared-types";
 import { z } from "zod";
-import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHead, gitCommitAll, discardGitChange, syncCurrentBranch } from "../services/git.js";
+import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHeadBuffer, gitCommitAll, discardGitChange, syncCurrentBranch } from "../services/git.js";
 import { detectMimeType, isImageMimeType } from "../services/filesystemService.js";
 import {
   getUnavailableWorktreeErrorMessage,
@@ -693,15 +693,33 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     }
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
-    const oldContent = await getFileAtHead(worktree.path, query.path);
+    const mimeType = detectMimeType(query.path);
+    const isImage = isImageMimeType(mimeType);
+    const oldBuffer = await getFileAtHeadBuffer(worktree.path, query.path);
+    const oldSize = oldBuffer?.byteLength ?? null;
+    const oldContent = oldBuffer && !isBinaryBuffer(oldBuffer) ? oldBuffer.toString("utf8") : null;
+    let newBuffer: Buffer | null = null;
     let newContent: string | null = null;
     try {
-      newContent = await readFile(path.join(worktree.path, query.path), "utf8");
+      newBuffer = await readFile(path.join(worktree.path, query.path));
+      newContent = !isBinaryBuffer(newBuffer) ? newBuffer.toString("utf8") : null;
     } catch {
       // File deleted in working tree
     }
 
-    return { data: { oldContent, newContent } };
+    return {
+      data: {
+        oldContent,
+        newContent,
+        oldBase64: isImage && oldBuffer ? oldBuffer.toString("base64") : null,
+        newBase64: isImage && newBuffer ? newBuffer.toString("base64") : null,
+        oldSize,
+        newSize: newBuffer?.byteLength ?? null,
+        oldBinary: oldBuffer ? isBinaryBuffer(oldBuffer) : false,
+        newBinary: newBuffer ? isBinaryBuffer(newBuffer) : false,
+        mimeType,
+      },
+    };
   });
 
   app.post("/worktrees/:id/git/commit", async (request, reply) => {

@@ -114,12 +114,14 @@ describe("git utilities", () => {
       git("checkout -- README.md");
     });
 
-    it("detects untracked files", async () => {
-      await writeFile(join(repoDir, "untracked.txt"), "new file");
+    it("detects untracked text file insertions", async () => {
+      await writeFile(join(repoDir, "untracked.txt"), "one\ntwo\nthree\n");
       const status = await getGitStatus(repoDir);
       const untracked = status.entries.find((e) => e.path === "untracked.txt");
       expect(untracked).toBeTruthy();
       expect(untracked!.status).toBe("untracked");
+      expect(untracked!.insertions).toBe(3);
+      expect(untracked!.deletions).toBe(0);
       git("clean -f untracked.txt");
     });
 
@@ -132,7 +134,48 @@ describe("git utilities", () => {
       const untracked = status.entries.find((entry) => entry.path === "src/generated/nested.ts");
       expect(untracked).toBeTruthy();
       expect(untracked?.status).toBe("untracked");
+      expect(untracked?.insertions).toBe(1);
+      expect(untracked?.deletions).toBe(0);
       git("clean -fd src");
+    });
+
+    it("reports zero insertions for empty untracked files", async () => {
+      await writeFile(join(repoDir, "empty.txt"), "");
+
+      const status = await getGitStatus(repoDir);
+      const untracked = status.entries.find((entry) => entry.path === "empty.txt");
+      expect(untracked).toBeTruthy();
+      expect(untracked?.status).toBe("untracked");
+      expect(untracked?.insertions).toBe(0);
+      expect(untracked?.deletions).toBe(0);
+      git("clean -f empty.txt");
+    });
+
+    it("reports zero insertions for binary-like untracked files", async () => {
+      await writeFile(join(repoDir, "binary.bin"), Buffer.from([0x61, 0x00, 0x62, 0x0a]));
+
+      const status = await getGitStatus(repoDir);
+      const untracked = status.entries.find((entry) => entry.path === "binary.bin");
+      expect(untracked).toBeTruthy();
+      expect(untracked?.status).toBe("untracked");
+      expect(untracked?.insertions).toBe(0);
+      expect(untracked?.deletions).toBe(0);
+      git("clean -f binary.bin");
+    });
+
+    it("reports zero insertions for untracked PNG files", async () => {
+      await writeFile(join(repoDir, "screenshot.png"), Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d,
+      ]));
+
+      const status = await getGitStatus(repoDir);
+      const untracked = status.entries.find((entry) => entry.path === "screenshot.png");
+      expect(untracked).toBeTruthy();
+      expect(untracked?.status).toBe("untracked");
+      expect(untracked?.insertions).toBe(0);
+      expect(untracked?.deletions).toBe(0);
+      git("clean -f screenshot.png");
     });
 
     it("reports upstream sync state", async () => {

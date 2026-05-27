@@ -23,7 +23,6 @@ export function resolveMacCloseShortcutTarget({
   activeTerminalTabId,
   activeFilePath,
   threadCount,
-  messageListEmptyState,
 }: ResolveMacCloseShortcutTargetParams): MacCloseShortcutTarget {
   if (activeView === "file") {
     return activeFilePath ? "file" : null;
@@ -45,12 +44,5 @@ export function resolveMacCloseShortcutTarget({
     return null;
   }
 
-  const lastThreadIsDefinitelyEmpty =
-    threadCount === 1
-    && (
-      messageListEmptyState === "new-thread-empty"
-      || messageListEmptyState === "existing-thread-empty"
-    );
-
-  return lastThreadIsDefinitelyEmpty ? null : "thread";
+  return "thread";
 }

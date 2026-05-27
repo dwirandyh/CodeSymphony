@@ -7,6 +7,7 @@ import type {
   ChatEvent,
   ChatThread,
   ChatTimelineSnapshot,
+  Repository,
 } from "@codesymphony/shared-types";
 import {
   getThreadEventsCollection,
@@ -17,6 +18,8 @@ import {
   getThreadStreamConnectionState,
   resetThreadStreamStateRegistryForTest,
 } from "../../../../collections/threadStreamState";
+import { useThreads } from "../../../../hooks/queries/useThreads";
+import { useWorktreeStatuses } from "../../../../hooks/queries/useWorktreeStatuses";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreadEventStream } from "./useThreadEventStream";
 
@@ -84,16 +87,18 @@ class MockEventSource {
   }
 }
 
-const { runtimeBaseUrlMock, getThreadStatusSnapshotMock, getTimelineSnapshotMock } = vi.hoisted(() => ({
+const { runtimeBaseUrlMock, getThreadStatusSnapshotMock, getTimelineSnapshotMock, listThreadsMock } = vi.hoisted(() => ({
   runtimeBaseUrlMock: "http://127.0.0.1:4331",
   getThreadStatusSnapshotMock: vi.fn(),
   getTimelineSnapshotMock: vi.fn(),
+  listThreadsMock: vi.fn(),
 }));
 
 vi.mock("../../../../lib/api", () => ({
   api: {
     getThreadStatusSnapshot: getThreadStatusSnapshotMock,
     getTimelineSnapshot: getTimelineSnapshotMock,
+    listThreads: listThreadsMock,
     get runtimeBaseUrl() {
       return runtimeBaseUrlMock;
     },
@@ -115,6 +120,30 @@ let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
 let latestThreads: ChatThread[] = [];
+let latestWorktreeStatus: { kind: string; threadId: string | null } | null = null;
+
+const worktreeStatusRepositoryFixture: Repository[] = [{
+  id: "repo-1",
+  name: "repo",
+  rootPath: "/repo",
+  defaultBranch: "main",
+  setupScript: null,
+  teardownScript: null,
+  runScript: null,
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+  worktrees: [{
+    id: "wt-1",
+    repositoryId: "repo-1",
+    branch: "main",
+    path: "/repo",
+    baseBranch: "main",
+    status: "active",
+    branchRenamed: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  }],
+}];
 
 function makeSnapshot(events: ChatEvent[] = []): ChatTimelineSnapshot {
   return {
@@ -152,12 +181,14 @@ function HookHarness({
   selectedThreadIsPrMr = false,
   initialWaitingAssistant = null,
   initialThreads = [],
+  observeWorktreeStatus = false,
 }: {
   selectedThreadId: string | null;
   repositoryId?: string | null;
   selectedThreadIsPrMr?: boolean;
   initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
   initialThreads?: ChatThread[];
+  observeWorktreeStatus?: boolean;
 }) {
   const [threads, setThreads] = useState<ChatThread[]>(initialThreads);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(initialWaitingAssistant);
@@ -178,6 +209,13 @@ function HookHarness({
   const waitingAssistantRef = useRef<{ threadId: string; afterIdx: number } | null>(waitingAssistant);
   activeThreadIdRef.current = selectedThreadId;
   waitingAssistantRef.current = waitingAssistant;
+  useThreads(observeWorktreeStatus ? "wt-1" : null);
+
+  const worktreeStatuses = useWorktreeStatuses(
+    worktreeStatusRepositoryFixture,
+    observeWorktreeStatus,
+  );
+  latestWorktreeStatus = observeWorktreeStatus ? worktreeStatuses["wt-1"] ?? null : null;
 
   useThreadEventStream({
     selectedThreadId,
@@ -207,6 +245,7 @@ function renderHook(
     selectedThreadIsPrMr?: boolean;
     initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
     initialThreads?: ChatThread[];
+    observeWorktreeStatus?: boolean;
   },
 ) {
   act(() => {
@@ -218,6 +257,7 @@ function renderHook(
           selectedThreadIsPrMr={options?.selectedThreadIsPrMr}
           initialWaitingAssistant={options?.initialWaitingAssistant}
           initialThreads={options?.initialThreads}
+          observeWorktreeStatus={options?.observeWorktreeStatus}
         />
       </QueryClientProvider>,
     );
@@ -231,6 +271,7 @@ function renderHookInStrictMode(
     selectedThreadIsPrMr?: boolean;
     initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
     initialThreads?: ChatThread[];
+    observeWorktreeStatus?: boolean;
   },
 ) {
   act(() => {
@@ -243,6 +284,7 @@ function renderHookInStrictMode(
             selectedThreadIsPrMr={options?.selectedThreadIsPrMr}
             initialWaitingAssistant={options?.initialWaitingAssistant}
             initialThreads={options?.initialThreads}
+            observeWorktreeStatus={options?.observeWorktreeStatus}
           />
         </QueryClientProvider>
       </StrictMode>,
@@ -262,6 +304,7 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false } },
   });
   latestWaitingAssistant = null;
+  latestWorktreeStatus = null;
   invalidateQueriesMock.mockReset();
   cancelQueriesMock.mockReset();
   cancelQueriesMock.mockResolvedValue(undefined);
@@ -271,6 +314,8 @@ beforeEach(() => {
   getThreadStatusSnapshotMock.mockResolvedValue({ status: "idle", newestIdx: null });
   getTimelineSnapshotMock.mockReset();
   getTimelineSnapshotMock.mockResolvedValue(makeSnapshot());
+  listThreadsMock.mockReset();
+  listThreadsMock.mockResolvedValue([]);
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
   queryClient.cancelQueries = cancelQueriesMock as typeof queryClient.cancelQueries;
 
@@ -403,6 +448,95 @@ describe("useThreadEventStream", () => {
       newestIdx: 2,
     });
     expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+  });
+
+  it("updates collection-backed worktree status chips for selected-thread plan.created events", async () => {
+    const threadId = "selected-thread";
+    const initialThreads: ChatThread[] = [
+      {
+        id: threadId,
+        worktreeId: "wt-1",
+        title: "Selected Thread",
+        kind: "default",
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "recent-thread-1",
+        worktreeId: "wt-1",
+        title: "Recent Thread 1",
+        kind: "default",
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: false,
+        createdAt: "2026-01-02T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+      },
+      {
+        id: "recent-thread-2",
+        worktreeId: "wt-1",
+        title: "Recent Thread 2",
+        kind: "default",
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: false,
+        createdAt: "2026-01-03T00:00:00Z",
+        updatedAt: "2026-01-03T00:00:00Z",
+      },
+    ];
+
+    listThreadsMock.mockResolvedValue(initialThreads);
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), initialThreads);
+
+    renderHook(threadId, {
+      initialThreads,
+      observeWorktreeStatus: true,
+    });
+
+    await vi.waitFor(() => {
+      expect(latestWorktreeStatus).toEqual({
+        kind: "idle",
+        threadId: "recent-thread-2",
+      });
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(MockEventSource.instances).toHaveLength(1);
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "plan.created",
+        makeEvent({
+          id: "e-plan-status-chip",
+          threadId,
+          idx: 3,
+          type: "plan.created",
+          payload: { content: "Plan", filePath: "/tmp/plan.md" },
+        }),
+      );
+    });
+
+    expect(latestWorktreeStatus).toEqual({
+      kind: "review_plan",
+      threadId,
+    });
   });
 
   it("patches the selected thread status snapshot to idle and refreshes the timeline on chat.completed", async () => {

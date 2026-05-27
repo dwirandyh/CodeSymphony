@@ -8,6 +8,20 @@ import { gitDiffQueryOptions } from "./useGitDiff";
 export type GitDiffReviewEntry = {
   file: FileDiffMetadata;
   stats: { additions: number; deletions: number };
+  imageComparison: GitImageComparison | null;
+  binaryComparison: GitBinaryComparison | null;
+};
+
+export type GitImageComparison = {
+  mimeType: string;
+  oldSrc: string | null;
+  newSrc: string | null;
+};
+
+export type GitBinaryComparison = {
+  mimeType: string;
+  oldSize: number | null;
+  newSize: number | null;
 };
 
 export type GitDiffReviewResult = {
@@ -35,6 +49,46 @@ function computeStats(file: FileDiffMetadata) {
   return { additions, deletions };
 }
 
+function isReviewImageFile(filePath: string) {
+  return /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|webp)$/i.test(filePath);
+}
+
+function imageComparisonFromContents(contents: {
+  oldBase64?: string | null;
+  newBase64?: string | null;
+  mimeType?: string | null;
+}): GitImageComparison | null {
+  const mimeType = contents.mimeType ?? "";
+  if (!mimeType.startsWith("image/")) {
+    return null;
+  }
+
+  return {
+    mimeType,
+    oldSrc: contents.oldBase64 ? `data:${mimeType};base64,${contents.oldBase64}` : null,
+    newSrc: contents.newBase64 ? `data:${mimeType};base64,${contents.newBase64}` : null,
+  };
+}
+
+function binaryComparisonFromContents(contents: {
+  mimeType?: string | null;
+  oldSize?: number | null;
+  newSize?: number | null;
+  oldBinary?: boolean;
+  newBinary?: boolean;
+}): GitBinaryComparison | null {
+  const mimeType = contents.mimeType ?? "";
+  if (mimeType.startsWith("image/") || (!contents.oldBinary && !contents.newBinary)) {
+    return null;
+  }
+
+  return {
+    mimeType: mimeType || "application/octet-stream",
+    oldSize: contents.oldSize ?? null,
+    newSize: contents.newSize ?? null,
+  };
+}
+
 async function fetchGitDiffReview(
   queryClient: QueryClient,
   worktreeId: string,
@@ -52,16 +106,25 @@ async function fetchGitDiffReview(
   const allFiles = patches.flatMap((patch) => patch.files);
   const parseCompletedAt = performance.now();
   const shouldFetchFullContents = Boolean(selectedFilePath);
+  const shouldFetchFileContents = (file: FileDiffMetadata) => (
+    shouldFetchFullContents || isReviewImageFile(file.name) || file.hunks.length === 0
+  );
+  const shouldFetchAnyFileContents = allFiles.some(shouldFetchFileContents);
+  const imageComparisons = new Map<string, GitImageComparison | null>();
+  const binaryComparisons = new Map<string, GitBinaryComparison | null>();
   const fileFetchStartedAt = performance.now();
 
-  if (shouldFetchFullContents && allFiles.length > 0) {
+  if (shouldFetchAnyFileContents) {
     await Promise.all(
-      allFiles.map(async (file) => {
+      allFiles.filter(shouldFetchFileContents).map(async (file) => {
         try {
-          const { oldContent, newContent } = await queryClient.fetchQuery({
+          const contents = await queryClient.fetchQuery({
             ...fileContentsQueryOptions(worktreeId, file.name),
             staleTime: 0,
           });
+          const { oldContent, newContent } = contents;
+          imageComparisons.set(file.name, imageComparisonFromContents(contents));
+          binaryComparisons.set(file.name, binaryComparisonFromContents(contents));
           file.oldLines = (oldContent ?? "").split(SPLIT_WITH_NEWLINES);
           file.newLines = (newContent ?? "").split(SPLIT_WITH_NEWLINES);
         } catch {
@@ -74,9 +137,11 @@ async function fetchGitDiffReview(
   const entries = allFiles.map((file) => ({
     file,
     stats: computeStats(file),
+    imageComparison: imageComparisons.get(file.name) ?? null,
+    binaryComparison: binaryComparisons.get(file.name) ?? null,
   }));
   const totalDurationMs = performance.now() - fetchStartedAt;
-  const contentFetchDurationMs = shouldFetchFullContents ? performance.now() - fileFetchStartedAt : 0;
+  const contentFetchDurationMs = shouldFetchAnyFileContents ? performance.now() - fileFetchStartedAt : 0;
 
   return {
     entries,

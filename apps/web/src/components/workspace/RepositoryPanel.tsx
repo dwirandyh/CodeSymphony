@@ -43,16 +43,19 @@ import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
 import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
 import { isTauriDesktop } from "../../lib/openExternalUrl";
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
+import { resolveWorkspaceShortcutPlatform } from "./keyboardShortcuts";
 import type {
   WorktreeStatusSummary,
   WorktreeThreadUiStatus,
 } from "../../pages/workspace/hooks/worktreeThreadStatus";
 import type { RepositoryPanelDropPosition } from "../../pages/workspace/repositoryPanelPreferences";
+import { filterRepositoriesForMetadataScope } from "../../pages/workspace/repositoryMetadataScope";
 
 type RepositoryPanelProps = {
   repositories: Repository[];
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
+  selectedWorktreeStatusOverride?: WorktreeStatusSummary | null;
   enableMetadataQueries?: boolean;
   threadSnapshot?: ThreadsByWorktreeSnapshot;
   hiddenRepositoryIds: string[];
@@ -147,6 +150,64 @@ function resolvePriorityThreadId(
   return status.kind === "waiting_approval" || status.kind === "review_plan"
     ? status.threadId
     : null;
+}
+
+function hasNonIdleWorktreeStatus(status: WorktreeStatusSummary | undefined): boolean {
+  return status != null && status.kind !== "idle";
+}
+
+const WORKTREE_STATUS_PRIORITY: WorktreeThreadUiStatus[] = [
+  "waiting_approval",
+  "review_plan",
+  "running",
+  "idle",
+];
+const MAX_WORKTREE_SHORTCUT_HINTS = 9;
+
+function getWorktreeJumpShortcutLabel(index: number): string | null {
+  if (index < 0 || index >= MAX_WORKTREE_SHORTCUT_HINTS) {
+    return null;
+  }
+
+  const key = index + 1;
+  return resolveWorkspaceShortcutPlatform() === "mac"
+    ? `⌘${key}`
+    : `Ctrl+Shift+${key}`;
+}
+
+function isWorktreeShortcutModifierActive(event: KeyboardEvent): boolean {
+  return resolveWorkspaceShortcutPlatform() === "mac"
+    ? event.metaKey
+    : event.ctrlKey && event.shiftKey;
+}
+
+export function mergeSelectedWorktreeStatusOverride(params: {
+  worktreeStatuses: Record<string, WorktreeStatusSummary>;
+  selectedWorktreeId: string | null;
+  selectedWorktreeStatusOverride?: WorktreeStatusSummary | null;
+}): Record<string, WorktreeStatusSummary> {
+  const { worktreeStatuses, selectedWorktreeId, selectedWorktreeStatusOverride } = params;
+
+  if (
+    !selectedWorktreeId
+    || !selectedWorktreeStatusOverride
+    || selectedWorktreeStatusOverride.kind === "idle"
+  ) {
+    return worktreeStatuses;
+  }
+
+  const current = worktreeStatuses[selectedWorktreeId];
+  const currentPriority = current ? WORKTREE_STATUS_PRIORITY.indexOf(current.kind) : Number.POSITIVE_INFINITY;
+  const overridePriority = WORKTREE_STATUS_PRIORITY.indexOf(selectedWorktreeStatusOverride.kind);
+
+  if (current && currentPriority < overridePriority) {
+    return worktreeStatuses;
+  }
+
+  return {
+    ...worktreeStatuses,
+    [selectedWorktreeId]: selectedWorktreeStatusOverride,
+  };
 }
 
 function WorktreeStatusBadge({
@@ -314,6 +375,8 @@ function WorktreeRowContent({
   icon,
   branchContent,
   status,
+  shortcutLabel,
+  showShortcutHint,
   detailBadge,
   review,
   reviewKind,
@@ -325,6 +388,8 @@ function WorktreeRowContent({
   icon: ReactNode;
   branchContent: ReactNode;
   status: WorktreeThreadUiStatus | undefined;
+  shortcutLabel?: string | null;
+  showShortcutHint?: boolean;
   detailBadge?: ReactNode;
   review: ReviewRef | null;
   reviewKind: ReviewKind | null | undefined;
@@ -369,9 +434,34 @@ function WorktreeRowContent({
         ) : null}
       </div>
       <WorktreeMetaSlot hiddenOnHover={hideStatusOnHover}>
-        <WorktreeStatusBadge status={status} />
+        {showShortcutHint && shortcutLabel ? (
+          <WorktreeShortcutHint shortcutLabel={shortcutLabel} testId={testId} />
+        ) : (
+          <WorktreeStatusBadge status={status} />
+        )}
       </WorktreeMetaSlot>
     </div>
+  );
+}
+
+function WorktreeShortcutHint({
+  shortcutLabel,
+  testId,
+}: {
+  shortcutLabel?: string | null;
+  testId: string;
+}) {
+  if (!shortcutLabel) {
+    return null;
+  }
+
+  return (
+    <span
+      className="shrink-0 rounded bg-background/95 px-1 font-mono text-[10px] tabular-nums text-muted-foreground/70 shadow-sm ring-1 ring-border/45"
+      data-testid={`${testId}-shortcut`}
+    >
+      {shortcutLabel}
+    </span>
   );
 }
 
@@ -379,6 +469,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   repositories,
   selectedRepositoryId,
   selectedWorktreeId,
+  selectedWorktreeStatusOverride = null,
   enableMetadataQueries = true,
   threadSnapshot,
   hiddenRepositoryIds,
@@ -407,6 +498,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   const [draggedRepositoryId, setDraggedRepositoryId] = useState<string | null>(
     null,
   );
+  const [showWorktreeShortcutHints, setShowWorktreeShortcutHints] = useState(false);
   const [draggedRepositoryHeight, setDraggedRepositoryHeight] = useState<number | null>(null);
   const draggedRepositoryIdRef = useRef<string | null>(null);
   const dragPreviewElementRef = useRef<HTMLElement | null>(null);
@@ -448,9 +540,11 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     [visibleRepositories],
   );
   const metadataRepositories = useMemo(
-    () => visibleRepositories.filter((repository) => (
-      expandedByRepo[repository.id] ?? selectedRepositoryId === repository.id
-    )),
+    () => filterRepositoriesForMetadataScope({
+      repositories: visibleRepositories,
+      selectedRepositoryId,
+      expandedByRepo,
+    }),
     [expandedByRepo, selectedRepositoryId, visibleRepositories],
   );
   const renderedVisibleRepositoryIds = previewVisibleRepositoryIds ?? visibleRepositoryIds;
@@ -465,13 +559,13 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     previewVisibleRepositoryIdsRef.current = previewVisibleRepositoryIds;
   }, [previewVisibleRepositoryIds]);
 
-  const repositoryWorktreeIndex = useMemo(
+  const metadataRepositoryWorktreeIndex = useMemo(
     () => buildRepositoryWorktreeIndex(metadataRepositories),
     [metadataRepositories],
   );
   const activeWorktreeSummaries = useMemo(
-    () => repositoryWorktreeIndex.activeWorktreeIds.flatMap((worktreeId) => {
-      const worktree = repositoryWorktreeIndex.worktreeById.get(worktreeId);
+    () => metadataRepositoryWorktreeIndex.activeWorktreeIds.flatMap((worktreeId) => {
+      const worktree = metadataRepositoryWorktreeIndex.worktreeById.get(worktreeId);
       if (!worktree) {
         return [];
       }
@@ -481,9 +575,17 @@ export const RepositoryPanel = memo(function RepositoryPanel({
         baseBranch: worktree.baseBranch || worktree.repository.defaultBranch,
       }];
     }),
-    [repositoryWorktreeIndex],
+    [metadataRepositoryWorktreeIndex],
   );
-  const worktreeStatuses = useWorktreeStatuses(metadataRepositories, enableMetadataQueries, threadSnapshot);
+  const worktreeStatuses = useWorktreeStatuses(visibleRepositories, enableMetadataQueries, threadSnapshot);
+  const displayWorktreeStatuses = useMemo(
+    () => mergeSelectedWorktreeStatusOverride({
+      worktreeStatuses,
+      selectedWorktreeId,
+      selectedWorktreeStatusOverride,
+    }),
+    [selectedWorktreeId, selectedWorktreeStatusOverride, worktreeStatuses],
+  );
   const gitBranchDiffQueries = useQueries({
     queries: activeWorktreeSummaries.map(({ worktreeId, baseBranch }) => ({
       ...gitBranchDiffSummaryQueryOptions(worktreeId, baseBranch),
@@ -543,6 +645,47 @@ export const RepositoryPanel = memo(function RepositoryPanel({
       {},
     );
   }, [activeWorktreeSummaries, gitBranchDiffQueries]);
+  const worktreeShortcutLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    let shortcutIndex = 0;
+
+    for (const repository of visibleRepositories) {
+      const isExpanded = expandedByRepo[repository.id] ?? selectedRepositoryId === repository.id;
+      if (!isExpanded) {
+        continue;
+      }
+
+      const visibleWorktrees = repository.worktrees.filter(
+        (worktree) => isVisibleWorktreeStatus(worktree.status),
+      );
+      const rootWorkspace =
+        visibleWorktrees.find((worktree) =>
+          isRootWorktree(worktree, repository),
+        ) ?? null;
+      const branchWorktrees = rootWorkspace
+        ? visibleWorktrees.filter((worktree) => worktree.id !== rootWorkspace.id)
+        : visibleWorktrees;
+      const orderedWorktrees = rootWorkspace
+        ? [rootWorkspace, ...branchWorktrees]
+        : branchWorktrees;
+
+      for (const worktree of orderedWorktrees) {
+        if (!isSelectableWorktreeStatus(worktree.status)) {
+          continue;
+        }
+
+        const label = getWorktreeJumpShortcutLabel(shortcutIndex);
+        if (!label) {
+          return labels;
+        }
+
+        labels.set(worktree.id, label);
+        shortcutIndex += 1;
+      }
+    }
+
+    return labels;
+  }, [expandedByRepo, selectedRepositoryId, visibleRepositories]);
 
   function toggleRepository(repositoryId: string) {
     const nextExpanded = !(
@@ -938,8 +1081,30 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     };
   }, []);
 
+  useEffect(() => {
+    function syncShortcutHintState(event: KeyboardEvent) {
+      setShowWorktreeShortcutHints(isWorktreeShortcutModifierActive(event));
+    }
+
+    function hideShortcutHints() {
+      setShowWorktreeShortcutHints(false);
+    }
+
+    window.addEventListener("keydown", syncShortcutHintState);
+    window.addEventListener("keyup", syncShortcutHintState);
+    window.addEventListener("blur", hideShortcutHints);
+    document.addEventListener("visibilitychange", hideShortcutHints);
+
+    return () => {
+      window.removeEventListener("keydown", syncShortcutHintState);
+      window.removeEventListener("keyup", syncShortcutHintState);
+      window.removeEventListener("blur", hideShortcutHints);
+      document.removeEventListener("visibilitychange", hideShortcutHints);
+    };
+  }, []);
+
   return (
-    <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+    <section className="flex min-h-0 flex-1 flex-col overflow-y-hidden overflow-x-visible">
       <div className="flex items-center justify-between py-1.5">
         <h2 className="text-xs font-medium tracking-[0.03em] text-muted-foreground">
           Workspace (
@@ -1034,7 +1199,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
         </div>
       ) : null}
 
-      <ScrollArea className="min-h-0 flex-1 pb-1">
+      <ScrollArea className="min-h-0 flex-1 overflow-y-auto overflow-x-visible pb-1">
         {repositories.length === 0 ? (
           <div className="py-3 text-xs text-muted-foreground">
             No repositories added yet.
@@ -1081,9 +1246,14 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                   (worktree) => worktree.id !== rootWorkspace.id,
                 )
               : visibleWorktrees;
-            const isExpanded = expandedByRepo[repository.id] ?? isSelected;
+            const repositoryHasLiveStatus = visibleWorktrees.some((worktree) =>
+              hasNonIdleWorktreeStatus(displayWorktreeStatuses[worktree.id]));
+            const isExpanded = expandedByRepo[repository.id] ?? (isSelected || repositoryHasLiveStatus);
             const rootPriorityThreadId = rootWorkspace
-              ? resolvePriorityThreadId(worktreeStatuses[rootWorkspace.id])
+              ? resolvePriorityThreadId(displayWorktreeStatuses[rootWorkspace.id])
+              : null;
+            const rootShortcutLabel = rootWorkspace
+              ? worktreeShortcutLabels.get(rootWorkspace.id)
               : null;
             const repositoryReviews =
               reviewsByRepositoryId[repository.id] ?? {};
@@ -1094,7 +1264,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
               <article
                 key={repository.id}
                 className={cn(
-                  "min-w-0 overflow-hidden rounded-xl py-1 transition-colors",
+                  "min-w-0 overflow-visible rounded-xl py-1 transition-colors",
                   isSelected && "text-foreground",
                   draggedRepositoryId === repository.id && "bg-secondary/30 opacity-70 shadow-lg",
                 )}
@@ -1220,7 +1390,9 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                   {rootWorkspace.branch}
                                 </span>
                               }
-                              status={worktreeStatuses[rootWorkspace.id]?.kind}
+                              status={displayWorktreeStatuses[rootWorkspace.id]?.kind}
+                              shortcutLabel={rootShortcutLabel}
+                              showShortcutHint={showWorktreeShortcutHints}
                               review={
                                 repositoryReviews[rootWorkspace.branch] ?? null
                               }
@@ -1246,10 +1418,11 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                           const isWorktreeSelectable = isSelectableWorktreeStatus(worktree.status);
                           const stats = worktreeStats[worktree.id];
                           const priorityThreadId = resolvePriorityThreadId(
-                            worktreeStatuses[worktree.id],
+                            displayWorktreeStatuses[worktree.id],
                           );
                           const review =
                             repositoryReviews[worktree.branch] ?? null;
+                          const shortcutLabel = worktreeShortcutLabels.get(worktree.id);
 
                           return (
                             <div
@@ -1391,7 +1564,9 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                       </span>
                                     )
                                   }
-                                  status={worktreeStatuses[worktree.id]?.kind}
+                                  status={displayWorktreeStatuses[worktree.id]?.kind}
+                                  shortcutLabel={shortcutLabel}
+                                  showShortcutHint={showWorktreeShortcutHints}
                                   detailBadge={renderWorktreeLifecycleBadge(worktree)}
                                   review={review}
                                   reviewKind={repositoryReviewKind}
@@ -1402,7 +1577,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                 />
                               </div>
 
-                              <div className="pointer-events-none absolute top-0 right-2 bottom-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:pointer-events-auto group-hover/wt:opacity-100 group-focus-within/wt:pointer-events-auto group-focus-within/wt:opacity-100">
+                              <div className="pointer-events-none absolute top-0 right-2 bottom-0 z-30 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:pointer-events-auto group-hover/wt:opacity-100 group-focus-within/wt:pointer-events-auto group-focus-within/wt:opacity-100">
                                 {worktree.status === "delete_failed" ? (
                                   <>
                                     <Button

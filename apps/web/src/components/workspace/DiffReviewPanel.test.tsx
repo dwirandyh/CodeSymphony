@@ -1,5 +1,5 @@
-import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -38,6 +38,19 @@ Object.defineProperty(window, "matchMedia", {
 import { DiffReviewPanel } from "./DiffReviewPanel";
 import { api } from "../../lib/api";
 import { parsePatchFiles } from "@pierre/diffs";
+
+function act(callback: () => void | Promise<void>) {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+
+  if (result instanceof Promise) {
+    return result.then(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  }
+
+  return undefined;
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -196,6 +209,149 @@ describe("DiffReviewPanel", () => {
     });
 
     expect(container.querySelector('[data-testid="file-diff"]')?.textContent).toBe("src/expanded.ts");
+  });
+
+  it("renders before and current previews for image changes", async () => {
+    vi.mocked(api.getGitDiff).mockResolvedValueOnce({ diff: "diff", summary: "" });
+    vi.mocked(api.getFileContents).mockResolvedValueOnce({
+      oldContent: null,
+      newContent: null,
+      oldBase64: "b2xk",
+      newBase64: "bmV3",
+      oldSize: 3,
+      newSize: 3,
+      oldBinary: false,
+      newBinary: false,
+      mimeType: "image/png",
+    });
+    vi.mocked(parsePatchFiles).mockReturnValueOnce([{
+      files: [{
+        name: "assets/preview.png",
+        type: "changed",
+        hunks: [],
+      }],
+    }] as never);
+
+    await act(async () => {
+      renderPanel({ worktreeId: "w1" });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(container.textContent).toContain("Before / Current");
+    expect(container.textContent).toContain("Before");
+    expect(container.textContent).toContain("Current");
+    const images = Array.from(container.querySelectorAll("img"));
+    expect(images.map((image) => image.getAttribute("src"))).toEqual([
+      "data:image/png;base64,b2xk",
+      "data:image/png;base64,bmV3",
+    ]);
+  });
+
+  it("renders current-only preview for new image files", async () => {
+    vi.mocked(api.getGitDiff).mockResolvedValueOnce({ diff: "diff", summary: "" });
+    vi.mocked(api.getFileContents).mockResolvedValueOnce({
+      oldContent: null,
+      newContent: null,
+      oldBase64: null,
+      newBase64: "bmV3",
+      oldSize: null,
+      newSize: 3,
+      oldBinary: false,
+      newBinary: false,
+      mimeType: "image/png",
+    });
+    vi.mocked(parsePatchFiles).mockReturnValueOnce([{
+      files: [{
+        name: "assets/new-preview.png",
+        type: "new",
+        hunks: [],
+      }],
+    }] as never);
+
+    await act(async () => {
+      renderPanel({ worktreeId: "w1" });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(container.textContent).toContain("New image");
+    expect(container.textContent).not.toContain("Before");
+    expect(container.textContent).not.toContain("Not available");
+    expect(container.textContent).toContain("Current");
+    const images = Array.from(container.querySelectorAll("img"));
+    expect(images).toHaveLength(1);
+    expect(images[0]?.getAttribute("src")).toBe("data:image/png;base64,bmV3");
+  });
+
+  it("renders metadata panel for binary non-image changes", async () => {
+    vi.mocked(api.getGitDiff).mockResolvedValueOnce({ diff: "diff", summary: "" });
+    vi.mocked(api.getFileContents).mockResolvedValueOnce({
+      oldContent: null,
+      newContent: null,
+      oldBase64: null,
+      newBase64: null,
+      oldSize: 7,
+      newSize: 2048,
+      oldBinary: true,
+      newBinary: true,
+      mimeType: "application/octet-stream",
+    });
+    vi.mocked(parsePatchFiles).mockReturnValueOnce([{
+      files: [{
+        name: "assets/archive.bin",
+        type: "changed",
+        hunks: [],
+      }],
+    }] as never);
+
+    await act(async () => {
+      renderPanel({ worktreeId: "w1" });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(container.textContent).toContain("Binary changed");
+    expect(container.textContent).toContain("Binary file");
+    expect(container.textContent).toContain("7 B");
+    expect(container.textContent).toContain("2.0 KB");
+  });
+
+  it("renders current-only metadata for new binary non-image files", async () => {
+    vi.mocked(api.getGitDiff).mockResolvedValueOnce({ diff: "diff", summary: "" });
+    vi.mocked(api.getFileContents).mockResolvedValueOnce({
+      oldContent: null,
+      newContent: null,
+      oldBase64: null,
+      newBase64: null,
+      oldSize: null,
+      newSize: 2048,
+      oldBinary: false,
+      newBinary: true,
+      mimeType: "application/octet-stream",
+    });
+    vi.mocked(parsePatchFiles).mockReturnValueOnce([{
+      files: [{
+        name: "assets/new-archive.bin",
+        type: "new",
+        hunks: [],
+      }],
+    }] as never);
+
+    await act(async () => {
+      renderPanel({ worktreeId: "w1" });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect(container.textContent).toContain("New binary");
+    expect(container.textContent).not.toContain("Before");
+    expect(container.textContent).toContain("Current");
+    expect(container.textContent).toContain("2.0 KB");
   });
 
   it("keeps file headers sticky inside each diff card", async () => {

@@ -182,6 +182,23 @@ assert_no_prohibited_files() {
   fi
 }
 
+resolve_terminal_zshrc_source() {
+  local candidate=""
+
+  for candidate in \
+    "${WORKSPACE_ROOT}/apps/runtime/terminal-zsh/.zshrc" \
+    "${WORKSPACE_ROOT}/apps/runtime/assets/terminal-zsh/.zshrc"
+  do
+    if [[ -f "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "Unable to find terminal zsh bootstrap (.zshrc) for desktop runtime bundle" >&2
+  return 1
+}
+
 echo "=== Building shared-types ==="
 bun run --filter @codesymphony/shared-types build
 
@@ -200,7 +217,8 @@ cp -r "${WORKSPACE_ROOT}/apps/runtime/dist" "${BUNDLE_DIR}/dist"
 
 echo "=== Copying terminal zsh bootstrap ==="
 rm -rf "${BUNDLE_DIR}/terminal-zsh"
-cp -R "${WORKSPACE_ROOT}/apps/runtime/terminal-zsh" "${BUNDLE_DIR}/terminal-zsh"
+mkdir -p "${BUNDLE_DIR}/terminal-zsh"
+cp "$(resolve_terminal_zshrc_source)" "${BUNDLE_DIR}/terminal-zsh/.zshrc"
 
 echo "=== Copying workspace runtime dependencies ==="
 copy_workspace_package "@codesymphony/shared-types" "${WORKSPACE_ROOT}/packages/shared-types"

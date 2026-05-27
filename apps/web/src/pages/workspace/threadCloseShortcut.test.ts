@@ -67,7 +67,7 @@ describe("resolveMacCloseShortcutTarget", () => {
     ).toBe("thread");
   });
 
-  it("allows native macOS behavior for the last empty thread", () => {
+  it("closes the last empty thread instead of allowing native browser tab close", () => {
     expect(
       resolveMacCloseShortcutTarget({
         activeView: "chat",
@@ -77,7 +77,7 @@ describe("resolveMacCloseShortcutTarget", () => {
         threadCount: 1,
         messageListEmptyState: "existing-thread-empty",
       }),
-    ).toBeNull();
+    ).toBe("thread");
   });
 
   it("closes the last thread when it already has content", () => {

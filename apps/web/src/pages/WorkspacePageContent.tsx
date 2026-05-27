@@ -5,6 +5,8 @@ import {
   type ChatThread,
   type ReviewRef,
   type ReviewKind,
+  type Repository,
+  type Worktree,
 } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
@@ -77,6 +79,20 @@ const loadWorkspaceAutomationsPanel = () =>
 const WorkspaceAutomationsPanel = lazy(loadWorkspaceAutomationsPanel);
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
+import {
+  getJumpToWorktreeShortcutIndex,
+  matchesCreateTerminalShortcut,
+  matchesCreateThreadShortcut,
+  matchesFocusChatInputShortcut,
+  matchesNavigateBackShortcut,
+  matchesNavigateForwardShortcut,
+  matchesNextSessionTabShortcut,
+  matchesNextWorktreeShortcut,
+  matchesOpenSettingsShortcut,
+  matchesPreviousSessionTabShortcut,
+  matchesPreviousWorktreeShortcut,
+  matchesToggleWorkspaceSidebarShortcut,
+} from "../components/workspace/keyboardShortcuts";
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
@@ -103,7 +119,7 @@ const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewP
 
 import { api, type RuntimeInfo } from "../lib/api";
 import { debugLog } from "../lib/debugLog";
-import { loadGeneralSettings, saveGeneralSettings, type GeneralSettings } from "../lib/generalSettings";
+import { isMacLikePlatform, loadGeneralSettings, saveGeneralSettings, type GeneralSettings } from "../lib/generalSettings";
 import { scheduleWindowIdleTask } from "../lib/idleTask";
 import {
   buildStartupShellRepositorySnapshots,
@@ -136,6 +152,7 @@ import {
   isOperationalWorktreeStatus,
   isPendingWorktreeStatus,
   isRootWorktree,
+  isSelectableWorktreeStatus,
 } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
 import type { ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
@@ -159,6 +176,14 @@ import {
 import { shouldEagerlyEnableCriticalWorkspaceData } from "./workspace/startupCriticalData";
 import { shouldScheduleWorkspacePanelPreload } from "./workspace/startupPanelPreload";
 import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
+import {
+  buildSessionShortcutCycleHistory,
+  buildSessionShortcutTargets,
+  getActiveSessionShortcutTarget,
+  getActiveSessionShortcutTargetIndex,
+  promoteSessionShortcutTarget,
+  type SessionShortcutTarget,
+} from "./workspace/sessionShortcutTargets";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
@@ -183,6 +208,7 @@ import {
   shouldReleaseStartupSelectionFallback,
   shouldPreserveStartupThreadFallback,
 } from "./workspace/startupShellPersistence";
+import { buildPlanHandoffSearchPatch } from "./workspace/planHandoffNavigation";
 import {
   shouldAutoLoadAllWorkspaceAgentCatalogs,
   shouldLoadWorkspaceAgentCatalog,
@@ -220,6 +246,7 @@ import {
   sortRepositoriesByPreference,
   type RepositoryPanelDropPosition,
 } from "./workspace/repositoryPanelPreferences";
+import { filterRepositoriesForMetadataScope } from "./workspace/repositoryMetadataScope";
 import {
   resolveUnavailableWorktreeSelection,
   resolveVisibleRepositorySelection,
@@ -267,6 +294,51 @@ function formatRuntimeLabel(runtimeInfo: RuntimeInfo | null | undefined): string
   }
 
   return `Runtime :${port}`;
+}
+
+type WorktreeShortcutTarget = {
+  repositoryId: string;
+  worktreeId: string;
+};
+
+function getWrappedIndex(currentIndex: number, length: number, direction: "previous" | "next"): number {
+  if (length <= 0) {
+    return -1;
+  }
+
+  if (currentIndex < 0) {
+    return direction === "previous" ? length - 1 : 0;
+  }
+
+  return direction === "previous"
+    ? (currentIndex - 1 + length) % length
+    : (currentIndex + 1) % length;
+}
+
+function buildVisibleWorktreeShortcutTargets(input: {
+  repositories: Repository[];
+  expandedByRepo: Record<string, boolean>;
+  selectedRepositoryId: string | null;
+}): WorktreeShortcutTarget[] {
+  return input.repositories.flatMap((repository) => {
+    const isExpanded = input.expandedByRepo[repository.id] ?? input.selectedRepositoryId === repository.id;
+    if (!isExpanded) {
+      return [];
+    }
+
+    const rootWorktree = findRootWorktree(repository);
+    const branchWorktrees = repository.worktrees.filter((worktree) => worktree.id !== rootWorktree?.id);
+    const visibleWorktrees = rootWorktree
+      ? [rootWorktree, ...branchWorktrees]
+      : branchWorktrees;
+
+    return visibleWorktrees
+      .filter((worktree: Worktree) => isSelectableWorktreeStatus(worktree.status))
+      .map((worktree) => ({
+        repositoryId: repository.id,
+        worktreeId: worktree.id,
+      }));
+  });
 }
 
 function formatRuntimeTitle(runtimeInfo: RuntimeInfo | null | undefined): string | null {
@@ -813,10 +885,20 @@ export function WorkspacePage() {
     () => orderedRepositories.filter((repository) => !hiddenRepositoryIdSet.has(repository.id)),
     [hiddenRepositoryIdSet, orderedRepositories],
   );
+  const visibleWorktreeShortcutTargets = useMemo(
+    () => buildVisibleWorktreeShortcutTargets({
+      repositories: visibleRepositories,
+      expandedByRepo,
+      selectedRepositoryId: repos.selectedRepositoryId,
+    }),
+    [expandedByRepo, repos.selectedRepositoryId, visibleRepositories],
+  );
   const metadataScopedRepositories = useMemo(
-    () => visibleRepositories.filter((repository) => (
-      expandedByRepo[repository.id] ?? repos.selectedRepositoryId === repository.id
-    )),
+    () => filterRepositoriesForMetadataScope({
+      repositories: visibleRepositories,
+      selectedRepositoryId: repos.selectedRepositoryId,
+      expandedByRepo,
+    }),
     [expandedByRepo, repos.selectedRepositoryId, visibleRepositories],
   );
   const desiredVisibleRepositoryId = useMemo(() => {
@@ -967,11 +1049,16 @@ export function WorkspacePage() {
   const selectedTerminalTabsState = getTerminalTabsState(terminalTabsByWorktreeId, repos.selectedWorktreeId);
   const activeTerminalTab = selectedTerminalTabsState.tabs.find((tab) => tab.id === selectedTerminalTabsState.activeTabId) ?? null;
   const terminalViewActive = activeView === "chat" && selectedTerminalTabsState.visible && activeTerminalTab !== null;
+  const sessionShortcutHistoryRef = useRef<SessionShortcutTarget[]>([]);
+  const sessionCtrlTabCycleRef = useRef<{
+    baseHistory: SessionShortcutTarget[];
+    index: number;
+  } | null>(null);
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
 
   const backgroundStatusRepositories = enableNonCriticalWorkspaceData
-    ? metadataScopedRepositories
+    ? visibleRepositories
     : [];
   const backgroundStatusWorktreeIds = useMemo(
     () => buildRepositoryWorktreeIndex(backgroundStatusRepositories).activeWorktreeIds,
@@ -1213,6 +1300,20 @@ export function WorkspacePage() {
   }, [loadAllSlashCommandCatalogs, slashCommandCatalogsEnabled]);
   pushStartupRenderProfileSection("chat-session");
   const selectedThreadIdForLiveStatus = chat.selectedThreadIdForData ?? chat.selectedThreadId;
+  const selectedWorktreeStatusOverride = useMemo(() => {
+    if (
+      !repos.selectedWorktreeId
+      || !selectedThreadIdForLiveStatus
+      || chat.selectedThreadUiStatus === "idle"
+    ) {
+      return null;
+    }
+
+    return {
+      kind: chat.selectedThreadUiStatus,
+      threadId: selectedThreadIdForLiveStatus,
+    } as const;
+  }, [chat.selectedThreadUiStatus, repos.selectedWorktreeId, selectedThreadIdForLiveStatus]);
   const previousLiveScopeSelectionRef = useRef<WorkspaceLiveScopeSelection | null>(null);
   const [liveScopeSwitch, setLiveScopeSwitch] = useState<WorkspaceLiveScopeSwitch | null>(null);
 
@@ -1944,7 +2045,30 @@ export function WorkspacePage() {
     authoritativeThreadStatus: chat.authoritativeThreadStatus,
     onPlanApproved: (result) => {
       if (result.executionKind === "handoff") {
+        const handoffSearchPatch = buildPlanHandoffSearchPatch(result.executionThreadId);
+        hideTerminalView(repos.selectedWorktreeId);
+        setWorkspaceLandingHold(repos.selectedWorktreeId, false);
+        chat.registerPendingHandoffThread({
+          sourceThreadId: result.sourceThreadId,
+          executionThreadId: result.executionThreadId,
+          sourceThread: selectedThreadShell,
+        });
         chat.setSelectedThreadId(result.executionThreadId, { preserveWhileMissing: true });
+        chat.startWaitingAssistant(result.executionThreadId);
+        updateSearch(handoffSearchPatch);
+        debugLog("thread.plan.handoff", "navigated to handoff execution thread", {
+          sourceThreadId: result.sourceThreadId,
+          executionThreadId: result.executionThreadId,
+          selectedWorktreeId: repos.selectedWorktreeId,
+          activeView,
+          activeFilePath,
+          terminalViewActive,
+          searchPatch: handoffSearchPatch,
+        }, {
+          threadId: result.executionThreadId,
+          worktreeId: repos.selectedWorktreeId,
+          force: true,
+        });
       }
     },
   });
@@ -2046,6 +2170,7 @@ export function WorkspacePage() {
   }, []);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [focusComposerSignal, setFocusComposerSignal] = useState(0);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const openSettingsDialog = useCallback(() => {
     requestAllModelCatalogs();
@@ -2202,6 +2327,87 @@ export function WorkspacePage() {
     updateSearch,
   });
   pushStartupRenderProfileSection("workspace-file-editor");
+
+  const sessionShortcutTargets = useMemo(
+    () => buildSessionShortcutTargets({
+      threads: chat.threads,
+      terminalTabs: selectedTerminalTabsState.tabs,
+      reviewTabOpen,
+      fileTabs: workspaceFileTabs,
+    }),
+    [chat.threads, reviewTabOpen, selectedTerminalTabsState.tabs, workspaceFileTabs],
+  );
+  const activeSessionShortcutTarget = useMemo(
+    () => getActiveSessionShortcutTarget(sessionShortcutTargets, {
+      activeView,
+      selectedThreadId: chat.selectedThreadId,
+      terminalViewActive,
+      activeTerminalTabId: activeTerminalTab?.id ?? null,
+      activeFilePath,
+    }),
+    [
+      activeFilePath,
+      activeTerminalTab?.id,
+      activeView,
+      chat.selectedThreadId,
+      sessionShortcutTargets,
+      terminalViewActive,
+    ],
+  );
+
+  const handleFocusChatInput = useCallback(() => {
+    if (activeView === "file" && !confirmSwitchAwayFromActiveFile()) {
+      return;
+    }
+
+    if (activeView !== "chat") {
+      updateSearch({
+        view: undefined,
+        file: undefined,
+        fileLine: undefined,
+        fileColumn: undefined,
+        automationId: undefined,
+        automationCreate: undefined,
+      });
+    }
+
+    setFocusComposerSignal((current) => current + 1);
+  }, [activeView, confirmSwitchAwayFromActiveFile, updateSearch]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (settingsOpen) {
+        return;
+      }
+
+      const isMac = isMacLikePlatform();
+
+      if (matchesOpenSettingsShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        openSettingsDialog();
+        return;
+      }
+
+      if (matchesToggleWorkspaceSidebarShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleToggleLeftSidebar();
+        return;
+      }
+
+      if (matchesFocusChatInputShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleFocusChatInput();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [handleFocusChatInput, handleToggleLeftSidebar, openSettingsDialog, settingsOpen]);
 
   const threadlessFallbackSurface = useMemo(
     () => resolveWorkspaceThreadlessFallbackSurface({
@@ -3045,6 +3251,274 @@ export function WorkspacePage() {
     [chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, setWorkspaceLandingHold, updateSearch],
   );
 
+  const handleSelectSessionShortcutTarget = useCallback((target: SessionShortcutTarget) => {
+    if (target.kind === "thread") {
+      handleSelectThread(target.id);
+      return;
+    }
+
+    if (target.kind === "terminal") {
+      handleSelectTerminalTab(target.id);
+      return;
+    }
+
+    if (target.kind === "review") {
+      if (!confirmSwitchAwayFromActiveFile()) {
+        return;
+      }
+      updateSearch({ view: "review" });
+      return;
+    }
+
+    handleSelectFileTab(target.path);
+  }, [confirmSwitchAwayFromActiveFile, handleSelectFileTab, handleSelectTerminalTab, handleSelectThread, updateSearch]);
+
+  useEffect(() => {
+    if (!activeSessionShortcutTarget || sessionCtrlTabCycleRef.current) {
+      return;
+    }
+
+    sessionShortcutHistoryRef.current = promoteSessionShortcutTarget(
+      sessionShortcutHistoryRef.current,
+      activeSessionShortcutTarget,
+      sessionShortcutTargets,
+    );
+  }, [activeSessionShortcutTarget, sessionShortcutTargets]);
+
+  useEffect(() => {
+    if (!desktopApp) {
+      return;
+    }
+
+    const commitCtrlTabCycle = () => {
+      const cycle = sessionCtrlTabCycleRef.current;
+      if (!cycle) {
+        return;
+      }
+
+      const selectedTarget = cycle.baseHistory[cycle.index];
+      if (selectedTarget) {
+        sessionShortcutHistoryRef.current = promoteSessionShortcutTarget(
+          cycle.baseHistory,
+          selectedTarget,
+          sessionShortcutTargets,
+        );
+      }
+      sessionCtrlTabCycleRef.current = null;
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented
+        || !event.ctrlKey
+        || event.metaKey
+        || event.altKey
+        || event.key !== "Tab"
+      ) {
+        return;
+      }
+
+      const cycle = sessionCtrlTabCycleRef.current;
+      const baseHistory = cycle?.baseHistory
+        ?? buildSessionShortcutCycleHistory(
+          sessionShortcutHistoryRef.current,
+          sessionShortcutTargets,
+          activeSessionShortcutTarget,
+        );
+      if (baseHistory.length <= 1) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const direction = event.shiftKey ? "previous" : "next";
+      const index = cycle
+        ? getWrappedIndex(cycle.index, baseHistory.length, direction)
+        : direction === "previous"
+          ? baseHistory.length - 1
+          : 1;
+      const target = baseHistory[index];
+      if (!target) {
+        return;
+      }
+
+      sessionCtrlTabCycleRef.current = { baseHistory, index };
+      handleSelectSessionShortcutTarget(target);
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Control") {
+        commitCtrlTabCycle();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", commitCtrlTabCycle);
+    document.addEventListener("visibilitychange", commitCtrlTabCycle);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", commitCtrlTabCycle);
+      document.removeEventListener("visibilitychange", commitCtrlTabCycle);
+    };
+  }, [desktopApp, handleSelectSessionShortcutTarget, sessionShortcutTargets]);
+
+  const handleMoveSessionTab = useCallback((direction: "previous" | "next") => {
+    const targets = sessionShortcutTargets;
+    if (targets.length === 0) {
+      return;
+    }
+
+    const activeIndex = getActiveSessionShortcutTargetIndex(targets, {
+      activeView,
+      selectedThreadId: chat.selectedThreadId,
+      terminalViewActive,
+      activeTerminalTabId: activeTerminalTab?.id ?? null,
+      activeFilePath,
+    });
+    const nextIndex = getWrappedIndex(activeIndex, targets.length, direction);
+    const target = targets[nextIndex];
+    if (!target) {
+      return;
+    }
+
+    handleSelectSessionShortcutTarget(target);
+  }, [
+    activeFilePath,
+    activeTerminalTab?.id,
+    activeView,
+    chat.selectedThreadId,
+    handleSelectSessionShortcutTarget,
+    sessionShortcutTargets,
+    terminalViewActive,
+  ]);
+
+  const handleMoveWorktree = useCallback((direction: "previous" | "next") => {
+    if (visibleWorktreeShortcutTargets.length === 0) {
+      return;
+    }
+
+    const activeIndex = visibleWorktreeShortcutTargets.findIndex((target) => (
+      target.worktreeId === repos.selectedWorktreeId
+    ));
+    const nextIndex = getWrappedIndex(activeIndex, visibleWorktreeShortcutTargets.length, direction);
+    const target = visibleWorktreeShortcutTargets[nextIndex];
+    if (!target) {
+      return;
+    }
+
+    handleSelectWorktree(target.repositoryId, target.worktreeId);
+  }, [handleSelectWorktree, repos.selectedWorktreeId, visibleWorktreeShortcutTargets]);
+
+  const handleJumpToWorktree = useCallback((index: number) => {
+    const target = visibleWorktreeShortcutTargets[index];
+    if (!target) {
+      return;
+    }
+
+    handleSelectWorktree(target.repositoryId, target.worktreeId);
+  }, [handleSelectWorktree, visibleWorktreeShortcutTargets]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (settingsOpen) {
+        return;
+      }
+
+      const isMac = isMacLikePlatform();
+      const jumpWorktreeIndex = getJumpToWorktreeShortcutIndex(event, isMac);
+
+      if (matchesCreateTerminalShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleCreateTerminalTab();
+        return;
+      }
+
+      if (matchesCreateThreadShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleCreateThreadFromHeader();
+        return;
+      }
+
+      if (matchesPreviousSessionTabShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleMoveSessionTab("previous");
+        return;
+      }
+
+      if (matchesNextSessionTabShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleMoveSessionTab("next");
+        return;
+      }
+
+      if (matchesPreviousWorktreeShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleMoveWorktree("previous");
+        return;
+      }
+
+      if (matchesNextWorktreeShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleMoveWorktree("next");
+        return;
+      }
+
+      if (jumpWorktreeIndex !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleJumpToWorktree(jumpWorktreeIndex);
+        return;
+      }
+
+      if (matchesNavigateBackShortcut(event, isMac)) {
+        if (!workspaceNavigation.canGoBack || !confirmSwitchAwayFromActiveFile()) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        workspaceNavigation.goBack();
+        return;
+      }
+
+      if (matchesNavigateForwardShortcut(event, isMac)) {
+        if (!workspaceNavigation.canGoForward || !confirmSwitchAwayFromActiveFile()) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        workspaceNavigation.goForward();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [
+    confirmSwitchAwayFromActiveFile,
+    handleCreateTerminalTab,
+    handleCreateThreadFromHeader,
+    handleJumpToWorktree,
+    handleMoveSessionTab,
+    handleMoveWorktree,
+    settingsOpen,
+    workspaceNavigation,
+  ]);
+
   const handleRequestCloseThread = useCallback((threadId: string) => {
     const needsConfirm = shouldConfirmCloseThread({
       threadId,
@@ -3224,6 +3698,7 @@ export function WorkspacePage() {
               repositories={orderedRepositories}
               selectedRepositoryId={repos.selectedRepositoryId}
               selectedWorktreeId={repos.selectedWorktreeId}
+              selectedWorktreeStatusOverride={selectedWorktreeStatusOverride}
               threadSnapshot={backgroundStatusThreadSnapshot}
               hiddenRepositoryIds={hiddenRepositoryIds}
               expandedByRepo={expandedByRepo}
@@ -3354,6 +3829,7 @@ export function WorkspacePage() {
                     activeTerminalTabId={activeTerminalTab?.id ?? null}
                     terminalTabActive={terminalViewActive}
                     selectedThreadId={chat.selectedThreadId}
+                    selectedThreadFallbackTitle={selectedThreadTitle}
                     fileTabs={workspaceFileTabs}
                     activeFilePath={activeFilePath}
                     disabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
@@ -3660,15 +4136,6 @@ export function WorkspacePage() {
             ) : (
               <>
                 <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  {selectedChatThread?.handoffSourceThreadId ? (
-                    <div className="mx-auto w-full max-w-3xl px-3 pb-2">
-                      <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                        Plan handoff thread
-                        {" · "}
-                        Created from approved plan in thread {selectedChatThread.handoffSourceThreadId.slice(0, 8)}
-                      </div>
-                    </div>
-                  ) : null}
                   <div className="min-h-0 min-w-0 flex-1">
                     <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
                       <ChatMessageList
@@ -3786,6 +4253,7 @@ export function WorkspacePage() {
                     <Composer
                       attachedTop={false}
                       disabled={chat.composerDisabled || gates.planActionBusy}
+                      focusSignal={focusComposerSignal > 0 ? focusComposerSignal : undefined}
                       sending={chat.sendingMessage}
                       showStop={chat.showStopAction}
                       stopping={chat.stoppingRun}
@@ -4000,6 +4468,7 @@ export function WorkspacePage() {
                   repositories={orderedRepositories}
                   selectedRepositoryId={repos.selectedRepositoryId}
                   selectedWorktreeId={repos.selectedWorktreeId}
+                  selectedWorktreeStatusOverride={selectedWorktreeStatusOverride}
                   enableMetadataQueries={enableNonCriticalWorkspaceData}
                   threadSnapshot={backgroundStatusThreadSnapshot}
                   hiddenRepositoryIds={hiddenRepositoryIds}

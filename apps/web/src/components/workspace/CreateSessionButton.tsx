@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, MessageSquarePlus, Plus, SquareTerminal } from "lucide-react";
+import { ChevronDown, MessageSquarePlus, Plus, SquareTerminal } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { getWorkspaceShortcutLabel, WORKSPACE_SHORTCUTS, type WorkspaceShortcutId } from "./keyboardShortcuts";
 
 export type SessionCreateAction = "thread" | "terminal";
 
@@ -11,6 +12,7 @@ type ActionMeta = {
   icon: typeof MessageSquarePlus;
   label: string;
   title: string;
+  shortcutId: WorkspaceShortcutId;
 };
 
 const ACTION_META: Record<SessionCreateAction, ActionMeta> = {
@@ -18,11 +20,13 @@ const ACTION_META: Record<SessionCreateAction, ActionMeta> = {
     icon: MessageSquarePlus,
     label: "Thread",
     title: "New thread",
+    shortcutId: "create_thread",
   },
   terminal: {
     icon: SquareTerminal,
     label: "Terminal",
     title: "New terminal",
+    shortcutId: "create_terminal",
   },
 };
 
@@ -110,7 +114,7 @@ export function CreateSessionButton({
     <Popover open={menuOpen} onOpenChange={setMenuOpen}>
       <div
         className={cn(
-          "relative inline-flex h-7 shrink-0 items-center rounded-md bg-secondary text-secondary-foreground shadow-sm",
+          "relative inline-flex h-7 shrink-0 items-center rounded-md text-secondary-foreground",
           className,
         )}
         data-testid="create-session-button"
@@ -121,13 +125,11 @@ export function CreateSessionButton({
           title={`${preferredActionMeta.title} (default)`}
           disabled={mainActionDisabled}
           data-preferred-action={preferredAction}
-          className="flex h-full items-center justify-center rounded-l-md px-2 text-secondary-foreground/90 transition-colors hover:bg-black/5 hover:text-secondary-foreground disabled:pointer-events-none disabled:opacity-50 dark:hover:bg-white/8"
+          className="flex h-full items-center justify-center rounded-l-md pl-2 pr-1 text-secondary-foreground/90 transition-colors hover:text-secondary-foreground disabled:pointer-events-none disabled:opacity-50"
           onClick={() => invokeAction(preferredAction)}
         >
           <Plus className="h-3.5 w-3.5 shrink-0" />
         </button>
-
-        <div className="h-4 w-px bg-black/10 dark:bg-white/10" />
 
         <PopoverTrigger asChild>
           <button
@@ -135,7 +137,7 @@ export function CreateSessionButton({
             aria-label="Choose session type"
             title="Choose session type"
             disabled={menuDisabled}
-            className="flex h-full items-center justify-center rounded-r-md px-1.5 text-secondary-foreground/70 transition-colors hover:bg-black/5 hover:text-secondary-foreground disabled:pointer-events-none disabled:opacity-50 dark:hover:bg-white/8"
+            className="flex h-full items-center justify-center rounded-r-md pl-0.5 pr-1.5 text-secondary-foreground/70 transition-colors hover:text-secondary-foreground disabled:pointer-events-none disabled:opacity-50"
           >
             <ChevronDown className="h-3.5 w-3.5" />
           </button>
@@ -158,6 +160,7 @@ export function CreateSessionButton({
             const Icon = meta.icon;
             const disabled = action === "thread" ? threadDisabled : terminalDisabled;
             const selected = action === preferredAction;
+            const shortcutLabel = getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS[meta.shortcutId]);
 
             return (
               <button
@@ -176,7 +179,11 @@ export function CreateSessionButton({
               >
                 <Icon className="h-3.5 w-3.5 shrink-0" />
                 <span className="flex-1 truncate">{meta.label}</span>
-                {selected ? <Check className="h-3.5 w-3.5 shrink-0 text-foreground/75" /> : null}
+                {shortcutLabel ? (
+                  <span className="shrink-0 text-[10px] font-mono tabular-nums text-muted-foreground/70">
+                    {shortcutLabel}
+                  </span>
+                ) : null}
               </button>
             );
           })}

@@ -74,7 +74,14 @@ declare module "fastify" {
 }
 
 function createApp() {
-  const app = Fastify({ logger: true });
+  const enableHttpLogger = process.env.CODESYMPHONY_ENABLE_HTTP_LOGS?.trim().toLowerCase();
+  const app = Fastify({
+    logger: enableHttpLogger === "1" || enableHttpLogger === "true"
+      ? true
+      : enableHttpLogger === "0" || enableHttpLogger === "false"
+        ? false
+        : !(process.env.NODE_ENV === "production" && process.env.WEB_DIST_PATH?.trim()),
+  });
   const eventHub = createEventHub(prisma);
   const workspaceEventHub = createWorkspaceEventHub();
   const repositoryService = createRepositoryService(prisma);
@@ -429,10 +436,11 @@ async function main() {
     }
 
     await app.listen({ host, port });
+    const listenHost = host.includes(":") ? `[${host}]` : host;
     app.log.info({
       databaseUrl: database.urlPreview,
       databasePath: database.resolvedPath,
-    }, `Runtime listening on http://${host}:${port}`);
+    }, `Runtime listening on http://${listenHost}:${port}`);
     void runPostListenStartupTasks(app);
   } catch (error) {
     if (error instanceof DatabaseNotReadyError) {

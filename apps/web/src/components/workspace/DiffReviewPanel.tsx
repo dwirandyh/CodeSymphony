@@ -1,10 +1,10 @@
 import { memo, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronDown, ChevronRight, Columns2, FileText, Rows3, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Columns2, FileArchive, FileImage, FileText, Rows3, RefreshCw } from "lucide-react";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import { FileDiff } from "@pierre/diffs/react";
 import type { FileDiffMetadata } from "@pierre/diffs";
-import { useGitDiffReview, type GitDiffReviewEntry } from "../../hooks/queries/useGitDiffReview";
+import { useGitDiffReview, type GitBinaryComparison, type GitDiffReviewEntry, type GitImageComparison } from "../../hooks/queries/useGitDiffReview";
 
 interface DiffReviewPanelProps {
   worktreeId: string;
@@ -49,6 +49,58 @@ function splitFilePath(path: string) {
     fileName: path.slice(lastSlashIdx + 1),
     directory: path.slice(0, lastSlashIdx + 1),
   };
+}
+
+function getImageComparisonState(entry: GitDiffReviewEntry) {
+  const oldAvailable = Boolean(entry.imageComparison?.oldSrc);
+  const newAvailable = Boolean(entry.imageComparison?.newSrc);
+
+  if (oldAvailable && newAvailable) {
+    return "Before / Current";
+  }
+  if (newAvailable) {
+    return "New image";
+  }
+  if (oldAvailable) {
+    return "Deleted image";
+  }
+  return "Image";
+}
+
+function getBinaryComparisonState(entry: GitDiffReviewEntry) {
+  const oldAvailable = entry.binaryComparison?.oldSize != null;
+  const newAvailable = entry.binaryComparison?.newSize != null;
+
+  if (oldAvailable && newAvailable) {
+    return "Binary changed";
+  }
+  if (newAvailable) {
+    return "New binary";
+  }
+  if (oldAvailable) {
+    return "Deleted binary";
+  }
+  return "Binary";
+}
+
+function formatFileSize(bytes: number | null) {
+  if (bytes == null) {
+    return "Not available";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const units = ["KB", "MB", "GB"];
+  let size = bytes / 1024;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
 function estimateDiffBodyHeight(entry: GitDiffReviewEntry, isMobile: boolean): number {
@@ -389,7 +441,13 @@ const DiffReviewEntryCard = memo(function DiffReviewEntryCard({
         <span className={cn("shrink-0 text-[11px] font-bold", badge.className)}>
           {badge.label}
         </span>
-        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
+        {entry.imageComparison ? (
+          <FileImage className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
+        ) : entry.binaryComparison ? (
+          <FileArchive className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
+        ) : (
+          <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
+        )}
         <span className="min-w-0 flex flex-1 items-baseline gap-1 overflow-hidden">
           <span className="truncate text-xs font-medium text-foreground/90">
             {fileName}
@@ -401,6 +459,12 @@ const DiffReviewEntryCard = memo(function DiffReviewEntryCard({
           )}
         </span>
         <span className="ml-auto flex shrink-0 gap-2 pl-2 text-[11px]">
+          {entry.imageComparison && (
+            <span className="font-medium text-muted-foreground/55">{getImageComparisonState(entry)}</span>
+          )}
+          {entry.binaryComparison && (
+            <span className="font-medium text-muted-foreground/55">{getBinaryComparisonState(entry)}</span>
+          )}
           {stats.additions > 0 && (
             <span className="font-semibold text-green-400">+{stats.additions}</span>
           )}
@@ -413,18 +477,24 @@ const DiffReviewEntryCard = memo(function DiffReviewEntryCard({
       {!isCollapsed && (
         <div className="overflow-hidden border-t border-border/10">
           {shouldRenderDiff ? (
-            <FileDiff
-              fileDiff={file}
-              options={{
-                diffStyle: viewMode,
-                overflow: isMobile ? "wrap" : "scroll",
-                theme: "pierre-dark",
-                themeType: "dark",
-                disableFileHeader: true,
-                expandUnchanged: false,
-                expansionLineCount: 20,
-              }}
-            />
+            entry.imageComparison ? (
+              <ImageDiffPreview comparison={entry.imageComparison} fileName={file.name} />
+            ) : entry.binaryComparison ? (
+              <BinaryDiffPreview comparison={entry.binaryComparison} />
+            ) : (
+              <FileDiff
+                fileDiff={file}
+                options={{
+                  diffStyle: viewMode,
+                  overflow: isMobile ? "wrap" : "scroll",
+                  theme: "pierre-dark",
+                  themeType: "dark",
+                  disableFileHeader: true,
+                  expandUnchanged: false,
+                  expansionLineCount: 20,
+                }}
+              />
+            )
           ) : (
             <div
               aria-hidden="true"
@@ -439,3 +509,82 @@ const DiffReviewEntryCard = memo(function DiffReviewEntryCard({
     </div>
   );
 });
+
+function ImageDiffPreview({
+  comparison,
+  fileName,
+}: {
+  comparison: GitImageComparison;
+  fileName: string;
+}) {
+  const panels = [
+    { label: "Before", src: comparison.oldSrc },
+    { label: "Current", src: comparison.newSrc },
+  ].filter((panel) => panel.src);
+
+  return (
+    <div className={cn("grid gap-3 p-3", panels.length > 1 && "md:grid-cols-2")}>
+      {panels.map((panel) => (
+        <div key={panel.label} className="min-w-0 overflow-hidden rounded-md border border-border/15 bg-background/30">
+          <div className="flex items-center justify-between border-b border-border/10 px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+              {panel.label}
+            </span>
+            <span className="text-[10px] text-muted-foreground/45">
+              {comparison.mimeType}
+            </span>
+          </div>
+          <div className="flex min-h-[220px] items-center justify-center bg-[linear-gradient(45deg,rgba(148,163,184,0.08)_25%,transparent_25%),linear-gradient(-45deg,rgba(148,163,184,0.08)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,rgba(148,163,184,0.08)_75%),linear-gradient(-45deg,transparent_75%,rgba(148,163,184,0.08)_75%)] bg-[length:18px_18px] bg-[position:0_0,0_9px,9px_-9px,-9px_0] p-3">
+            <img
+              src={panel.src ?? ""}
+              alt={`${panel.label} preview for ${fileName}`}
+              className="max-h-[520px] max-w-full object-contain"
+              loading="lazy"
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BinaryDiffPreview({
+  comparison,
+}: {
+  comparison: GitBinaryComparison;
+}) {
+  const panels = [
+    { label: "Before", size: comparison.oldSize },
+    { label: "Current", size: comparison.newSize },
+  ].filter((panel) => panel.size != null);
+
+  return (
+    <div className={cn("grid gap-3 p-3", panels.length > 1 && "md:grid-cols-2")}>
+      {panels.map((panel) => (
+        <div key={panel.label} className="min-w-0 overflow-hidden rounded-md border border-border/15 bg-background/30">
+          <div className="flex items-center justify-between border-b border-border/10 px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/70">
+              {panel.label}
+            </span>
+            <span className="text-[10px] text-muted-foreground/45">
+              {comparison.mimeType}
+            </span>
+          </div>
+          <div className="flex min-h-[160px] flex-col items-center justify-center gap-3 p-4 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-md border border-border/20 bg-secondary/20 text-muted-foreground">
+              <FileArchive className="h-6 w-6" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground/85">
+                Binary file
+              </p>
+              <p className="text-xs text-muted-foreground/60">
+                {formatFileSize(panel.size)}
+              </p>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}

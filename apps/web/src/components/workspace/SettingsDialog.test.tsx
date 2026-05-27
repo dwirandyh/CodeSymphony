@@ -1,4 +1,4 @@
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +14,21 @@ import type {
 import { SettingsDialog } from "./SettingsDialog";
 import { AGENT_DEFAULTS_STORAGE_KEY } from "../../pages/workspace/agentDefaults";
 import { DEFAULT_GENERAL_SETTINGS, getModifierEnterLabel } from "../../lib/generalSettings";
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+
+  if (result && typeof result === "object" && "then" in result && typeof result.then === "function") {
+    return result.then(() => Promise.resolve());
+  }
+
+  return undefined;
+}
 
 const apiMocks = vi.hoisted(() => ({
   updateRepositoryScripts: vi.fn(),
@@ -263,6 +278,20 @@ async function openWorkspaceTab() {
   await flushEffects();
 }
 
+async function openShortcutsTab() {
+  const shortcutsButton = Array.from(document.body.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Shortcuts",
+  );
+  if (!shortcutsButton) {
+    throw new Error("Shortcuts tab not found");
+  }
+
+  await act(async () => {
+    shortcutsButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+}
+
 async function flushEffects() {
   await act(async () => {
     if (vi.isFakeTimers()) {
@@ -405,7 +434,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Settings");
   });
 
-  it("shows General, Workspace, Models, and Licenses tabs", async () => {
+  it("shows General, Workspace, Models, Shortcuts, and Licenses tabs", async () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -424,21 +453,56 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("General");
     expect(document.body.textContent).toContain("Workspace");
     expect(document.body.textContent).toContain("Models");
+    expect(document.body.textContent).toContain("Shortcuts");
     expect(document.body.textContent).toContain("Licenses");
+    expect(document.body.textContent).toContain("Settings");
+    expect(document.body.textContent).toContain("About");
   });
 
-  it("places the General tab first in the settings sidebar", async () => {
+  it("places the General item first in the settings sidebar navigation", async () => {
     renderDialog([makeRepo()]);
     await flushEffects();
 
-    const sidebar = document.body.querySelector<HTMLElement>('[data-testid="settings-sidebar"]');
-    if (!sidebar) {
-      throw new Error("Settings sidebar not found");
+    const navigation = document.body.querySelector<HTMLElement>('[data-testid="settings-navigation"]');
+    if (!navigation) {
+      throw new Error("Settings navigation not found");
     }
 
-    const sidebarButtons = Array.from(sidebar.querySelectorAll("button"));
-    expect(sidebarButtons[1]?.textContent?.trim()).toBe("General");
-    expect(sidebarButtons[2]?.textContent?.trim()).toBe("Workspace");
+    const menuButtons = Array.from(navigation.querySelectorAll("button"));
+    expect(menuButtons[0]?.textContent?.trim()).toBe("General");
+    expect(menuButtons[1]?.textContent?.trim()).toBe("Workspace");
+    expect(menuButtons[3]?.textContent?.trim()).toBe("Shortcuts");
+    expect(menuButtons[4]?.textContent?.trim()).toBe("Licenses");
+  });
+
+  it("renders mobile settings as a menu that opens a detail page", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    const mobileMenu = document.body.querySelector<HTMLElement>('[data-testid="settings-mobile-menu"]');
+    if (!mobileMenu) {
+      throw new Error("Mobile settings menu not found");
+    }
+
+    expect(mobileMenu.textContent).toContain("General");
+    expect(mobileMenu.textContent).toContain("Repository defaults, scripts, and save automation.");
+
+    const workspaceButton = Array.from(mobileMenu.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Workspace"),
+    );
+    if (!workspaceButton) {
+      throw new Error("Mobile Workspace menu item not found");
+    }
+
+    await act(async () => {
+      workspaceButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const content = document.body.querySelector<HTMLElement>('[data-testid="settings-content"]');
+    expect(mobileMenu.className).toContain("hidden");
+    expect(content?.className).toContain("flex");
+    expect(document.body.querySelector('button[aria-label="Back to settings"]')).not.toBeNull();
   });
 
   it("opens on the General tab by default", async () => {
@@ -447,6 +511,44 @@ describe("SettingsDialog", () => {
 
     expect(document.body.textContent).toContain("Send messages with");
     expect(document.body.textContent).not.toContain("Default Branch");
+  });
+
+  it("renders the shortcut reference list", async () => {
+    renderDialog([makeRepo()]);
+    await openShortcutsTab();
+
+    expect(document.body.textContent).toContain("Keyboard shortcuts");
+    expect(document.body.querySelector('input[aria-label="Search shortcuts"]')).toBeTruthy();
+    expect(document.body.textContent).toContain("Open settings");
+    expect(document.body.textContent).toContain("Toggle repositories sidebar");
+    expect(document.body.textContent).toContain("Focus chat input");
+    expect(document.body.textContent).toContain("Open quick file picker");
+    expect(document.body.textContent).toContain("Create new terminal");
+    expect(document.body.textContent).toContain("Create new thread");
+    expect(document.body.textContent).toContain("Previous session tab");
+    expect(document.body.textContent).toContain("Next session tab");
+    expect(document.body.textContent).toContain("Previous worktree");
+    expect(document.body.textContent).toContain("Next worktree");
+    expect(document.body.textContent).toContain("Jump to worktree 1-9");
+    expect(document.body.textContent).toContain("Navigate back");
+    expect(document.body.textContent).toContain("Navigate forward");
+    expect(document.body.textContent).toContain("Find in terminal");
+  });
+
+  it("filters the shortcut reference list", async () => {
+    renderDialog([makeRepo()]);
+    await openShortcutsTab();
+
+    const searchInput = document.body.querySelector('input[aria-label="Search shortcuts"]') as HTMLInputElement | null;
+    if (!searchInput) {
+      throw new Error("Shortcut search input not found");
+    }
+
+    await setInputValue(searchInput, "Navigate back");
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Navigate back");
+    expect(document.body.textContent).not.toContain("Open settings");
   });
 
   it("updates send-message preference from the General tab", async () => {
@@ -771,7 +873,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Teardown Scripts");
   });
 
-  it("shows runtime label in the settings sidebar footer", async () => {
+  it("shows runtime label in the settings header", async () => {
     renderDialog(
       [makeRepo()],
       vi.fn(),
@@ -917,6 +1019,18 @@ describe("SettingsDialog", () => {
 
     await act(async () => {
       closeButton.click();
+    });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls onClose when Escape is pressed", async () => {
+    const onClose = vi.fn();
+    renderDialog([], onClose);
+    await flushEffects();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
 
     expect(onClose).toHaveBeenCalledTimes(1);

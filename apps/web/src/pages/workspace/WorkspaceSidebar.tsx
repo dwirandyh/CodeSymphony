@@ -6,6 +6,7 @@ import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
 import { cn } from "../../lib/utils";
 import { useSidebarResize } from "./hooks/useSidebarResize";
 import type { RepositoryPanelDropPosition } from "./repositoryPanelPreferences";
+import type { WorktreeStatusSummary } from "./hooks/worktreeThreadStatus";
 
 export function WorkspaceSidebarFallback() {
   return (
@@ -23,6 +24,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   repositories,
   selectedRepositoryId,
   selectedWorktreeId,
+  selectedWorktreeStatusOverride,
   threadSnapshot,
   hiddenRepositoryIds,
   expandedByRepo,
@@ -50,6 +52,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   repositories: Repository[];
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
+  selectedWorktreeStatusOverride?: WorktreeStatusSummary | null;
   threadSnapshot?: ThreadsByWorktreeSnapshot;
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
@@ -101,6 +104,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
             repositories={repositories}
             selectedRepositoryId={selectedRepositoryId}
             selectedWorktreeId={selectedWorktreeId}
+            selectedWorktreeStatusOverride={selectedWorktreeStatusOverride}
             threadSnapshot={threadSnapshot}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}

@@ -795,6 +795,7 @@ describe("chatService agent selection", () => {
 
     const executionThread = await chatService.getThreadById(result.executionThreadId);
     expect(executionThread?.worktreeId).toBe(worktree.id);
+    expect(executionThread?.title).toBe("New Thread");
     expect(executionThread?.permissionMode).toBe("full_access");
     expect(executionThread?.permissionProfile).toBe("default");
     expect(executionThread?.agent).toBe("codex");
@@ -905,12 +906,14 @@ describe("chatService agent selection", () => {
         sessionId: "codex-approved-plan-handoff-session",
       };
     });
+    const logService = { log: vi.fn() };
     const chatService = createChatService({
       prisma,
       eventHub,
       claudeRunner,
       codexRunner,
       modelProviderService: stubModelProviderService,
+      logService,
     });
     const { thread, worktree } = await seedThread("Pending plan handoff approval");
 
@@ -995,6 +998,21 @@ describe("chatService agent selection", () => {
     }) as any;
     expect(persistedExecutionThread.handoffSourceThreadId).toBe(thread.id);
     expect(persistedExecutionThread.handoffSourcePlanEventId).toBe(createdEvent.id);
+    expect(logService.log).toHaveBeenCalledWith(
+      "debug",
+      "chat.plan.handoff",
+      "Created handoff execution thread",
+      expect.objectContaining({
+        sourceThreadId: thread.id,
+        executionThreadId: result.executionThreadId,
+        title: "New Thread",
+        planEventId: createdEvent.id,
+      }),
+      {
+        worktreeId: worktree.id,
+        threadId: result.executionThreadId,
+      },
+    );
   });
 
   it("seeds the handoff thread with the approved plan card state", async () => {

@@ -79,6 +79,41 @@ describe("buildTimelineFromSeed", () => {
     expect(unsortedResult).toEqual(sortedResult);
   });
 
+  it("does not render thread title metadata events", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Hi"),
+      makeMessage("m2", 1, "assistant", "Hello."),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Hello.",
+      }),
+      makeEvent(2, "chat.completed", {
+        messageId: "m2",
+      }),
+      makeEvent(3, "tool.finished", {
+        messageId: "m2",
+        source: "chat.thread.metadata",
+        summary: "Updated thread title",
+        threadTitle: "Greeting",
+        precedingToolUseIds: [],
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(result.items.some((item) => item.kind === "tool")).toBe(false);
+    expect(result.items.some((item) => item.kind === "activity")).toBe(false);
+    expect(JSON.stringify(result.items)).not.toContain("Updated thread title");
+  });
+
   it("recovers assistant deltas that were incorrectly scoped to a completed previous assistant message", () => {
     const messages = [
       makeMessage("u1", 0, "user", "Plan this."),

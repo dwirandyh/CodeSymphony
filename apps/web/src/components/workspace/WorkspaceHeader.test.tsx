@@ -1,4 +1,4 @@
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread } from "@codesymphony/shared-types";
@@ -7,6 +7,22 @@ import { WorkspaceHeader } from "./WorkspaceHeader";
 vi.mock("./OpenInAppButton", () => ({
   OpenInAppButton: () => null,
 }));
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+  if (result && typeof (result as Promise<void>).then === "function") {
+    return (result as Promise<void>).then(async () => {
+      await Promise.resolve();
+      flushSync(() => {});
+    });
+  }
+  return undefined;
+}
 
 const threads: ChatThread[] = [
   {
@@ -234,6 +250,22 @@ describe("WorkspaceHeader", () => {
     expect(onCreateThread).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a selected fallback thread tab visible while thread list catches up", () => {
+    renderHeader({
+      selectedThreadId: "thread-handoff",
+      selectedThreadFallbackTitle: "Plan handoff",
+    });
+
+    const selectedTab = container.querySelector<HTMLButtonElement>('button[role="tab"][aria-selected="true"]');
+    if (!selectedTab) {
+      throw new Error("Selected fallback tab not found");
+    }
+
+    expect(selectedTab.textContent).toContain("Plan handoff");
+    expect(selectedTab.title).toBe("Plan handoff");
+    expect(container.querySelector('button[aria-label="Close session Plan handoff"]')).not.toBeNull();
+  });
+
   it("recenters the selected thread tab when it renders too close to the tab-strip edge", async () => {
     const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
     const scrollIntoView = vi.fn();
@@ -316,8 +348,8 @@ describe("WorkspaceHeader", () => {
       await Promise.resolve();
     });
 
-    const terminalOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.trim() === "Terminal");
+    const terminalOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
+      .find((button) => button.textContent?.includes("Terminal"));
     if (!terminalOption) {
       throw new Error("Terminal create option not found");
     }
@@ -352,7 +384,7 @@ describe("WorkspaceHeader", () => {
 
     const menu = document.body.querySelector<HTMLElement>('[data-testid="create-session-menu"]');
     const terminalOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
-      .find((button) => button.textContent?.trim() === "Terminal");
+      .find((button) => button.textContent?.includes("Terminal"));
     if (!menu || !terminalOption) {
       throw new Error("Create session menu content not found");
     }
@@ -365,6 +397,34 @@ describe("WorkspaceHeader", () => {
     expect(document.body.contains(menu)).toBe(true);
     expect(createSessionButton.contains(menu)).toBe(false);
     expect(createSessionButton.contains(terminalOption)).toBe(false);
+  });
+
+  it("shows create session shortcuts only after opening the dropdown", async () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+    renderHeader({ worktreePath: "/tmp/repo" });
+
+    expect(document.body.textContent).not.toContain("⌘T");
+    expect(document.body.textContent).not.toContain("⌘⇧T");
+
+    const menuButton = container.querySelector<HTMLButtonElement>('button[aria-label="Choose session type"]');
+    if (!menuButton) {
+      throw new Error("Create session menu button not found");
+    }
+
+    await act(async () => {
+      menuButton.click();
+      await Promise.resolve();
+    });
+
+    const menu = document.body.querySelector<HTMLElement>('[data-testid="create-session-menu"]');
+    const threadOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
+      .find((button) => button.textContent?.includes("Thread"));
+    expect(menu?.textContent).toContain("⌘T");
+    expect(menu?.textContent).toContain("⌘⇧T");
+    expect(threadOption?.querySelectorAll("svg")).toHaveLength(1);
   });
 
   it("renders an automation icon on automation thread tabs", () => {

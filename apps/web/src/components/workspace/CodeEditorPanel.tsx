@@ -1622,7 +1622,7 @@ export function CodeEditorPanel({
                 <span>{compareMode ? "Editor" : "Compare"}</span>
               </button>
               <span className="text-[#9cdcfe]">{languageLabel(filePath)}</span>
-              <span>{navigator.platform.toLowerCase().includes("mac") ? "Cmd+S" : "Ctrl+S"}</span>
+              <span>{navigator.platform.toLowerCase().includes("mac") ? "⌘S" : "Ctrl+S"}</span>
             </div>
           </div>
         </>

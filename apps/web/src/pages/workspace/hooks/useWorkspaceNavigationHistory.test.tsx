@@ -1,8 +1,23 @@
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSearch } from "../../../routes/index";
 import { useWorkspaceNavigationHistory } from "./useWorkspaceNavigationHistory";
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+
+  if (result && typeof result === "object" && "then" in result && typeof result.then === "function") {
+    return result.then(() => Promise.resolve());
+  }
+
+  return undefined;
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -19,10 +34,14 @@ function TestComponent({
   return null;
 }
 
-function renderHook(search: WorkspaceSearch, updateSearch: (partial: Partial<WorkspaceSearch>) => void) {
-  act(() => {
+async function renderHook(search: WorkspaceSearch, updateSearch: (partial: Partial<WorkspaceSearch>) => void) {
+  await act(async () => {
     root.render(<TestComponent search={search} updateSearch={updateSearch} />);
+    await Promise.resolve();
   });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  flushSync(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 describe("useWorkspaceNavigationHistory", () => {
@@ -40,21 +59,21 @@ describe("useWorkspaceNavigationHistory", () => {
     vi.restoreAllMocks();
   });
 
-  it("does not record the initial auto-selected workspace as a back entry", () => {
+  it("does not record the initial auto-selected workspace as a back entry", async () => {
     const updateSearch = vi.fn();
 
-    renderHook({}, updateSearch);
-    renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
+    await renderHook({}, updateSearch);
+    await renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
 
     expect(hookResult.canGoBack).toBe(false);
     expect(hookResult.canGoForward).toBe(false);
   });
 
-  it("navigates backward and forward across meaningful workspace snapshots", () => {
+  it("navigates backward and forward across meaningful workspace snapshots", async () => {
     const updateSearch = vi.fn();
 
-    renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
-    renderHook({
+    await renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
+    await renderHook({
       repoId: "repo-1",
       worktreeId: "wt-1",
       threadId: "thread-1",
@@ -81,7 +100,7 @@ describe("useWorkspaceNavigationHistory", () => {
       fileColumn: undefined,
     });
 
-    renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
+    await renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
 
     expect(hookResult.canGoBack).toBe(false);
     expect(hookResult.canGoForward).toBe(true);
@@ -101,21 +120,21 @@ describe("useWorkspaceNavigationHistory", () => {
     });
   });
 
-  it("ignores panel-only changes", () => {
+  it("ignores panel-only changes", async () => {
     const updateSearch = vi.fn();
 
-    renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
-    renderHook({ repoId: "repo-1", worktreeId: "wt-1", panel: "git" }, updateSearch);
+    await renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
+    await renderHook({ repoId: "repo-1", worktreeId: "wt-1", panel: "git" }, updateSearch);
 
     expect(hookResult.canGoBack).toBe(false);
     expect(hookResult.canGoForward).toBe(false);
   });
 
-  it("records automations panel navigation as a meaningful workspace snapshot", () => {
+  it("records automations panel navigation as a meaningful workspace snapshot", async () => {
     const updateSearch = vi.fn();
 
-    renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
-    renderHook({
+    await renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
+    await renderHook({
       repoId: "repo-1",
       worktreeId: "wt-1",
       view: "automations",

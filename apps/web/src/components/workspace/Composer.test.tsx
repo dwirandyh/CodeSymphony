@@ -1,4 +1,4 @@
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,22 @@ import type { ChatQueuedMessage, FileEntry, ModelProvider, SlashCommand } from "
 import { api } from "../../lib/api";
 import { Composer } from "./composer";
 import { getPlainTextFromEditor, getSerializedTextFromEditor } from "./composer/composerEditorUtils";
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+  if (result && typeof (result as Promise<void>).then === "function") {
+    return (result as Promise<void>).then(async () => {
+      await Promise.resolve();
+      flushSync(() => {});
+    });
+  }
+  return undefined;
+}
 
 const tauriDragDropState = vi.hoisted(() => ({
   handler: null as null | ((event: { payload: { type: string; paths?: string[] } }) => void | Promise<void>),
@@ -303,6 +319,32 @@ describe("Composer", () => {
     expect(editor.getAttribute("contenteditable")).not.toBe("false");
   });
 
+  it("focuses the editor when the focus signal changes", () => {
+    renderComposer();
+    const editor = getEditor();
+    editor.blur();
+
+    renderComposer({ focusSignal: 1 });
+
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it("renders the focus shortcut hint with the focus-within hiding rule", () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+
+    renderComposer();
+    const editor = getEditor();
+    const composerSection = editor.closest("section");
+    const hint = Array.from(composerSection?.querySelectorAll("span") ?? [])
+      .find((element) => element.textContent === "⌘J to focus");
+
+    expect(composerSection?.textContent).toContain("⌘J to focus");
+    expect(hint?.className).toContain("[:focus-within>&]:hidden");
+  });
+
   it("applies responsive max-height with internal scroll", () => {
     renderComposer();
     const editor = getEditor();
@@ -529,6 +571,29 @@ describe("Composer", () => {
 
     expect(onSubmitMessage).toHaveBeenCalledWith({
       content: "hello",
+      mode: "default",
+      attachments: [],
+    });
+  });
+
+  it("queues a draft on Enter while the current thread is running", async () => {
+    setMobileViewport(false);
+    const onQueueDraft = vi.fn().mockResolvedValue(true);
+    renderComposer({
+      onQueueDraft,
+      showStop: true,
+      threadRunning: true,
+    });
+    const editor = getEditor();
+    typeInEditor(editor, "second message");
+    await flushMicrotasks();
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onQueueDraft).toHaveBeenCalledWith({
+      content: "second message",
       mode: "default",
       attachments: [],
     });

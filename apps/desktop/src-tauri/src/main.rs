@@ -63,7 +63,7 @@ struct DesktopResourceMonitorSnapshot {
 const DESKTOP_DEV_RUNTIME_PORT: u16 = 4321;
 const DESKTOP_PROD_RUNTIME_PORT: u16 = 4322;
 const LOCALHOST_RUNTIME_HOST: &str = "127.0.0.1";
-const LAN_RUNTIME_HOST: &str = "0.0.0.0";
+const DUAL_STACK_RUNTIME_HOST: &str = "::";
 const COMMON_RUNTIME_EXECUTABLE_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 const USER_RUNTIME_EXECUTABLE_DIR_SUFFIXES: [&str; 3] = [".bun/bin", ".opencode/bin", ".local/bin"];
 #[cfg(target_os = "macos")]
@@ -110,7 +110,7 @@ fn desktop_runtime_host(is_dev: bool) -> &'static str {
     if is_dev {
         LOCALHOST_RUNTIME_HOST
     } else {
-        LAN_RUNTIME_HOST
+        DUAL_STACK_RUNTIME_HOST
     }
 }
 
@@ -495,15 +495,39 @@ fn runtime_stderr_log_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("runtime.stderr.log")
 }
 
+const RUNTIME_STDOUT_LOG_MAX_BYTES: u64 = 16 * 1024 * 1024;
+const RUNTIME_STDERR_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+fn truncate_runtime_log_if_oversized(path: &Path, max_bytes: u64) -> std::io::Result<bool> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+
+    if metadata.len() <= max_bytes {
+        return Ok(false);
+    }
+
+    std::fs::write(path, b"")?;
+    Ok(true)
+}
+
 fn configure_runtime_stdio(cmd: &mut Command, app_data_dir: &Path) -> std::io::Result<()> {
+    let stdout_path = runtime_stdout_log_path(app_data_dir);
+    let stderr_path = runtime_stderr_log_path(app_data_dir);
+
+    let _ = truncate_runtime_log_if_oversized(&stdout_path, RUNTIME_STDOUT_LOG_MAX_BYTES)?;
+    let _ = truncate_runtime_log_if_oversized(&stderr_path, RUNTIME_STDERR_LOG_MAX_BYTES)?;
+
     let stdout = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(runtime_stdout_log_path(app_data_dir))?;
+        .open(stdout_path)?;
     let stderr = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(runtime_stderr_log_path(app_data_dir))?;
+        .open(stderr_path)?;
 
     cmd.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
 
@@ -1466,6 +1490,7 @@ mod tests {
     use super::{
         build_runtime_path_env, desktop_runtime_host, resolve_codex_binary,
         runtime_executable_dirs, runtime_stderr_log_path, runtime_stdout_log_path,
+        truncate_runtime_log_if_oversized,
     };
     use std::fs;
     use std::path::Path;
@@ -1476,8 +1501,8 @@ mod tests {
     }
 
     #[test]
-    fn desktop_prod_runtime_binds_to_lan() {
-        assert_eq!(desktop_runtime_host(false), "0.0.0.0");
+    fn desktop_prod_runtime_binds_dual_stack() {
+        assert_eq!(desktop_runtime_host(false), "::");
     }
 
     #[test]
@@ -1491,6 +1516,48 @@ mod tests {
             runtime_stderr_log_path(app_data_dir),
             Path::new("/tmp/codesymphony/runtime.stderr.log")
         );
+    }
+
+    #[test]
+    fn oversized_runtime_logs_are_truncated_before_reuse() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "codesymphony-runtime-log-truncate-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).expect("temp dir should be created");
+
+        let log_path = temp_root.join("runtime.stdout.log");
+        fs::write(&log_path, vec![b'x'; 128]).expect("log file should be written");
+
+        let truncated = truncate_runtime_log_if_oversized(&log_path, 64).expect("truncate should succeed");
+        let metadata = fs::metadata(&log_path).expect("log file should still exist");
+
+        assert!(truncated);
+        assert_eq!(metadata.len(), 0);
+
+        let _ = fs::remove_file(log_path);
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn small_runtime_logs_are_left_untouched() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "codesymphony-runtime-log-preserve-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).expect("temp dir should be created");
+
+        let log_path = temp_root.join("runtime.stderr.log");
+        fs::write(&log_path, b"small-log").expect("log file should be written");
+
+        let truncated = truncate_runtime_log_if_oversized(&log_path, 64).expect("truncate should succeed");
+        let contents = fs::read(&log_path).expect("log file should remain readable");
+
+        assert!(!truncated);
+        assert_eq!(contents, b"small-log");
+
+        let _ = fs::remove_file(log_path);
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]

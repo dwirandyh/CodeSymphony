@@ -18,6 +18,7 @@ import {
   isExploreLikeBashCommand,
   isExploreLikeBashEvent,
   isLikelyDiffContent,
+  isMetadataToolEvent,
   isPlanFilePath,
   isPlanModeToolEvent,
   isReadToolEvent,
@@ -503,6 +504,10 @@ export function buildTimelineFromSeed(params: {
   const semanticContextEvents: ChatEvent[] = [];
   const assistantDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
   for (const event of orderedEventsByIdx) {
+    if (isMetadataToolEvent(event)) {
+      continue;
+    }
+
     const isTodoWriteEvent = isTodoWriteToolEvent(event);
     const isInlineToolEvent = INLINE_TOOL_EVENT_TYPES.has(event.type) && !isTodoWriteEvent;
 

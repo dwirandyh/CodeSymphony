@@ -1,10 +1,12 @@
-import { act, useState } from "react";
+import { useState } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { resetThreadsCollectionRegistryForTest } from "../../collections/threads";
-import { RepositoryPanel } from "./RepositoryPanel";
+import { mergeSelectedWorktreeStatusOverride, RepositoryPanel } from "./RepositoryPanel";
+import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
 
 const { listThreadsMock, getThreadStatusSnapshotMock, getGitBranchDiffSummaryMock, getRepositoryReviewsMock } = vi.hoisted(() => ({
   listThreadsMock: vi.fn(),
@@ -30,6 +32,22 @@ vi.mock("../../lib/openExternalUrl", async () => {
     isTauriDesktop: isTauriDesktopMock,
   };
 });
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+  if (result && typeof (result as Promise<void>).then === "function") {
+    return (result as Promise<void>).then(async () => {
+      await Promise.resolve();
+      flushSync(() => {});
+    });
+  }
+  return undefined;
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -135,6 +153,16 @@ function makeStatusSnapshot(
   };
 }
 
+function makeThreadSnapshot(
+  threadsByWorktreeId: Record<string, ChatThread[]>,
+): ThreadsByWorktreeSnapshot {
+  return {
+    threadsByWorktreeId,
+    threadIds: Object.values(threadsByWorktreeId).flatMap((threads) => threads.map((thread) => thread.id)),
+    isLoading: false,
+  };
+}
+
 type RepositoryPanelComponentProps = Parameters<typeof RepositoryPanel>[0];
 
 function renderPanel(props: Partial<RepositoryPanelComponentProps> = {}) {
@@ -184,7 +212,7 @@ describe("RepositoryPanel", () => {
     expect(container.textContent).toContain("test-repo");
   });
 
-  it("limits metadata queries to the selected or expanded repositories", async () => {
+  it("limits diff and review metadata queries to the selected or expanded repositories while keeping visible worktree statuses warm", async () => {
     renderPanel({
       repositories: [
         makeRepo({ id: "r1", name: "repo-one" }),
@@ -205,11 +233,92 @@ describe("RepositoryPanel", () => {
     expect(getGitBranchDiffSummaryMock).toHaveBeenCalledWith("r1-wt-feat");
     expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-root");
     expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-feat");
+    expect(listThreadsMock).toHaveBeenCalledWith("r2-wt-root");
+    expect(listThreadsMock).toHaveBeenCalledWith("r2-wt-feat");
     expect(getRepositoryReviewsMock).not.toHaveBeenCalledWith("r2");
     expect(getGitBranchDiffSummaryMock).not.toHaveBeenCalledWith("r2-wt-root");
     expect(getGitBranchDiffSummaryMock).not.toHaveBeenCalledWith("r2-wt-feat");
-    expect(listThreadsMock).not.toHaveBeenCalledWith("r2-wt-root");
-    expect(listThreadsMock).not.toHaveBeenCalledWith("r2-wt-feat");
+  });
+
+  it("keeps metadata queries enabled for the selected repository even when it is collapsed", async () => {
+    renderPanel({
+      repositories: [makeRepo({ id: "r1", name: "repo-one" })],
+      selectedRepositoryId: "r1",
+      expandedByRepo: { r1: false },
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getRepositoryReviewsMock).toHaveBeenCalledWith("r1");
+    expect(getGitBranchDiffSummaryMock).toHaveBeenCalledWith("r1-wt-root");
+    expect(getGitBranchDiffSummaryMock).toHaveBeenCalledWith("r1-wt-feat");
+    expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-root");
+    expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-feat");
+  });
+
+  it("keeps a visible running status on a non-selected repository after selection moves elsewhere", async () => {
+    const repoOne = makeRepo({ id: "r1", name: "repo-one" });
+    const repoTwo = makeRepo({ id: "r2", name: "repo-two" });
+
+    renderPanel({
+      repositories: [repoOne, repoTwo],
+      selectedRepositoryId: "r2",
+      selectedWorktreeId: "r2-wt-root",
+      threadSnapshot: makeThreadSnapshot({
+        "r1-wt-root": [],
+        "r1-wt-feat": [
+          makeThread({
+            id: "t-running-r1",
+            worktreeId: "r1-wt-feat",
+            active: true,
+          }),
+        ],
+        "r2-wt-root": [],
+        "r2-wt-feat": [],
+      }),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const repoOneWorktree = container.querySelector("[data-worktree-id='r1-wt-feat']") as HTMLElement | null;
+    expect(repoOneWorktree).toBeTruthy();
+    expect(repoOneWorktree?.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
+  });
+
+  it("keeps a visible running status when switching selected worktrees inside the same repository", async () => {
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-root",
+      threadSnapshot: makeThreadSnapshot({
+        "r1-wt-root": [],
+        "r1-wt-feat": [
+          makeThread({
+            id: "t-running-r1",
+            worktreeId: "r1-wt-feat",
+            active: true,
+          }),
+        ],
+      }),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const repoOneWorktree = container.querySelector("[data-worktree-id='r1-wt-feat']") as HTMLElement | null;
+    expect(repoOneWorktree).toBeTruthy();
+    expect(repoOneWorktree?.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
   });
 
   it("shows root and branch worktrees without section separators", () => {
@@ -221,6 +330,116 @@ describe("RepositoryPanel", () => {
     });
     expect(container.textContent).toContain("main");
     expect(container.textContent).toContain("feature-x");
+  });
+
+  it("renders jump shortcut hints in the status slot while the shortcut modifier is held", () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-root",
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-shortcut"]')).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Meta", metaKey: true }));
+    });
+
+    const rootShortcut = container.querySelector<HTMLElement>('[data-testid="worktree-r1-wt-root-shortcut"]');
+    const branchShortcut = container.querySelector<HTMLElement>('[data-testid="worktree-r1-wt-feat-shortcut"]');
+
+    expect(rootShortcut?.textContent).toBe("⌘1");
+    expect(branchShortcut?.textContent).toBe("⌘2");
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "Meta", metaKey: false }));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-shortcut"]')).toBeNull();
+  });
+
+  it("does not render worktree shortcut hints for collapsed or hidden repositories", () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+      expandedByRepo: { r1: false, r2: true },
+      hiddenRepositoryIds: ["r2"],
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Meta", metaKey: true }));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r2-wt-root-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r2-wt-feat-shortcut"]')).toBeNull();
+  });
+
+  it("limits worktree jump shortcut hints to the first nine visible selectable rows", () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+
+    const repositoryId = "r1";
+    const rootWorktree = {
+      id: `${repositoryId}-wt-root`,
+      repositoryId,
+      branch: "main",
+      path: "/home/user/test-repo",
+      baseBranch: "main",
+      isAutomation: false,
+      status: "active" as const,
+      branchRenamed: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+    const branchWorktrees = Array.from({ length: 10 }, (_, index) => ({
+      id: `${repositoryId}-wt-feature-${index + 1}`,
+      repositoryId,
+      branch: `feature-${index + 1}`,
+      path: `/home/user/.cs/worktrees/test-repo/feature-${index + 1}`,
+      baseBranch: "main",
+      isAutomation: false,
+      status: "active" as const,
+      branchRenamed: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }));
+
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo({ worktrees: [rootWorktree, ...branchWorktrees] })],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-root",
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Meta", metaKey: true }));
+    });
+
+    expect(container.querySelector<HTMLElement>('[data-testid="worktree-r1-wt-root-shortcut"]')?.textContent).toBe("⌘1");
+    expect(container.querySelector<HTMLElement>('[data-testid="worktree-r1-wt-feature-8-shortcut"]')?.textContent).toBe("⌘9");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feature-9-shortcut"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feature-10-shortcut"]')).toBeNull();
   });
 
   it("renders the automation icon for automation worktrees", () => {
@@ -1296,6 +1515,65 @@ describe("RepositoryPanel", () => {
 
     expect(container.querySelector('[data-testid="worktree-status-idle"]')).toBeNull();
     expect(container.textContent).not.toContain("Idle");
+  });
+
+  it("renders the selected worktree live status override when metadata queries are disabled", () => {
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+      selectedWorktreeStatusOverride: {
+        kind: "running",
+        threadId: "t-live",
+      },
+    });
+
+    expect(container.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
+  });
+
+  it("forwards the selected live thread when the selected worktree override is review_plan", () => {
+    const onSelectWorktree = vi.fn();
+
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+      selectedWorktreeStatusOverride: {
+        kind: "review_plan",
+        threadId: "t-live-plan",
+      },
+      onSelectWorktree,
+    });
+
+    const featureRow = container.querySelector("[data-worktree-id='r1-wt-feat']") as HTMLElement | null;
+    expect(featureRow).toBeTruthy();
+
+    act(() => featureRow?.click());
+
+    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "r1-wt-feat", "t-live-plan");
+  });
+
+  it("keeps a higher-priority aggregated status over the selected worktree override", () => {
+    expect(mergeSelectedWorktreeStatusOverride({
+      worktreeStatuses: {
+        "r1-wt-feat": {
+          kind: "waiting_approval",
+          threadId: "t-pending",
+        },
+      },
+      selectedWorktreeId: "r1-wt-feat",
+      selectedWorktreeStatusOverride: {
+        kind: "running",
+        threadId: "t-live",
+      },
+    })).toEqual({
+      "r1-wt-feat": {
+        kind: "waiting_approval",
+        threadId: "t-pending",
+      },
+    });
   });
 
   it("styles the selected worktree as a flat fill without a selection ring", () => {

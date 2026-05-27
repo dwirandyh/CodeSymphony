@@ -48,6 +48,7 @@ import {
 import { cn } from "../../../lib/utils";
 import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
 import { QueuedMessageList } from "../QueuedMessageList";
+import { getWorkspaceShortcutLabel, WORKSPACE_SHORTCUTS } from "../keyboardShortcuts";
 import { createAttachmentChipElement } from "./composerChipUtils";
 import { getSerializedTextFromEditor } from "./composerEditorUtils";
 import {
@@ -86,6 +87,7 @@ type ComposerProps = {
   showStop: boolean;
   stopping: boolean;
   attachedTop?: boolean;
+  focusSignal?: number;
   threadId: string | null;
   worktreeId: string | null;
   mode: ChatMode;
@@ -243,6 +245,7 @@ function ComposerContent({
   showStop,
   stopping,
   attachedTop = false,
+  focusSignal,
   threadId,
   worktreeId,
   mode,
@@ -568,6 +571,8 @@ function ComposerContent({
   const composerPlaceholder = isPlan
     ? "Describe what you want to plan..."
     : "Message CodeSymphony... (type / or $ for commands, @ to mention files)";
+  const focusShortcutLabel = getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.focus_chat_input);
+  const showFocusShortcutHint = Boolean(focusShortcutLabel) && !disabled;
   const selectedAttachmentPreview = useMemo(
     () => attachments.find((attachment) => attachment.id === attachmentPreviewId) ?? null,
     [attachmentPreviewId, attachments],
@@ -578,6 +583,20 @@ function ComposerContent({
       setAttachmentPreviewId(null);
     }
   }, [attachmentPreviewId, selectedAttachmentPreview]);
+
+  useEffect(() => {
+    if (focusSignal === undefined || disabled) {
+      return;
+    }
+
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    editor.focus();
+    moveComposerCaretToEnd(editor);
+  }, [disabled, focusSignal]);
 
   const handleInput = useCallback(() => {
     if (suppressInputRef.current) return;
@@ -1080,10 +1099,6 @@ function ComposerContent({
         return;
       }
 
-      if (showStop) {
-        return;
-      }
-
       if (isMobile) {
         return;
       }
@@ -1100,9 +1115,16 @@ function ComposerContent({
       }
 
       event.preventDefault();
+      if (showStop) {
+        if (!sending && !stopping && !cannotQueue) {
+          void handleQueueDraft();
+        }
+        return;
+      }
+
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashCommandSuggestions, selectedSlashCommandIndex, selectSlashCommandSuggestion, closeSlashCommand, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, sendMessagesWith, syncValueFromEditor, applyAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashCommandSuggestions, selectedSlashCommandIndex, selectSlashCommandSuggestion, closeSlashCommand, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, sendMessagesWith, sending, stopping, cannotQueue, handleQueueDraft, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {
@@ -1456,6 +1478,12 @@ function ComposerContent({
             </div>
           )}
 
+          {showFocusShortcutHint ? (
+            <span className="pointer-events-none absolute right-3 top-3 z-10 text-xs text-muted-foreground/50 [:focus-within>&]:hidden lg:right-4">
+              {focusShortcutLabel} to focus
+            </span>
+          ) : null}
+
           <div
             ref={editorRef}
             role="textbox"
@@ -1474,9 +1502,11 @@ function ComposerContent({
               handleInput();
             }}
             data-placeholder={composerPlaceholder}
-            className={`min-h-[60px] max-h-[140px] w-full overflow-y-auto resize-none border-none bg-transparent p-0 text-sm text-foreground shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground empty:before:pointer-events-none md:min-h-[74px] md:max-h-[400px] ${
-              disabled ? "cursor-not-allowed opacity-50" : ""
-            }`}
+            className={cn(
+              "min-h-[60px] max-h-[140px] w-full overflow-y-auto resize-none border-none bg-transparent p-0 text-sm text-foreground shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground empty:before:pointer-events-none md:min-h-[74px] md:max-h-[400px]",
+              showFocusShortcutHint && "pr-24",
+              disabled && "cursor-not-allowed opacity-50",
+            )}
           />
 
           <div className="absolute bottom-2 left-2.5 right-12 flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:bottom-3 lg:left-3 lg:right-auto lg:overflow-visible">
