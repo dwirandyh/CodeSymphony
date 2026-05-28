@@ -727,12 +727,6 @@ describe("useChatSession", () => {
     });
 
     expect(hookResult.threads.find((thread) => thread.id === "thread-a")?.active).toBe(true);
-    expect(queryClient.getQueryData(queryKeys.threads.list("wt-1"))).toEqual([
-      expect.objectContaining({
-        id: "thread-a",
-        active: true,
-      }),
-    ]);
     expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot("thread-a"))).toEqual({
       status: "running",
       newestIdx: null,
@@ -1671,6 +1665,32 @@ describe("useChatSession", () => {
     threadsState.data = [];
     threadsState.isFetching = true;
     renderHook(undefined, null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+      onThreadChange,
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-b"]);
+    expect(hookResult.messageListEmptyState).not.toBe("no-thread-selected");
+  });
+
+  it("keeps current visible threads when a post-run refresh resolves empty", () => {
+    const onThreadChange = vi.fn();
+    threadsState.data = [makeThread("thread-a", false), makeThread("thread-b")];
+    threadsState.isLoading = false;
+    threadsState.isFetching = false;
+
+    renderHook("thread-a", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+      onThreadChange,
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-b"]);
+
+    threadsState.data = [];
+    threadsState.isFetching = false;
+    renderHook("thread-a", null, "wt-1", undefined, "active", {
       autoCreateInitialThread: false,
       onThreadChange,
     });

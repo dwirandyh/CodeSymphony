@@ -1031,6 +1031,21 @@ export function useChatSession(
       return threads;
     }
 
+    const shouldPreserveTransientEmptyThreads =
+      queriedThreads != null
+      && queriedThreads.length === 0
+      && threads.length > 0
+      && closingThreadId == null
+      && (
+        queriedThreadsFetching
+        || selectedThreadId != null
+        || waitingAssistant?.threadId != null
+        || requestedThreadId != null
+      );
+    if (shouldPreserveTransientEmptyThreads) {
+      return threads;
+    }
+
     const bootstrapTargetThreadId = selectedThreadId ?? requestedThreadId;
     if (
       bootstrapTargetThreadId != null
@@ -1044,11 +1059,13 @@ export function useChatSession(
     allowUnselectedThread,
     autoCreateInitialThread,
     cachedThreadsQuery,
+    closingThreadId,
     queriedThreads,
     queriedThreadsFetching,
     rawRequestedThreadId,
     selectedThreadId,
     threads,
+    waitingAssistant?.threadId,
   ]);
 
   const requestedThreadId =

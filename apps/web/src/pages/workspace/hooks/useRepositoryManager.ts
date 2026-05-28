@@ -298,6 +298,20 @@ export function useRepositoryManager(
     return false;
   }
 
+  function keepRequestedSelection(requestedRepoId: string | null, requestedWorktreeId: string | null): boolean {
+    if (requestedRepoId == null && requestedWorktreeId == null) {
+      return false;
+    }
+
+    if (requestedRepoId != null && selectedRepositoryId !== requestedRepoId) {
+      setSelectedRepositoryId(requestedRepoId);
+    }
+    if (requestedWorktreeId != null && selectedWorktreeId !== requestedWorktreeId) {
+      setSelectedWorktreeId(requestedWorktreeId);
+    }
+    return true;
+  }
+
   useEffect(() => {
     const requestedRepoId = options?.desiredRepoId ?? null;
     const requestedWorktreeId = options?.desiredWorktreeId ?? null;
@@ -344,10 +358,30 @@ export function useRepositoryManager(
         repoId: requestedRepoId,
         worktreeId: requestedWorktreeId,
       };
+    }
 
-      if (applyRequestedSelection(requestedRepoId, requestedWorktreeId)) {
-        return;
-      }
+    const shouldApplyRequestedSelection =
+      requestedSelectionChanged
+      || (requestedRepoId != null && selectedRepositoryId === requestedRepoId)
+      || (requestedWorktreeId != null && selectedWorktreeId === requestedWorktreeId);
+    const requestedSelectionApplied = shouldApplyRequestedSelection
+      ? applyRequestedSelection(requestedRepoId, requestedWorktreeId)
+      : false;
+    if (requestedSelectionChanged && requestedSelectionApplied) {
+      return;
+    }
+
+    const requestedWorktreeRecord = requestedWorktreeId != null
+      ? repositoryWorktreeIndex.worktreeById.get(requestedWorktreeId) ?? null
+      : null;
+    const requestedSelectionUnresolved =
+      (requestedWorktreeId != null && requestedWorktreeRecord == null)
+      || (requestedWorktreeId == null && requestedRepoId != null && !repositoryWorktreeIndex.repositoryById.has(requestedRepoId));
+    const requestedSelectionPending = !requestedSelectionApplied
+      && requestedSelectionUnresolved
+      && keepRequestedSelection(requestedRepoId, requestedWorktreeId);
+    if (requestedSelectionPending) {
+      return;
     }
 
     const selectedRepositoryStillExists =

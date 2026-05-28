@@ -353,6 +353,45 @@ describe("useRepositoryManager", () => {
     expect(hookResult.selectedWorktreeId).toBe("wt-feat");
   });
 
+  it("keeps desired route selection while repository data temporarily misses it", () => {
+    const unrelatedRepository: Repository = {
+      id: "r2",
+      name: "second-repo",
+      rootPath: "/home/user/second-repo",
+      defaultBranch: "develop",
+      setupScript: null,
+      teardownScript: null,
+      runScript: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      worktrees: [
+        {
+          id: "wt-r2-root",
+          repositoryId: "r2",
+          branch: "develop",
+          path: "/home/user/second-repo",
+          baseBranch: "develop",
+          status: "active",
+          branchRenamed: false,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    };
+    repositoriesState.data = [unrelatedRepository];
+
+    render({ desiredRepoId: "r1", desiredWorktreeId: "wt-feat" });
+
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+
+    repositoriesState.data = [unrelatedRepository, ...makeRepositories()];
+    render({ desiredRepoId: "r1", desiredWorktreeId: "wt-feat" });
+
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+  });
+
   it("falls back to the repository primary worktree when desiredRepoId changes after mount", () => {
     repositoriesState.data = [
       ...makeRepositories(),

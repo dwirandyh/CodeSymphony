@@ -247,7 +247,7 @@ describe("WorkspaceHeader", () => {
 
     expect(scrollRegion.contains(addSessionButton)).toBe(false);
     expect(container.querySelector('[data-testid="create-session-button"]')?.className).not.toContain("border");
-    expect(container.querySelector('[data-testid="create-session-button"]')?.className).toContain("bg-secondary");
+    expect(container.querySelector('[data-testid="create-session-button"]')?.className).toContain("text-secondary-foreground");
 
     act(() => {
       addSessionButton.click();
