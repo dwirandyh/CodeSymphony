@@ -1532,6 +1532,23 @@ describe("RepositoryPanel", () => {
     expect(container.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
   });
 
+  it("keeps a live waiting approval badge visible after selecting another worktree", () => {
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-root",
+      worktreeStatusOverrides: {
+        "r1-wt-feat": {
+          kind: "waiting_approval",
+          threadId: "t-live-permission",
+        },
+      },
+    });
+
+    expect(container.querySelector('[data-testid="worktree-status-waiting_approval"]')).toBeTruthy();
+  });
+
   it("forwards the selected live thread when the selected worktree override is review_plan", () => {
     const onSelectWorktree = vi.fn();
 
@@ -1569,6 +1586,32 @@ describe("RepositoryPanel", () => {
         threadId: "t-live",
       },
     })).toEqual({
+      "r1-wt-feat": {
+        kind: "waiting_approval",
+        threadId: "t-pending",
+      },
+    });
+  });
+
+  it("merges non-selected worktree live status overrides", () => {
+    expect(mergeSelectedWorktreeStatusOverride({
+      worktreeStatuses: {},
+      selectedWorktreeId: "r1-wt-root",
+      selectedWorktreeStatusOverride: {
+        kind: "running",
+        threadId: "t-selected",
+      },
+      worktreeStatusOverrides: {
+        "r1-wt-feat": {
+          kind: "waiting_approval",
+          threadId: "t-pending",
+        },
+      },
+    })).toEqual({
+      "r1-wt-root": {
+        kind: "running",
+        threadId: "t-selected",
+      },
       "r1-wt-feat": {
         kind: "waiting_approval",
         threadId: "t-pending",

@@ -112,6 +112,22 @@ describe("resolveRuntimeApiBase", () => {
     expect(mod.resolveRuntimeApiBases()).toEqual(["http://localhost:4422/api"]);
   });
 
+  it("uses the configured desktop dev sidecar port from the desktop web shell", async () => {
+    vi.stubEnv("VITE_RUNTIME_PORT", "4321");
+    vi.stubGlobal("window", {
+      location: {
+        protocol: "http:",
+        hostname: "127.0.0.1",
+        origin: "http://127.0.0.1:5174",
+        port: "5174",
+      },
+    } as Window);
+
+    const mod = await import("./runtimeUrl");
+    expect(mod.resolveRuntimeApiBase()).toBe("http://127.0.0.1:4321/api");
+    expect(mod.resolveRuntimeApiBases()).toEqual(["http://127.0.0.1:4321/api"]);
+  });
+
   it("uses runtime port for non-default vite dev ports in dev mode", async () => {
     vi.stubGlobal("window", {
       location: {

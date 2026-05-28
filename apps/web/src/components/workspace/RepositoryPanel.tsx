@@ -56,7 +56,9 @@ type RepositoryPanelProps = {
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
   selectedWorktreeStatusOverride?: WorktreeStatusSummary | null;
+  worktreeStatusOverrides?: Record<string, WorktreeStatusSummary>;
   enableMetadataQueries?: boolean;
+  enableStatusQueries?: boolean;
   threadSnapshot?: ThreadsByWorktreeSnapshot;
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
@@ -185,29 +187,41 @@ export function mergeSelectedWorktreeStatusOverride(params: {
   worktreeStatuses: Record<string, WorktreeStatusSummary>;
   selectedWorktreeId: string | null;
   selectedWorktreeStatusOverride?: WorktreeStatusSummary | null;
+  worktreeStatusOverrides?: Record<string, WorktreeStatusSummary>;
 }): Record<string, WorktreeStatusSummary> {
-  const { worktreeStatuses, selectedWorktreeId, selectedWorktreeStatusOverride } = params;
+  const { worktreeStatuses, selectedWorktreeId, selectedWorktreeStatusOverride, worktreeStatusOverrides } = params;
+  const overrides: Record<string, WorktreeStatusSummary> = {
+    ...(worktreeStatusOverrides ?? {}),
+  };
 
   if (
-    !selectedWorktreeId
-    || !selectedWorktreeStatusOverride
-    || selectedWorktreeStatusOverride.kind === "idle"
+    selectedWorktreeId
+    && selectedWorktreeStatusOverride
+    && selectedWorktreeStatusOverride.kind !== "idle"
   ) {
-    return worktreeStatuses;
+    overrides[selectedWorktreeId] = selectedWorktreeStatusOverride;
   }
 
-  const current = worktreeStatuses[selectedWorktreeId];
-  const currentPriority = current ? WORKTREE_STATUS_PRIORITY.indexOf(current.kind) : Number.POSITIVE_INFINITY;
-  const overridePriority = WORKTREE_STATUS_PRIORITY.indexOf(selectedWorktreeStatusOverride.kind);
+  let merged: Record<string, WorktreeStatusSummary> | null = null;
 
-  if (current && currentPriority < overridePriority) {
-    return worktreeStatuses;
+  for (const [worktreeId, override] of Object.entries(overrides)) {
+    if (override.kind === "idle") {
+      continue;
+    }
+
+    const current = worktreeStatuses[worktreeId];
+    const currentPriority = current ? WORKTREE_STATUS_PRIORITY.indexOf(current.kind) : Number.POSITIVE_INFINITY;
+    const overridePriority = WORKTREE_STATUS_PRIORITY.indexOf(override.kind);
+
+    if (current && currentPriority < overridePriority) {
+      continue;
+    }
+
+    merged ??= { ...worktreeStatuses };
+    merged[worktreeId] = override;
   }
 
-  return {
-    ...worktreeStatuses,
-    [selectedWorktreeId]: selectedWorktreeStatusOverride,
-  };
+  return merged ?? worktreeStatuses;
 }
 
 function WorktreeStatusBadge({
@@ -433,13 +447,16 @@ function WorktreeRowContent({
           </div>
         ) : null}
       </div>
-      <WorktreeMetaSlot hiddenOnHover={hideStatusOnHover}>
-        {showShortcutHint && shortcutLabel ? (
-          <WorktreeShortcutHint shortcutLabel={shortcutLabel} testId={testId} />
-        ) : (
+      <div className="relative shrink-0">
+        <WorktreeMetaSlot hiddenOnHover={hideStatusOnHover}>
           <WorktreeStatusBadge status={status} />
-        )}
-      </WorktreeMetaSlot>
+        </WorktreeMetaSlot>
+        {showShortcutHint && shortcutLabel ? (
+          <div className="pointer-events-none absolute right-0 top-1/2 z-40 -translate-y-1/2">
+            <WorktreeShortcutHint shortcutLabel={shortcutLabel} testId={testId} />
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -457,7 +474,7 @@ function WorktreeShortcutHint({
 
   return (
     <span
-      className="shrink-0 rounded bg-background/95 px-1 font-mono text-[10px] tabular-nums text-muted-foreground/70 shadow-sm ring-1 ring-border/45"
+      className="inline-flex h-4 shrink-0 items-center rounded bg-background/95 px-1 font-mono text-[10px] leading-none tabular-nums text-muted-foreground/70 shadow-sm ring-1 ring-border/45"
       data-testid={`${testId}-shortcut`}
     >
       {shortcutLabel}
@@ -470,7 +487,9 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   selectedRepositoryId,
   selectedWorktreeId,
   selectedWorktreeStatusOverride = null,
+  worktreeStatusOverrides,
   enableMetadataQueries = true,
+  enableStatusQueries = enableMetadataQueries,
   threadSnapshot,
   hiddenRepositoryIds,
   expandedByRepo,
@@ -577,14 +596,15 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     }),
     [metadataRepositoryWorktreeIndex],
   );
-  const worktreeStatuses = useWorktreeStatuses(visibleRepositories, enableMetadataQueries, threadSnapshot);
+  const worktreeStatuses = useWorktreeStatuses(visibleRepositories, enableStatusQueries, threadSnapshot);
   const displayWorktreeStatuses = useMemo(
     () => mergeSelectedWorktreeStatusOverride({
       worktreeStatuses,
       selectedWorktreeId,
       selectedWorktreeStatusOverride,
+      worktreeStatusOverrides,
     }),
-    [selectedWorktreeId, selectedWorktreeStatusOverride, worktreeStatuses],
+    [selectedWorktreeId, selectedWorktreeStatusOverride, worktreeStatusOverrides, worktreeStatuses],
   );
   const gitBranchDiffQueries = useQueries({
     queries: activeWorktreeSummaries.map(({ worktreeId, baseBranch }) => ({

@@ -710,6 +710,50 @@ describe("useChatSession", () => {
     expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot("thread-a") });
   });
 
+  it("marks a submitted thread active locally and seeds running status before stream events arrive", async () => {
+    const sendDeferred = createDeferred<ChatMessage>();
+    threadsState.data = [makeThread("thread-a", false)];
+    statusSnapshotState.data = {
+      status: "idle",
+      newestIdx: null,
+    };
+    vi.mocked(api.sendMessage).mockReturnValue(sendDeferred.promise);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      void hookResult.submitMessage("Hello", "default", []);
+      await Promise.resolve();
+    });
+
+    expect(hookResult.threads.find((thread) => thread.id === "thread-a")?.active).toBe(true);
+    expect(queryClient.getQueryData(queryKeys.threads.list("wt-1"))).toEqual([
+      expect.objectContaining({
+        id: "thread-a",
+        active: true,
+      }),
+    ]);
+    expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot("thread-a"))).toEqual({
+      status: "running",
+      newestIdx: null,
+    });
+    expect(hookResult.selectedThreadUiStatus).toBe("running");
+    expect(hookResult.showStopAction).toBe(true);
+
+    sendDeferred.resolve({
+      id: "message-user",
+      threadId: "thread-a",
+      seq: 1,
+      role: "user",
+      content: "Hello",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:01Z",
+    });
+    await act(async () => {
+      await sendDeferred.promise;
+    });
+  });
+
   it("reconciles stale running state when stop reports no active assistant run", async () => {
     threadsState.data = [makeThread("thread-a", true)];
     vi.mocked(api.stopRun).mockRejectedValue(new Error("No active assistant run for this thread"));

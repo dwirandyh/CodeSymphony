@@ -23,4 +23,4 @@ bun run --filter @codesymphony/shared-types build
 bun run --filter @codesymphony/chat-timeline-core build
 
 cd "${WORKSPACE_ROOT}/apps/web"
-exec bun x vite --port "${PORT}" --strictPort
+exec env VITE_RUNTIME_PORT=4321 bun x vite --port "${PORT}" --strictPort

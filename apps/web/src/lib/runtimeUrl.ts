@@ -37,11 +37,7 @@ function getInjectedDesktopRuntimeApiBase(windowRef: Window): string | null {
 }
 
 function getViteEnv(): RuntimeConfigViteEnv {
-  const meta = import.meta as ImportMeta & {
-    env?: RuntimeConfigViteEnv;
-  };
-
-  return meta.env ?? {};
+  return import.meta.env ?? {};
 }
 
 function looksLikeViteDevPort(port: string): boolean {
@@ -57,6 +53,10 @@ function isWebDevServerWindow(
     windowRef.location.port === getConfiguredWebDevPort(viteEnv)
     || looksLikeViteDevPort(windowRef.location.port)
   ) {
+    return true;
+  }
+
+  if (viteEnv.VITE_RUNTIME_PORT && windowRef.location.port !== String(getConfiguredWebRuntimePort(viteEnv))) {
     return true;
   }
 

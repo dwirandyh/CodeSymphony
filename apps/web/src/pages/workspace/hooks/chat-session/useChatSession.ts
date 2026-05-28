@@ -2374,6 +2374,25 @@ export function useChatSession(
     setWaitingAssistant({ threadId, afterIdx });
   }
 
+  function markThreadActive(threadId: string, worktreeId: string | null) {
+    setThreads((current) => applyThreadActiveUpdate(current, threadId, true));
+
+    if (worktreeId) {
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(worktreeId),
+        (current) => current ? applyThreadActiveUpdate(current, threadId, true) : current,
+      );
+    }
+
+    queryClient.setQueryData(
+      queryKeys.threads.statusSnapshot(threadId),
+      (current: { status: WorktreeThreadUiStatus; newestIdx: number | null } | undefined) => ({
+        status: "running",
+        newestIdx: current?.newestIdx ?? getThreadLastEventIdx(threadId) ?? null,
+      }),
+    );
+  }
+
   function clearWaitingAssistantForThread(threadId: string) {
     restoredWaitingThreadIdsRef.current.delete(threadId);
     setWaitingAssistant((current) => (current?.threadId === threadId ? null : current));
@@ -2956,6 +2975,7 @@ export function useChatSession(
         }
         messageThreadId = sendThreadId;
         startWaitingAssistant(sendThreadId);
+        markThreadActive(sendThreadId, worktreeId);
         const sentMessage = await api.sendMessage(sendThreadId, {
           content,
           mode,
@@ -3027,6 +3047,7 @@ export function useChatSession(
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
       invalidateRepositoryReviews();
       startWaitingAssistant(created.id);
+      markThreadActive(created.id, selectedWorktreeId);
       const optimisticMessage = createOptimisticUserMessage({
         threadId: created.id,
         content,
@@ -3381,21 +3402,12 @@ export function useChatSession(
     }
 
     startWaitingAssistant(activeThread.id);
+    markThreadActive(activeThread.id, activeThread.worktreeId);
     logNewThreadSendDebug("submitMessage.waitingAssistantStarted", {
       threadId: activeThread.id,
       selectedThreadActive: activeThread.active,
       currentThreadTitle: activeThread.title,
     });
-    if (selectedWorktreeId) {
-      queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(selectedWorktreeId), (current) => {
-        if (!current) return current;
-        const index = current.findIndex((thread) => thread.id === activeThread.id);
-        if (index === -1 || current[index]?.active) return current;
-        const updated = [...current];
-        updated[index] = { ...updated[index]!, active: true };
-        return updated;
-      });
-    }
     setSendingMessage(true);
     logNewThreadSendDebug("submitMessage.sendingMessageSet", {
       threadId: activeThread.id,

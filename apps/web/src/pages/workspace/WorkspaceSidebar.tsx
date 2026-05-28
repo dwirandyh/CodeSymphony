@@ -25,6 +25,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   selectedRepositoryId,
   selectedWorktreeId,
   selectedWorktreeStatusOverride,
+  worktreeStatusOverrides,
   threadSnapshot,
   hiddenRepositoryIds,
   expandedByRepo,
@@ -33,6 +34,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   submittingWorktree,
   automationActive = false,
   enableRepositoryMetadata = true,
+  enableWorktreeStatuses = enableRepositoryMetadata,
   isVisible = true,
   onOpenAutomations,
   onOpenSettings,
@@ -53,6 +55,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
   selectedWorktreeStatusOverride?: WorktreeStatusSummary | null;
+  worktreeStatusOverrides?: Record<string, WorktreeStatusSummary>;
   threadSnapshot?: ThreadsByWorktreeSnapshot;
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
@@ -61,6 +64,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   submittingWorktree: boolean;
   automationActive?: boolean;
   enableRepositoryMetadata?: boolean;
+  enableWorktreeStatuses?: boolean;
   isVisible?: boolean;
   onOpenAutomations: () => void;
   onOpenSettings: () => void;
@@ -105,6 +109,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
             selectedRepositoryId={selectedRepositoryId}
             selectedWorktreeId={selectedWorktreeId}
             selectedWorktreeStatusOverride={selectedWorktreeStatusOverride}
+            worktreeStatusOverrides={worktreeStatusOverrides}
             threadSnapshot={threadSnapshot}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
@@ -112,6 +117,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
             submittingRepo={submittingRepo}
             submittingWorktree={submittingWorktree}
             enableMetadataQueries={enableRepositoryMetadata}
+            enableStatusQueries={enableWorktreeStatuses}
             onAttachRepository={onAttachRepository}
             onSelectRepository={onSelectRepository}
             onToggleRepositoryExpand={onToggleRepositoryExpand}
