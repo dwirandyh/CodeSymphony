@@ -5,6 +5,8 @@ export type WorkspaceShortcutId =
   | "toggle_workspace_sidebar"
   | "focus_chat_input"
   | "quick_file_picker"
+  | "open_in_app"
+  | "open_pull_request"
   | "close_active_surface"
   | "create_terminal"
   | "create_thread"
@@ -78,6 +80,28 @@ export const WORKSPACE_SHORTCUTS: Record<WorkspaceShortcutId, WorkspaceShortcutD
       mac: "Cmd+Shift+O",
       windows: "Ctrl+Shift+O",
       linux: "Ctrl+Shift+O",
+    },
+  },
+  open_in_app: {
+    id: "open_in_app",
+    label: "Open in app",
+    description: "Open the current worktree in the preferred desktop app.",
+    scope: "Global",
+    bindings: {
+      mac: "Cmd+Shift+A",
+      windows: "Ctrl+Shift+A",
+      linux: "Ctrl+Shift+A",
+    },
+  },
+  open_pull_request: {
+    id: "open_pull_request",
+    label: "Open pull request",
+    description: "Open the existing pull request or merge request for the current worktree.",
+    scope: "Global",
+    bindings: {
+      mac: "Cmd+G",
+      windows: "Ctrl+G",
+      linux: "Ctrl+G",
     },
   },
   close_active_surface: {
@@ -224,6 +248,8 @@ export const WORKSPACE_SHORTCUT_SECTIONS: WorkspaceShortcutSection[] = [
       "toggle_workspace_sidebar",
       "focus_chat_input",
       "quick_file_picker",
+      "open_in_app",
+      "open_pull_request",
       "close_active_surface",
     ],
   },
@@ -322,6 +348,14 @@ export function matchesToggleWorkspaceSidebarShortcut(event: ShortcutKeyboardEve
 
 export function matchesFocusChatInputShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
   return matchesPrimaryShortcut(event, isMac, "j", { shift: !isMac });
+}
+
+export function matchesOpenInAppShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "a", { shift: true });
+}
+
+export function matchesOpenPullRequestShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {
+  return matchesPrimaryShortcut(event, isMac, "g");
 }
 
 export function matchesCreateTerminalShortcut(event: ShortcutKeyboardEvent, isMac: boolean): boolean {

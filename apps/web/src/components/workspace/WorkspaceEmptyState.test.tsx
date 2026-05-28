@@ -1,9 +1,9 @@
-import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../lib/api";
+import { getWorkspaceShortcutLabel, WORKSPACE_SHORTCUTS } from "./keyboardShortcuts";
 import { WorkspaceEmptyState } from "./WorkspaceEmptyState";
 
 vi.mock("../../hooks/queries/useInstalledApps", () => ({
@@ -42,10 +42,8 @@ describe("WorkspaceEmptyState", () => {
   });
 
   afterEach(() => {
-    act(() => {
-      flushSync(() => {
-        root.unmount();
-      });
+    flushSync(() => {
+      root.unmount();
     });
     container.remove();
     localStorage.clear();
@@ -78,14 +76,12 @@ describe("WorkspaceEmptyState", () => {
       onOpenRecentFile: vi.fn(),
     };
 
-    act(() => {
-      flushSync(() => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <WorkspaceEmptyState {...props} {...overrides} />
-          </QueryClientProvider>
-        );
-      });
+    flushSync(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspaceEmptyState {...props} {...overrides} />
+        </QueryClientProvider>
+      );
     });
 
     return props;
@@ -104,6 +100,14 @@ describe("WorkspaceEmptyState", () => {
     expect(container.textContent).toContain("Open in Cursor");
     expect(container.textContent).toContain("Commit Changes");
     expect(container.textContent).toContain("Show repositories");
+    expect(container.textContent).toContain(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.create_thread));
+    expect(container.textContent).toContain(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.create_terminal));
+    expect(container.textContent).toContain(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.quick_file_picker));
+    expect(container.textContent).toContain(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_in_app));
+    expect(container.textContent).not.toContain("THREAD");
+    expect(container.textContent).not.toContain("TERM");
+    expect(container.textContent).not.toContain("APP");
+    expect(container.textContent).not.toContain("GIT");
   });
 
   it("routes primary, app, and secondary actions", async () => {
@@ -119,17 +123,15 @@ describe("WorkspaceEmptyState", () => {
       throw new Error("Expected workspace empty state buttons were not found");
     }
 
-    await act(async () => {
-      flushSync(() => {
-        newThreadButton.click();
-        openFileButton.click();
-        terminalButton.click();
-        openInAppButton.click();
-        reviewButton.click();
-        revealButton.click();
-      });
-      await Promise.resolve();
+    flushSync(() => {
+      newThreadButton.click();
+      openFileButton.click();
+      terminalButton.click();
+      openInAppButton.click();
+      reviewButton.click();
+      revealButton.click();
     });
+    await Promise.resolve();
 
     expect(props.onCreateThread).toHaveBeenCalledTimes(1);
     expect(props.onOpenFilePicker).toHaveBeenCalledTimes(1);
@@ -150,6 +152,7 @@ describe("WorkspaceEmptyState", () => {
     });
 
     expect(container.textContent).toContain("Open Pull Request");
+    expect(container.textContent).toContain(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_pull_request));
     expect(container.textContent).not.toContain("Commit Changes");
 
     const openPullRequestButton = findButtonByText(container, "Open Pull Request");
@@ -157,10 +160,8 @@ describe("WorkspaceEmptyState", () => {
       throw new Error("Open Pull Request button was not found");
     }
 
-    act(() => {
-      flushSync(() => {
-        openPullRequestButton.click();
-      });
+    flushSync(() => {
+      openPullRequestButton.click();
     });
 
     expect(props.onOpenPullRequest).toHaveBeenCalledTimes(1);
@@ -176,6 +177,7 @@ describe("WorkspaceEmptyState", () => {
     expect(container.textContent).not.toContain("Commit Changes");
     expect(container.textContent).not.toContain("Open Pull Request");
     expect(container.textContent).not.toContain("Open Merge Request");
+    expect(container.textContent).not.toContain("GIT");
   });
 
   it("disables workspace actions when no worktree is selected", () => {

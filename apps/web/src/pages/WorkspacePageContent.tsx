@@ -91,11 +91,14 @@ import {
   matchesNavigateForwardShortcut,
   matchesNextSessionTabShortcut,
   matchesNextWorktreeShortcut,
+  matchesOpenInAppShortcut,
+  matchesOpenPullRequestShortcut,
   matchesOpenSettingsShortcut,
   matchesPreviousSessionTabShortcut,
   matchesPreviousWorktreeShortcut,
   matchesToggleWorkspaceSidebarShortcut,
 } from "../components/workspace/keyboardShortcuts";
+import { resolvePreferredApp } from "../components/workspace/openInAppPreferences";
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
@@ -197,6 +200,7 @@ import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
 import { useCursorModels } from "../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
 import { useSlashCommandsQuery } from "../hooks/queries/useSlashCommandsQuery";
+import { useInstalledApps } from "../hooks/queries/useInstalledApps";
 import { THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS } from "../hooks/queries/useThreadSnapshot";
 import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../hooks/queries/useThreads";
 import { queryKeys } from "../lib/queryKeys";
@@ -517,6 +521,21 @@ function isDesktopViewportNow(): boolean {
   }
 
   return window.matchMedia("(min-width: 1024px)").matches;
+}
+
+function isWorkspaceShortcutEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  return (
+    target.isContentEditable
+    || tagName === "input"
+    || tagName === "textarea"
+    || tagName === "select"
+    || target.closest('[contenteditable="true"]') !== null
+  );
 }
 
 function loadRepositoryPanelExpandedState(): Record<string, boolean> {
@@ -1058,8 +1077,12 @@ export function WorkspacePage() {
     baseHistory: SessionShortcutTarget[];
     index: number;
   } | null>(null);
+  const openInAppShortcutBusyRef = useRef(false);
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
+  const installedAppsQuery = useInstalledApps({
+    enabled: enableNonCriticalWorkspaceData,
+  });
 
   const enableSidebarWorktreeStatuses = desktopApp || enableNonCriticalWorkspaceData;
   const backgroundStatusRepositories = enableSidebarWorktreeStatuses
@@ -1120,6 +1143,10 @@ export function WorkspacePage() {
   });
   const selectedReviewRef = selectedLatestReviewRef?.state === "open" ? selectedLatestReviewRef : null;
   const reviewKind: ReviewKind = repositoryReviews.data?.kind ?? "pr";
+  const selectedOpenInAppTargetPath = selectedWorktreeOperational ? repos.selectedWorktree?.path ?? null : null;
+  const selectedOpenInApp = selectedOpenInAppTargetPath
+    ? resolvePreferredApp(installedAppsQuery.data ?? [], selectedOpenInAppTargetPath)
+    : null;
   const displayGitBranch = gitChanges.branch || repos.selectedWorktree?.branch || "";
   const activeGitChangeEntry = activeFilePath
     ? gitChanges.entries.find((entry) => entry.path === activeFilePath) ?? null
@@ -3215,6 +3242,21 @@ export function WorkspacePage() {
     }
   }, [chat, repos.selectedRepository, repos.selectedWorktree, repositoryReviews.data?.provider, reviewKind, selectedReviewBaseBranch, selectedReviewBranch, selectedReviewRef]);
 
+  const handleOpenSelectedWorktreeInApp = useCallback(async () => {
+    if (!selectedOpenInApp || !selectedOpenInAppTargetPath || openInAppShortcutBusyRef.current) {
+      return;
+    }
+
+    openInAppShortcutBusyRef.current = true;
+    try {
+      await api.openInApp({ appId: selectedOpenInApp.id, targetPath: selectedOpenInAppTargetPath });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to open worktree in app");
+    } finally {
+      openInAppShortcutBusyRef.current = false;
+    }
+  }, [selectedOpenInApp, selectedOpenInAppTargetPath]);
+
   const reviewLookupAvailable = !!repositoryReviews.data?.available;
   const prMrActionBusy = !selectedReviewRef && prMrThreadIsActiveOrPending;
   const prMrActionDisabled = (
@@ -3562,6 +3604,29 @@ export function WorkspacePage() {
 
       const isMac = isMacLikePlatform();
       const jumpWorktreeIndex = getJumpToWorktreeShortcutIndex(event, isMac);
+      const shortcutTargetEditable = isWorkspaceShortcutEditableTarget(event.target);
+
+      if (matchesOpenInAppShortcut(event, isMac)) {
+        if (shortcutTargetEditable || !selectedOpenInApp || !selectedOpenInAppTargetPath) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        void handleOpenSelectedWorktreeInApp();
+        return;
+      }
+
+      if (matchesOpenPullRequestShortcut(event, isMac)) {
+        if (shortcutTargetEditable || !selectedReviewRef) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        void handlePrMrAction();
+        return;
+      }
 
       if (matchesCreateTerminalShortcut(event, isMac)) {
         event.preventDefault();
@@ -3640,9 +3705,14 @@ export function WorkspacePage() {
     confirmSwitchAwayFromActiveFile,
     handleCreateTerminalTab,
     handleCreateThreadFromHeader,
+    handleOpenSelectedWorktreeInApp,
     handleJumpToWorktree,
     handleMoveSessionTab,
     handleMoveWorktree,
+    handlePrMrAction,
+    selectedOpenInApp,
+    selectedOpenInAppTargetPath,
+    selectedReviewRef,
     settingsOpen,
     workspaceNavigation,
   ]);
