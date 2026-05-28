@@ -33,6 +33,7 @@ import {
   type ToolContext,
 } from "./toolContext.js";
 import { buildAttachmentDataUrl, isImageAttachment } from "../agentAttachments.js";
+import { shouldAutoApproveWorkspaceEdit } from "../services/chat/workspaceEditPermissions.js";
 
 export {
   buildCollaborationMode,
@@ -47,6 +48,25 @@ export {
   resolveCodexPlanContent,
 } from "./plan.js";
 export { selectPrimaryCodexFileChange } from "./toolContext.js";
+
+export function shouldAutoApproveCodexWorkspaceEdit(params: {
+  cwd: string;
+  permissionMode: "default" | "plan" | undefined;
+  toolName: string;
+  toolInput?: Record<string, unknown>;
+  blockedPath?: string | null;
+}): boolean {
+  if (params.permissionMode === "plan") {
+    return false;
+  }
+
+  return shouldAutoApproveWorkspaceEdit({
+    workspaceRoot: params.cwd,
+    toolName: params.toolName,
+    toolInput: params.toolInput,
+    blockedPath: params.blockedPath,
+  });
+}
 
 async function buildCodexTurnInput(params: {
   prompt: string;
@@ -1031,11 +1051,30 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
             const requestId = randomUUID();
             const toolInput = toolContext.toolInput
               ?? (toolContext.command ? { command: toolContext.command } : {});
+            const blockedPath = asString(params?.path) ?? toolContext.editTarget ?? null;
+            if (shouldAutoApproveCodexWorkspaceEdit({
+              cwd,
+              permissionMode,
+              toolName: toolContext.toolName,
+              toolInput,
+              blockedPath,
+            })) {
+              writeMessage({
+                id: parsed.id,
+                result: parsed.method === "item/permissions/requestApproval"
+                  ? buildCodexGrantedPermissions(asObject(params?.permissions), "allow")
+                  : {
+                    decision: "accept",
+                  },
+              });
+              return;
+            }
+
             const permissionResult = await onPermissionRequest({
               requestId,
               toolName: toolContext.toolName,
               toolInput,
-              blockedPath: asString(params?.path) ?? toolContext.editTarget ?? null,
+              blockedPath,
               decisionReason: asString(params?.reason) ?? null,
               suggestions: parsed.method === "item/commandExecution/requestApproval"
                 ? [

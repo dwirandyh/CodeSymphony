@@ -193,6 +193,37 @@ describe("opencode session runner config", () => {
     });
   });
 
+  it("auto-approves only in-worktree OpenCode edit approvals outside plan mode", () => {
+    expect(__testing.shouldAutoApproveOpencodeWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      permissionMode: "default",
+      toolName: "edit",
+      toolInput: {
+        path: "src/main.ts",
+      },
+      blockedPath: "/tmp/worktree/src/main.ts",
+    })).toBe(true);
+
+    expect(__testing.shouldAutoApproveOpencodeWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      permissionMode: "default",
+      toolName: "bash",
+      toolInput: {
+        command: "touch src/main.ts",
+      },
+      blockedPath: "touch src/main.ts",
+    })).toBe(false);
+
+    expect(__testing.shouldAutoApproveOpencodeWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      permissionMode: "plan",
+      toolName: "edit",
+      toolInput: {
+        path: "src/main.ts",
+      },
+    })).toBe(false);
+  });
+
   it("emits stable todo updates from OpenCode SDK todo events", async () => {
     const spawnMock = vi.fn(() => {
       const child = new MockOpencodeServerProcess();

@@ -1,4 +1,5 @@
-import { act, createRef } from "react";
+import { createRef } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ILinkProvider } from "@xterm/xterm";
@@ -9,6 +10,14 @@ let terminalKeyHandler: ((event: { key: string; domEvent: KeyboardEvent }) => vo
 let terminalTitleHandler: ((title: string) => void) | null = null;
 let registeredLinkProvider: ILinkProvider | null = null;
 let mockTextarea: HTMLTextAreaElement;
+
+function act<T>(callback: () => T): T {
+  let result: T;
+  flushSync(() => {
+    result = callback();
+  });
+  return result!;
+}
 
 const { writeTerminalDropFiles } = vi.hoisted(() => ({
   writeTerminalDropFiles: vi.fn(),
@@ -37,10 +46,12 @@ const mockTerminal = {
   }),
   paste: vi.fn(),
   write: vi.fn(),
+  refresh: vi.fn(),
   dispose: vi.fn(),
   focus: vi.fn(),
   clear: vi.fn(),
   scrollToBottom: vi.fn(),
+  rows: 24,
   registerLinkProvider: vi.fn((provider: ILinkProvider) => {
     registeredLinkProvider = provider;
     return { dispose: vi.fn() };
@@ -450,6 +461,64 @@ describe("TerminalTab", () => {
     expect(MockWebSocket.instances[0]?.send).toHaveBeenCalledWith("\u0003");
   });
 
+  it("does not send the original xterm data after beforeinput sends transformed data", async () => {
+    act(() => {
+      root.render(
+        <TerminalTab
+          sessionId="s1"
+          cwd="/tmp"
+          transformInput={(data) => data === "c" ? "\u0003" : data}
+        />,
+      );
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const beforeInputEvent = new Event("beforeinput", { bubbles: true, cancelable: true });
+    Object.defineProperty(beforeInputEvent, "data", { value: "c" });
+
+    act(() => {
+      mockTextarea.dispatchEvent(beforeInputEvent);
+      terminalDataHandler?.("c");
+    });
+
+    const inputSends = MockWebSocket.instances[0]?.send.mock.calls
+      .filter(([message]) => typeof message === "string" && !message.startsWith("{"));
+    expect(inputSends).toEqual([["\u0003"]]);
+    expect(MockWebSocket.instances[0]?.send.mock.calls).not.toContainEqual(["c"]);
+  });
+
+  it("refreshes after fullscreen terminal chunks finish writing", async () => {
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const fullscreenChunk = "\x1b[?1049h\x1b[?2026hOpenCode\x1b[?2026l";
+    act(() => {
+      MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+        data: fullscreenChunk,
+      }));
+    });
+
+    const writeCallback = mockTerminal.write.mock.calls.at(-1)?.[1];
+    expect(mockTerminal.write).toHaveBeenLastCalledWith(fullscreenChunk, expect.any(Function));
+    expect(mockTerminal.refresh).not.toHaveBeenCalled();
+
+    act(() => {
+      if (typeof writeCallback === "function") {
+        writeCallback();
+      }
+    });
+
+    expect(mockTerminal.refresh).toHaveBeenCalledWith(0, 23);
+  });
+
   it("does not reconnect when only onSessionExit changes and still uses the latest callback", async () => {
     const firstExitHandler = vi.fn();
     const secondExitHandler = vi.fn();
@@ -619,7 +688,7 @@ describe("TerminalTab", () => {
     });
 
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 10));
     });
 
     expect(mockSearchAddon.findNext).toHaveBeenCalledWith("build", expect.objectContaining({

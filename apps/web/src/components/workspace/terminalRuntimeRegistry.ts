@@ -14,6 +14,7 @@ const MIN_VALID_TERMINAL_COLS = 2;
 const MIN_VALID_TERMINAL_ROWS = 2;
 const PARKED_TERMINAL_CONTAINER_ID = "cs-terminal-runtime-parking";
 const MAX_TERMINAL_TITLE_LENGTH = 32;
+const FULLSCREEN_REDRAW_SEQUENCE_PATTERN = /\x1b\[\?(?:1049[hl]|2026l)/u;
 
 const XTERM_THEME: Record<string, string> = {
   background: "#0f1218",
@@ -116,6 +117,7 @@ type TerminalRuntimeEntry = {
   suppressedInput: {
     active: boolean;
     originalData: string | null;
+    resetTimerId: number | null;
   };
 };
 
@@ -285,6 +287,25 @@ function setTerminalTitle(entry: TerminalRuntimeEntry, nextTitle: string): void 
 
   entry.title = trimmedTitle;
   notifyTitleChange(entry);
+}
+
+function shouldRefreshAfterTerminalWrite(chunk: string): boolean {
+  return FULLSCREEN_REDRAW_SEQUENCE_PATTERN.test(chunk);
+}
+
+function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
+  if (!shouldRefreshAfterTerminalWrite(chunk)) {
+    entry.terminal.write(chunk);
+    return;
+  }
+
+  entry.terminal.write(chunk, () => {
+    if (entry.disposed) {
+      return;
+    }
+
+    entry.terminal.refresh(0, Math.max(0, entry.terminal.rows - 1));
+  });
 }
 
 function sendResize(entry: TerminalRuntimeEntry, cols: number, rows: number): boolean {
@@ -624,7 +645,7 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
       // Not an internal event payload; treat as terminal output.
     }
 
-    entry.terminal.write(chunk);
+    writeTerminalOutput(entry, chunk);
   };
 
   nextWebSocket.onclose = (event) => {
@@ -710,12 +731,46 @@ function createTerminalRuntime(
     suppressedInput: {
       active: false,
       originalData: null,
+      resetTimerId: null,
     },
   };
 
   createTerminalFileLinkProvider(entry);
 
+  const clearSuppressedInput = () => {
+    if (entry.suppressedInput.resetTimerId !== null) {
+      window.clearTimeout(entry.suppressedInput.resetTimerId);
+    }
+    entry.suppressedInput = {
+      active: false,
+      originalData: null,
+      resetTimerId: null,
+    };
+  };
+
+  const suppressOriginalInputIfHandled = (data: string): boolean => {
+    if (!entry.suppressedInput.active || entry.suppressedInput.originalData !== data) {
+      return false;
+    }
+
+    clearSuppressedInput();
+    return true;
+  };
+
+  const scheduleSuppressedInputReset = () => {
+    if (entry.suppressedInput.resetTimerId !== null) {
+      window.clearTimeout(entry.suppressedInput.resetTimerId);
+    }
+    entry.suppressedInput.resetTimerId = window.setTimeout(() => {
+      clearSuppressedInput();
+    }, 0);
+  };
+
   terminal.onData((data) => {
+    if (suppressOriginalInputIfHandled(data)) {
+      return;
+    }
+
     const nextData = entry.transformInput ? entry.transformInput(data) : data;
     if (nextData.length === 0) {
       return;
@@ -790,7 +845,9 @@ function createTerminalRuntime(
     entry.suppressedInput = {
       active: true,
       originalData: event.data,
+      resetTimerId: entry.suppressedInput.resetTimerId,
     };
+    scheduleSuppressedInputReset();
     event.preventDefault();
     if (textarea) {
       textarea.value = "";
@@ -848,10 +905,7 @@ function createTerminalRuntime(
       if (textarea) {
         textarea.value = "";
       }
-      entry.suppressedInput = {
-        active: false,
-        originalData: null,
-      };
+      clearSuppressedInput();
     });
   };
 
@@ -968,6 +1022,7 @@ function createTerminalRuntime(
         entry.webSocket.close();
         entry.webSocket = null;
       }
+      clearSuppressedInput();
       textarea?.removeEventListener("compositionend", handleCompositionEnd, true);
       textarea?.removeEventListener("compositionstart", handleCompositionStart, true);
       textarea?.removeEventListener("input", handleInput, true);

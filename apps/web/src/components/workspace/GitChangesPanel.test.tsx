@@ -248,6 +248,24 @@ describe("GitChangesPanel", () => {
     }
   });
 
+  it("exposes the disabled PR/MR action reason to assistive tech", () => {
+    act(() => {
+      root.render(
+        <GitChangesPanel
+          {...baseProps}
+          reviewKind="pr"
+          prMrActionDisabled
+          prMrActionTitle="PR/MR creation is unavailable for this worktree"
+        />,
+      );
+    });
+
+    const btn = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create PR"));
+    expect(btn?.getAttribute("aria-label")).toBe("Create PR: PR/MR creation is unavailable for this worktree");
+    expect(btn?.getAttribute("title")).toBe("PR/MR creation is unavailable for this worktree");
+    expect((btn as HTMLButtonElement | undefined)?.disabled).toBe(true);
+  });
+
   it("renders open review action in source control header", () => {
     act(() => {
       root.render(

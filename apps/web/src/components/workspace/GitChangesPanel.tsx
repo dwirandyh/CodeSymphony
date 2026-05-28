@@ -228,6 +228,10 @@ export function GitChangesPanel({
     : reviewKind === "mr"
       ? "Create MR"
       : "Create PR";
+  const prMrActionIsDisabled = prMrActionDisabled || prMrActionBusy;
+  const prMrActionAccessibleLabel = prMrActionIsDisabled && prMrActionTitle
+    ? `${prMrActionLabel}: ${prMrActionTitle}`
+    : prMrActionLabel;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden border-0 bg-transparent shadow-none">
@@ -244,8 +248,9 @@ export function GitChangesPanel({
                   size="sm"
                   className="h-6 gap-1 px-2 text-[10px] text-muted-foreground/80 hover:text-foreground"
                   onClick={onPrMrAction}
-                  disabled={prMrActionDisabled || prMrActionBusy}
+                  disabled={prMrActionIsDisabled}
                   title={prMrActionTitle ?? prMrActionLabel}
+                  aria-label={prMrActionAccessibleLabel}
                 >
                   <GitPullRequestArrow className="h-3 w-3" />
                   <span>{prMrActionBusy ? "Working..." : prMrActionLabel}</span>

@@ -706,6 +706,10 @@ export function MobileGitSheet({
 }) {
   const summary = useMemo(() => summarizeGitEntries(entries), [entries]);
   const reviewActionLabel = getReviewActionLabel(reviewKind, reviewRef);
+  const reviewActionIsDisabled = prMrActionDisabled || prMrActionBusy;
+  const reviewActionAccessibleLabel = reviewActionIsDisabled && prMrActionTitle
+    ? `${reviewActionLabel}: ${prMrActionTitle}`
+    : reviewActionLabel;
   const syncSummary = [
     ahead && ahead > 0 ? `${ahead} out` : null,
     behind && behind > 0 ? `${behind} in` : null,
@@ -753,8 +757,9 @@ export function MobileGitSheet({
                 size="sm"
                 className="h-8 shrink-0 gap-1.5 rounded-full px-3 text-[11px] font-medium"
                 onClick={onPrMrAction}
-                disabled={prMrActionDisabled || prMrActionBusy}
+                disabled={reviewActionIsDisabled}
                 title={prMrActionTitle ?? reviewActionLabel}
+                aria-label={reviewActionAccessibleLabel}
               >
                 <GitPullRequestArrow className="h-3.5 w-3.5" />
                 <span>{prMrActionBusy ? "Working..." : reviewActionLabel}</span>

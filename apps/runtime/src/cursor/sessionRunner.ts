@@ -34,6 +34,7 @@ import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
 import { resolveToolPresentationContext } from "../claude/toolClassification.js";
+import { shouldAutoApproveWorkspaceEdit } from "../services/chat/workspaceEditPermissions.js";
 
 const CURSOR_BINARY = process.env.CURSOR_AGENT_BINARY_PATH ?? "cursor-agent";
 const CURSOR_CATALOG_TIMEOUT_MS = 2_500;
@@ -225,6 +226,25 @@ function buildCursorPlanMarkdown(entries: Array<{ content: string; status: strin
       return `${index + 1}. ${entry.content}${suffix}`;
     })
     .join("\n");
+}
+
+function shouldAutoApproveCursorWorkspaceEdit(params: {
+  cwd: string;
+  acpMode: CursorAcpMode;
+  toolName: string;
+  toolInput?: Record<string, unknown>;
+  blockedPath?: string | null;
+}): boolean {
+  if (params.acpMode === "plan") {
+    return false;
+  }
+
+  return shouldAutoApproveWorkspaceEdit({
+    workspaceRoot: params.cwd,
+    toolName: params.toolName,
+    toolInput: params.toolInput,
+    blockedPath: params.blockedPath,
+  });
 }
 
 function normalizeCursorTodoStatus(value: unknown): AgentTodoItem["status"] | null {
@@ -2150,6 +2170,19 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
         const blockedPath = request.toolCall.locations?.[0]?.path?.trim() || null;
         const syntheticRequestId = `${toolUseId || "cursor-tool"}:${randomUUID()}`;
 
+        if (shouldAutoApproveCursorWorkspaceEdit({
+          cwd,
+          acpMode,
+          toolName: toolPresentation.toolName,
+          toolInput,
+          blockedPath,
+        })) {
+          return normalizePermissionDecision({
+            decision: "allow",
+            request,
+          });
+        }
+
         const result = await onPermissionRequest({
           requestId: syntheticRequestId,
           toolName: toolPresentation.toolName,
@@ -2371,6 +2404,7 @@ export const __testing = {
   parseCursorPlanSavedPath,
   parseCursorPlanTodosFromExecutePrompt,
   resolveCursorRuntimeMode,
+  shouldAutoApproveCursorWorkspaceEdit,
   stripCursorModelVariant,
   toolNameFromCursorKind,
 };

@@ -30,6 +30,7 @@ import { runOpencodePlanModeViaAcp } from "./acpRunner.js";
 import { ensureConfiguredOpencodeBinaryOnPath, resolveOpencodeBinaryPath } from "./binary.js";
 import { buildAttachmentDataUrl, buildAttachmentFileUrl, isImageAttachment } from "../agentAttachments.js";
 import { loadOpencodeRuntimeMcpConfig } from "../acp/mcpServers.js";
+import { shouldAutoApproveWorkspaceEdit } from "../services/chat/workspaceEditPermissions.js";
 
 const OPENCODE_CUSTOM_PROVIDER_ID = "codesymphony_custom";
 const OPENCODE_SERVER_HOST = "127.0.0.1";
@@ -389,6 +390,25 @@ function buildOpencodePermissionConfig(threadPermissionMode: "default" | "full_a
     doom_loop: "ask",
     external_directory: "ask",
   };
+}
+
+function shouldAutoApproveOpencodeWorkspaceEdit(params: {
+  cwd: string;
+  permissionMode: "default" | "plan" | undefined;
+  toolName: string;
+  toolInput?: Record<string, unknown>;
+  blockedPath?: string | null;
+}): boolean {
+  if (params.permissionMode === "plan") {
+    return false;
+  }
+
+  return shouldAutoApproveWorkspaceEdit({
+    workspaceRoot: params.cwd,
+    toolName: params.toolName,
+    toolInput: params.toolInput,
+    blockedPath: params.blockedPath,
+  });
 }
 
 function buildOpencodeRuntimeConfig(params: {
@@ -1177,7 +1197,13 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
     pauseLifecycleTimer();
     const decision = await (async () => {
       try {
-        return autoAcceptTools
+        return autoAcceptTools || shouldAutoApproveOpencodeWorkspaceEdit({
+          cwd,
+          permissionMode,
+          toolName,
+          toolInput,
+          blockedPath: normalizedPermission.blockedPath,
+        })
           ? { decision: "allow" as const }
           : await onPermissionRequest({
             requestId: normalizedPermission.requestId,
@@ -1456,4 +1482,5 @@ export const __testing = {
   extractTextOutputFromSessionMessages,
   getEventSessionId,
   normalizePermissionRequest,
+  shouldAutoApproveOpencodeWorkspaceEdit,
 };
