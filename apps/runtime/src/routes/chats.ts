@@ -98,6 +98,7 @@ function respondForChatRouteError(reply: { code: (statusCode: number) => { send:
   if (
     message === "Cannot dispatch queued messages while the assistant is waiting for approval or review"
     || message === "Cannot edit a queued message while it is dispatching"
+    || message === "Cannot cancel queued message dispatch while it is dispatching"
   ) {
     return reply.code(409).send({ error: message });
   }
@@ -534,6 +535,20 @@ export async function registerChatRoutes(app: FastifyInstance) {
       return { data: queuedMessage };
     } catch (error) {
       return respondForChatRouteError(reply, error, "Unable to request queued message dispatch");
+    }
+  });
+
+  app.post("/threads/:id/queue/:queueMessageId/cancel-dispatch", async (request, reply) => {
+    const params = z.object({
+      id: z.string().min(1),
+      queueMessageId: z.string().min(1),
+    }).parse(request.params);
+
+    try {
+      const queuedMessage = await app.chatService.cancelQueuedMessageDispatch(params.id, params.queueMessageId);
+      return { data: queuedMessage };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to cancel queued message dispatch");
     }
   });
 

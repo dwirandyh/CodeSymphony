@@ -3997,7 +3997,6 @@ export function WorkspacePage() {
                     onCloseReviewTab={handleCloseReview}
                     runScriptRunning={selectedBottomPanelState.runScriptActive}
                     onToggleRunScript={handleToggleRunScript}
-                    onOpenIssueReport={openIssueReportDialog}
                     leftPanelVisible={leftSidebarVisible}
                     onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
                     mergeWithContent={activeView === "file"}
@@ -4433,6 +4432,9 @@ export function WorkspacePage() {
                       }}
                       onDispatchQueuedMessage={(queueMessageId) => {
                         void chat.dispatchQueuedDraft(queueMessageId);
+                      }}
+                      onCancelQueuedMessageDispatch={(queueMessageId) => {
+                        void chat.cancelQueuedDraftDispatch(queueMessageId);
                       }}
                     />
                   </Suspense>

@@ -6,6 +6,7 @@ import type { ChatQueuedMessage, FileEntry, ModelProvider, SlashCommand } from "
 import { api } from "../../lib/api";
 import { Composer } from "./composer";
 import { getPlainTextFromEditor, getSerializedTextFromEditor } from "./composer/composerEditorUtils";
+import { EXPLORER_ENTRY_DRAG_MIME } from "./explorerDrag";
 
 function act(callback: () => void): void;
 function act(callback: () => Promise<void>): Promise<void>;
@@ -312,6 +313,22 @@ describe("Composer", () => {
     };
   }
 
+  function buildExplorerEntryDragData(entry: FileEntry) {
+    const data = JSON.stringify(entry);
+    return {
+      types: [EXPLORER_ENTRY_DRAG_MIME, "text/plain"],
+      files: [],
+      items: [],
+      dropEffect: "none",
+      getData: (type: string) => {
+        if (type === EXPLORER_ENTRY_DRAG_MIME) {
+          return data;
+        }
+        return type === "text/plain" ? entry.path : "";
+      },
+    };
+  }
+
   it("renders the editor", () => {
     renderComposer();
     const editor = getEditor();
@@ -353,17 +370,84 @@ describe("Composer", () => {
     expect(editor.className).toContain("md:max-h-[400px]");
   });
 
-  it("renders queued drafts inside the composer shell", () => {
+  it("renders queued drafts in an attached shelf above the composer shell", () => {
     renderComposer({
       queuedMessages: sampleQueuedMessages,
       onDeleteQueuedMessage: vi.fn(),
       onDispatchQueuedMessage: vi.fn(),
+      onCancelQueuedMessageDispatch: vi.fn(),
       onUpdateQueuedMessage: vi.fn().mockResolvedValue(true),
     });
 
-    const composerSection = getEditor().closest("section");
-    expect(composerSection?.textContent).toContain("1 queued draft");
-    expect(composerSection?.textContent).toContain("Review pending migrations and send after the current response finishes.");
+    const composerShell = getEditor().parentElement;
+    const queueShelf = container.querySelector('[data-testid="attached-queue-shelf"]');
+    expect(queueShelf).not.toBeNull();
+    expect(queueShelf?.textContent).toContain("1 Queued");
+    expect(queueShelf?.textContent).not.toContain("Review pending migrations and send after the current response finishes.");
+    expect(composerShell?.contains(queueShelf)).toBe(false);
+  });
+
+  it("renders a cancel send button for queued drafts with dispatch requested", () => {
+    renderComposer({
+      queuedMessages: sampleQueuedMessages,
+      onDeleteQueuedMessage: vi.fn(),
+      onDispatchQueuedMessage: vi.fn(),
+      onCancelQueuedMessageDispatch: vi.fn(),
+      onUpdateQueuedMessage: vi.fn().mockResolvedValue(true),
+    });
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Expand queued drafts"]')?.click();
+    });
+
+    expect(container.querySelector('button[aria-label="Cancel queued send"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Send queued draft now"]')).toBeNull();
+  });
+
+  it("clicking the queued stop button cancels dispatch without deleting", () => {
+    const onCancelQueuedMessageDispatch = vi.fn();
+    const onDeleteQueuedMessage = vi.fn();
+    const onDispatchQueuedMessage = vi.fn();
+    renderComposer({
+      queuedMessages: sampleQueuedMessages,
+      onDeleteQueuedMessage,
+      onDispatchQueuedMessage,
+      onCancelQueuedMessageDispatch,
+      onUpdateQueuedMessage: vi.fn().mockResolvedValue(true),
+    });
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Expand queued drafts"]')?.click();
+    });
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Cancel queued send"]')?.click();
+    });
+
+    expect(onCancelQueuedMessageDispatch).toHaveBeenCalledWith("queue-1");
+    expect(onDispatchQueuedMessage).not.toHaveBeenCalled();
+    expect(onDeleteQueuedMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps delete separate from canceling queued dispatch", () => {
+    const onCancelQueuedMessageDispatch = vi.fn();
+    const onDeleteQueuedMessage = vi.fn();
+    renderComposer({
+      queuedMessages: sampleQueuedMessages,
+      onDeleteQueuedMessage,
+      onDispatchQueuedMessage: vi.fn(),
+      onCancelQueuedMessageDispatch,
+      onUpdateQueuedMessage: vi.fn().mockResolvedValue(true),
+    });
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Expand queued drafts"]')?.click();
+    });
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Delete queued draft"]')?.click();
+    });
+
+    expect(onDeleteQueuedMessage).toHaveBeenCalledWith("queue-1");
+    expect(onCancelQueuedMessageDispatch).not.toHaveBeenCalled();
   });
 
   it("shows suggestions immediately when @ is typed", async () => {
@@ -1727,6 +1811,56 @@ describe("Composer", () => {
     } finally {
       URL.createObjectURL = originalCreateObjectURL;
     }
+  });
+
+  it("drops explorer entries into the composer as file mentions", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
+
+    const editor = getEditor();
+    const dropTarget = getDragDropTarget();
+    const dragData = buildExplorerEntryDragData({ path: "src/index.ts", type: "file" });
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    act(() => {
+      dropTarget.dispatchEvent(dropEvent);
+    });
+
+    expect(editor.querySelector('[data-mention-path="src/index.ts"]')).toBeTruthy();
+    expect(getSerializedTextFromEditor(editor).trim()).toBe("@file:src/index.ts");
+
+    const submitButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+    if (!submitButton) {
+      throw new Error("Send button not found");
+    }
+
+    await act(async () => {
+      submitButton.click();
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledWith({
+      content: "@file:src/index.ts",
+      mode: "default",
+      attachments: [],
+    });
+  });
+
+  it("drops explorer directories into the composer as directory mentions", () => {
+    renderComposer();
+
+    const editor = getEditor();
+    const dropTarget = getDragDropTarget();
+    const dragData = buildExplorerEntryDragData({ path: "src/utils", type: "directory" });
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    act(() => {
+      dropTarget.dispatchEvent(dropEvent);
+    });
+
+    expect(editor.querySelector('[data-mention-path="src/utils"]')).toBeTruthy();
+    expect(getSerializedTextFromEditor(editor).trim()).toBe("@dir:src/utils");
   });
 
   it("opens pasted text chip details from the composer before sending", async () => {

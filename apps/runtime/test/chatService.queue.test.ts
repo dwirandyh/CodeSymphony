@@ -753,6 +753,157 @@ describe("chatService queue flow", () => {
     ]);
   });
 
+  it("cancels a pending queued dispatch without deleting draft content or attachments", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+    const queuedMessage = await prisma.chatQueuedMessage.create({
+      data: {
+        threadId,
+        seq: 0,
+        content: "keep this draft",
+        mode: "default",
+        status: "dispatch_requested",
+        dispatchRequestedAt: new Date("2026-04-27T10:00:00.000Z"),
+        attachments: {
+          create: {
+            filename: "notes.md",
+            mimeType: "text/markdown",
+            sizeBytes: 12,
+            content: "hello world!",
+            storagePath: null,
+            source: "file_picker",
+          },
+        },
+      },
+    });
+
+    const canceled = await chatService.cancelQueuedMessageDispatch(threadId, queuedMessage.id);
+
+    expect(canceled.status).toBe("queued");
+    expect(canceled.dispatchRequestedAt).toBeNull();
+    expect(canceled.content).toBe("keep this draft");
+    expect(canceled.attachments).toHaveLength(1);
+    expect(canceled.attachments[0]?.filename).toBe("notes.md");
+  });
+
+  it("treats canceling an already queued draft as idempotent", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+    const queuedMessage = await prisma.chatQueuedMessage.create({
+      data: {
+        threadId,
+        seq: 0,
+        content: "already queued",
+        mode: "default",
+        status: "queued",
+      },
+    });
+
+    const canceled = await chatService.cancelQueuedMessageDispatch(threadId, queuedMessage.id);
+
+    expect(canceled.status).toBe("queued");
+    expect(canceled.dispatchRequestedAt).toBeNull();
+    expect(canceled.content).toBe("already queued");
+  });
+
+  it("rejects canceling a queued draft that is already dispatching", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+    const queuedMessage = await prisma.chatQueuedMessage.create({
+      data: {
+        threadId,
+        seq: 0,
+        content: "already dispatching",
+        mode: "default",
+        status: "dispatching",
+        dispatchRequestedAt: new Date("2026-04-27T10:00:00.000Z"),
+      },
+    });
+
+    await expect(chatService.cancelQueuedMessageDispatch(threadId, queuedMessage.id)).rejects.toThrow(
+      "Cannot cancel queued message dispatch while it is dispatching",
+    );
+  });
+
+  it("does not dispatch a canceled queued send after the active run finishes", async () => {
+    let releaseInitialRun: (() => void) | null = null;
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ prompt, onText }) => {
+      if (prompt.includes("initial message")) {
+        await onText("Initial response in progress.");
+        await new Promise<void>((resolve) => {
+          releaseInitialRun = resolve;
+        });
+        await onText(" Initial response completed.");
+        return {
+          output: "Initial response in progress. Initial response completed.",
+          sessionId: "queue-cancel-pending-initial",
+        };
+      }
+
+      await onText(`Completed queued prompt: ${prompt}`);
+      return {
+        output: `Completed queued prompt: ${prompt}`,
+        sessionId: "queue-cancel-pending-followup",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "initial message",
+      mode: "default",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "message.delta" && event.payload.delta === "Initial response in progress.",
+    );
+
+    const queuedMessage = await chatService.queueMessage(threadId, {
+      content: "do not send this draft",
+      mode: "default",
+    });
+    await chatService.requestQueuedMessageDispatch(threadId, queuedMessage.id);
+    await chatService.cancelQueuedMessageDispatch(threadId, queuedMessage.id);
+
+    releaseInitialRun?.();
+    await waitForTerminalEvent(chatService, threadId);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const queued = await chatService.listQueuedMessages(threadId);
+    const userMessages = (await chatService.listMessages(threadId))
+      .filter((message) => message.role === "user")
+      .map((message) => message.content);
+
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.status).toBe("queued");
+    expect(queued[0]?.content).toBe("do not send this draft");
+    expect(userMessages).toEqual(["initial message"]);
+  });
+
   it("rejects send-now while the assistant is waiting on a permission gate", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest }) => {
       await onPermissionRequest({

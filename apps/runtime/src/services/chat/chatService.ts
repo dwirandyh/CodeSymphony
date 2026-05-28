@@ -572,6 +572,7 @@ export function createChatService(deps: RuntimeDeps) {
   const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
   const pendingThreadCreatesByKey = new Map<string, Promise<ChatThread>>();
   const queuedDispatchesByThread = new Map<string, Promise<void>>();
+  const canceledQueuedDispatchIds = new Set<string>();
   const slashCommandCatalogCache = createSlashCommandCatalogCacheManager({
     load: async ({ worktreeId, worktreePath, agent }) => {
       if (agent === "opencode") {
@@ -1112,6 +1113,7 @@ export function createChatService(deps: RuntimeDeps) {
     await deps.prisma.chatQueuedMessage.delete({
       where: { id: queueMessageId },
     });
+    canceledQueuedDispatchIds.delete(queueMessageId);
 
     for (const attachment of queuedMessage.attachments) {
       cleanupStoredFile(attachment.storagePath);
@@ -1150,6 +1152,37 @@ export function createChatService(deps: RuntimeDeps) {
     return mapChatQueuedMessage(updated);
   }
 
+  async function cancelQueuedMessageDispatchRecord(threadId: string, queueMessageId: string): Promise<ChatQueuedMessage> {
+    const queuedMessage = await deps.prisma.chatQueuedMessage.findFirst({
+      where: { id: queueMessageId, threadId },
+      include: { attachments: true },
+    });
+
+    if (!queuedMessage) {
+      throw new Error("Queued message not found");
+    }
+
+    if (queuedMessage.status === "dispatching") {
+      throw new Error("Cannot cancel queued message dispatch while it is dispatching");
+    }
+
+    if (queuedMessage.status === "queued") {
+      return mapChatQueuedMessage(queuedMessage);
+    }
+
+    const updated = await deps.prisma.chatQueuedMessage.update({
+      where: { id: queueMessageId },
+      data: {
+        status: "queued",
+        dispatchRequestedAt: null,
+      },
+      include: { attachments: true },
+    });
+
+    canceledQueuedDispatchIds.add(queueMessageId);
+    return mapChatQueuedMessage(updated);
+  }
+
   async function getNextQueuedMessage(threadId: string): Promise<QueuedMessageWithAttachments | null> {
     const requested = await deps.prisma.chatQueuedMessage.findFirst({
       where: {
@@ -1171,6 +1204,7 @@ export function createChatService(deps: RuntimeDeps) {
       where: {
         threadId,
         status: "queued",
+        ...(canceledQueuedDispatchIds.size > 0 ? { id: { notIn: Array.from(canceledQueuedDispatchIds) } } : {}),
       },
       orderBy: { seq: "asc" },
       include: { attachments: true },
@@ -1303,6 +1337,7 @@ export function createChatService(deps: RuntimeDeps) {
           threadId: params.threadId,
         },
       });
+      canceledQueuedDispatchIds.delete(params.queuedMessageId);
     }
 
     for (const storagePath of queuedStoragePathsToCleanup) {
@@ -2834,6 +2869,12 @@ export function createChatService(deps: RuntimeDeps) {
       return queuedMessage;
     },
 
+    async cancelQueuedMessageDispatch(threadId: string, queueMessageId: string): Promise<ChatQueuedMessage> {
+      const queuedMessage = await cancelQueuedMessageDispatchRecord(threadId, queueMessageId);
+      await emitThreadWorkspaceUpdate(threadId);
+      return queuedMessage;
+    },
+
     async requestQueuedMessageDispatch(threadId: string, queueMessageId: string): Promise<ChatQueuedMessage> {
       const thread = await deps.prisma.chatThread.findUnique({
         where: { id: threadId },
@@ -2867,6 +2908,7 @@ export function createChatService(deps: RuntimeDeps) {
           include: { attachments: true },
         });
 
+      canceledQueuedDispatchIds.delete(queueMessageId);
       await emitThreadWorkspaceUpdate(threadId);
       await maybeDispatchQueuedMessages(threadId);
       return mapChatQueuedMessage(updated);

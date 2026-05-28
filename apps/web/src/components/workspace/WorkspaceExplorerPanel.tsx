@@ -12,14 +12,21 @@ import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
+import { writeExplorerEntryDragData } from "./explorerDrag";
 
 const DEFAULT_EXPANDED_ROOT_PATHS = ["src", "app", "apps", "packages"];
 const PENDING_EXPLORER_SKELETON_WIDTHS = ["58%", "72%", "46%", "67%", "54%", "61%", "39%"];
+
+type SourceControlStatus = "tracked" | "untracked" | "ignored";
+type ExplorerFileEntry = FileEntry & {
+  sourceControlStatus?: SourceControlStatus;
+};
 
 type ExplorerNode = {
   name: string;
   path: string;
   type: "file" | "directory";
+  sourceControlStatus?: SourceControlStatus;
   children: ExplorerNode[];
   changeCount: number;
   status: GitChangeStatus | null;
@@ -144,7 +151,7 @@ function ExplorerNodeIcon({
   return <FileCode2 className="h-4 w-4 shrink-0 text-muted-foreground" />;
 }
 
-function insertNode(root: ExplorerNode, entry: FileEntry, statusByPath: Map<string, GitChangeStatus>) {
+function insertNode(root: ExplorerNode, entry: ExplorerFileEntry, statusByPath: Map<string, GitChangeStatus>) {
   const parts = entry.path.split("/").filter((part) => part.length > 0);
   let current = root;
   let currentPath = "";
@@ -161,6 +168,7 @@ function insertNode(root: ExplorerNode, entry: FileEntry, statusByPath: Map<stri
         name: part,
         path: currentPath,
         type: nodeType,
+        sourceControlStatus: undefined,
         children: [],
         changeCount: 0,
         status: null,
@@ -175,6 +183,7 @@ function insertNode(root: ExplorerNode, entry: FileEntry, statusByPath: Map<stri
   if (status) {
     current.status = status;
   }
+  current.sourceControlStatus = entry.sourceControlStatus;
 }
 
 function sortTree(node: ExplorerNode): ExplorerNode {
@@ -195,7 +204,7 @@ function sortTree(node: ExplorerNode): ExplorerNode {
   return node;
 }
 
-function buildTree(entries: FileEntry[], gitEntries: GitChangeEntry[]): ExplorerNode {
+function buildTree(entries: ExplorerFileEntry[], gitEntries: GitChangeEntry[]): ExplorerNode {
   const root: ExplorerNode = {
     name: "",
     path: "",
@@ -203,6 +212,7 @@ function buildTree(entries: FileEntry[], gitEntries: GitChangeEntry[]): Explorer
     children: [],
     changeCount: 0,
     status: null,
+    sourceControlStatus: "tracked",
   };
   const statusByPath = new Map(gitEntries.map((entry) => [entry.path, entry.status] as const));
 
@@ -365,7 +375,7 @@ function WorkspaceExplorerFlatContent({
   onClose,
   showHeader = true,
 }: {
-  entries: FileEntry[];
+  entries: ExplorerFileEntry[];
   gitEntries: GitChangeEntry[];
   pending?: boolean;
   loading: boolean;
@@ -396,10 +406,12 @@ function WorkspaceExplorerFlatContent({
       <div key={node.path || "__root__"}>
         <button
           type="button"
+          draggable
           data-explorer-path={!isDirectory ? node.path : undefined}
           aria-current={isActive ? "page" : undefined}
           className={cn(
             "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary/40",
+            (node.sourceControlStatus === "untracked" || node.sourceControlStatus === "ignored") && !isActive && "text-muted-foreground/55",
             isActive && "bg-secondary text-foreground",
           )}
           style={{ paddingLeft: `${8 + depth * 14}px` }}
@@ -409,6 +421,9 @@ function WorkspaceExplorerFlatContent({
               return;
             }
             onOpenFile(node.path);
+          }}
+          onDragStart={(event) => {
+            writeExplorerEntryDragData(event.dataTransfer, node);
           }}
         >
           {isDirectory ? (
@@ -465,7 +480,7 @@ function WorkspaceExplorerFlatContent({
 interface WorkspaceExplorerPanelProps {
   worktreeId?: string | null;
   gitEntries: GitChangeEntry[];
-  entries?: FileEntry[];
+  entries?: ExplorerFileEntry[];
   pending?: boolean;
   loading?: boolean;
   activeFilePath: string | null;
@@ -575,7 +590,7 @@ function WorkspaceExplorerPanelBridge({
     });
   }
 
-  function renderNode(entry: FileEntry, depth: number) {
+  function renderNode(entry: ExplorerFileEntry, depth: number) {
     const isDirectory = entry.type === "directory";
     const isExpanded = isDirectory ? expandedPaths.has(entry.path) : false;
     const isActive = !isDirectory && activeFilePath === entry.path;
@@ -588,10 +603,12 @@ function WorkspaceExplorerPanelBridge({
       <div key={entry.path}>
         <button
           type="button"
+          draggable
           data-explorer-path={!isDirectory ? entry.path : undefined}
           aria-current={isActive ? "page" : undefined}
           className={cn(
             "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary/40",
+            (entry.sourceControlStatus === "untracked" || entry.sourceControlStatus === "ignored") && !isActive && "text-muted-foreground/55",
             isActive && "bg-secondary text-foreground",
           )}
           style={{ paddingLeft: `${8 + depth * 14}px` }}
@@ -601,6 +618,9 @@ function WorkspaceExplorerPanelBridge({
               return;
             }
             onOpenFile(entry.path);
+          }}
+          onDragStart={(event) => {
+            writeExplorerEntryDragData(event.dataTransfer, entry);
           }}
         >
           {isDirectory ? (

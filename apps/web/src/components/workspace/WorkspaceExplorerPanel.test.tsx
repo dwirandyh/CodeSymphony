@@ -1,6 +1,6 @@
-import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { FileEntry } from "@codesymphony/shared-types";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../lib/api";
@@ -18,6 +18,21 @@ let root: Root;
 let queryClient: QueryClient;
 let originalScrollIntoView: typeof HTMLElement.prototype.scrollIntoView;
 let scrollIntoViewMock: ReturnType<typeof vi.fn>;
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+
+  if (result && typeof result === "object" && "then" in result && typeof result.then === "function") {
+    return result.then(() => Promise.resolve());
+  }
+
+  return undefined;
+}
 
 beforeEach(() => {
   container = document.createElement("div");
@@ -65,8 +80,8 @@ describe("WorkspaceExplorerPanel", () => {
       );
     });
 
-    await act(async () => {
-      await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("intro.md");
     });
 
     const activeButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
@@ -74,7 +89,6 @@ describe("WorkspaceExplorerPanel", () => {
 
     expect(container.textContent).toContain("docs");
     expect(container.textContent).toContain("guides");
-    expect(container.textContent).toContain("intro.md");
     expect(activeButton?.getAttribute("aria-current")).toBe("page");
     expect(scrollIntoViewMock).toHaveBeenCalled();
   });
@@ -109,10 +123,8 @@ describe("WorkspaceExplorerPanel", () => {
       );
     });
 
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("cache.json");
     });
 
     const activeButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
@@ -142,12 +154,51 @@ describe("WorkspaceExplorerPanel", () => {
       );
     });
 
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(container.querySelector("[data-testid='pending-worktree-explorer-skeleton']")).toBeTruthy();
     });
 
     expect(container.querySelector("[data-testid='pending-worktree-explorer-skeleton']")).toBeTruthy();
     expect(api.getWorktreeDirectoryEntries).not.toHaveBeenCalled();
+  });
+
+  it("renders untracked and ignored entries with muted explorer text", async () => {
+    vi.mocked(api.getWorktreeDirectoryEntries).mockImplementation(async (_worktreeId, directoryPath) => {
+      if (directoryPath) {
+        return [];
+      }
+
+      return [
+        { path: "src", type: "directory", sourceControlStatus: "tracked" },
+        { path: "notes.md", type: "file", sourceControlStatus: "untracked" },
+        { path: "secret.txt", type: "file", sourceControlStatus: "ignored" },
+      ];
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspaceExplorerPanel
+            worktreeId="wt-1"
+            gitEntries={[]}
+            activeFilePath={null}
+            onOpenFile={vi.fn()}
+            onClose={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("secret.txt");
+    });
+
+    const notesButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("notes.md"));
+    const secretButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("secret.txt"));
+
+    expect(notesButton?.className ?? "").toContain("text-muted-foreground/55");
+    expect(secretButton?.className ?? "").toContain("text-muted-foreground/55");
   });
 });

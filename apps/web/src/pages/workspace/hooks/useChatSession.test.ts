@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { ChatEvent, ChatMessage, ChatThread, ChatTimelineSnapshot } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatMessage, ChatQueuedMessage, ChatThread, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import {
+  applyQueuedDispatchCancellation,
   applyMessageMutations,
   applySnapshotSeed,
   applyThreadModeUpdate,
@@ -83,6 +84,42 @@ function makeSnapshot(overrides?: {
 }
 
 describe("useChatSession metadata seed helpers", () => {
+  it("optimistically cancels a queued dispatch back to queued state", () => {
+    const queue: ChatQueuedMessage[] = [
+      {
+        id: "queue-1",
+        threadId: "thread-1",
+        seq: 0,
+        content: "Cancel this send",
+        mode: "default",
+        status: "dispatch_requested",
+        dispatchRequestedAt: "2026-04-27T10:00:00.000Z",
+        attachments: [],
+        createdAt: "2026-04-27T10:00:00.000Z",
+        updatedAt: "2026-04-27T10:00:00.000Z",
+      },
+      {
+        id: "queue-2",
+        threadId: "thread-1",
+        seq: 1,
+        content: "Leave this one alone",
+        mode: "default",
+        status: "dispatch_requested",
+        dispatchRequestedAt: "2026-04-27T10:01:00.000Z",
+        attachments: [],
+        createdAt: "2026-04-27T10:01:00.000Z",
+        updatedAt: "2026-04-27T10:01:00.000Z",
+      },
+    ];
+
+    const updated = applyQueuedDispatchCancellation(queue, "queue-1");
+
+    expect(updated[0]?.status).toBe("queued");
+    expect(updated[0]?.dispatchRequestedAt).toBeNull();
+    expect(updated[0]?.content).toBe("Cancel this send");
+    expect(updated[1]).toBe(queue[1]);
+  });
+
   it("reads thread title from metadata tool.finished events", () => {
     const events: ChatEvent[] = [
       makeEvent(1, "chat.completed", { messageId: "msg-1" }),

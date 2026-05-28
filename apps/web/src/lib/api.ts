@@ -781,6 +781,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({}),
     }),
+  cancelQueuedMessageDispatch: (threadId: string, queueMessageId: string) =>
+    request<ChatQueuedMessage>(`/threads/${threadId}/queue/${queueMessageId}/cancel-dispatch`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   stopRun: async (threadId: string) => {
     const response = await runtimeFetch(`/threads/${threadId}/stop`, {
       method: "POST",

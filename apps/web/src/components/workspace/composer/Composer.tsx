@@ -49,8 +49,9 @@ import { cn } from "../../../lib/utils";
 import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
 import { QueuedMessageList } from "../QueuedMessageList";
 import { getWorkspaceShortcutLabel, WORKSPACE_SHORTCUTS } from "../keyboardShortcuts";
-import { createAttachmentChipElement } from "./composerChipUtils";
-import { getSerializedTextFromEditor } from "./composerEditorUtils";
+import { createAttachmentChipElement, createChipElement } from "./composerChipUtils";
+import { getSerializedTextFromEditor, nextMentionId } from "./composerEditorUtils";
+import { hasExplorerEntryDragData, readExplorerEntryDragData } from "../explorerDrag";
 import {
   buildComposerDraftFragment,
   clearPersistedComposerDraft,
@@ -122,6 +123,7 @@ type ComposerProps = {
   onPermissionModeChange: (permissionMode: ChatThreadPermissionMode) => void;
   onDeleteQueuedMessage?: (queueMessageId: string) => void;
   onDispatchQueuedMessage?: (queueMessageId: string) => void;
+  onCancelQueuedMessageDispatch?: (queueMessageId: string) => void;
   onUpdateQueuedMessage?: (queueMessageId: string, content: string) => Promise<boolean>;
 };
 
@@ -280,6 +282,7 @@ function ComposerContent({
   onPermissionModeChange,
   onDeleteQueuedMessage,
   onDispatchQueuedMessage,
+  onCancelQueuedMessageDispatch,
   onUpdateQueuedMessage,
 }: ComposerProps) {
   const [draftText, setDraftText] = useState("");
@@ -365,10 +368,11 @@ function ComposerContent({
     setHasRequestedFileIndex(hasProvidedFileIndex);
   }, [hasProvidedFileIndex, worktreeId]);
 
-  const queuedMessageHandlers = onDeleteQueuedMessage && onDispatchQueuedMessage && onUpdateQueuedMessage
+  const queuedMessageHandlers = onDeleteQueuedMessage && onDispatchQueuedMessage && onCancelQueuedMessageDispatch && onUpdateQueuedMessage
     ? {
       onDelete: onDeleteQueuedMessage,
       onDispatch: onDispatchQueuedMessage,
+      onCancelDispatch: onCancelQueuedMessageDispatch,
       onUpdate: onUpdateQueuedMessage,
     }
     : null;
@@ -438,6 +442,7 @@ function ComposerContent({
 
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const pathDragDepthRef = useRef(0);
   const isComposingRef = useRef(false);
   const suppressInputRef = useRef(false);
   const prevContentLenRef = useRef(0);
@@ -524,6 +529,7 @@ function ComposerContent({
   } = useComposerAttachments({
     editorRef,
   });
+  const [isPathDragOver, setIsPathDragOver] = useState(false);
 
   const {
     slashCommand,
@@ -711,6 +717,103 @@ function ComposerContent({
     prevContentLenRef.current = 0;
     afterChipHTMLRef.current = null;
   }, [applyAttachmentsChange, closeMention, closeSlashCommand]);
+
+  const insertMentionAtComposerCaret = useCallback((entry: FileEntry) => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    editor.focus();
+    closeMention();
+    closeSlashCommand();
+
+    const chip = createChipElement({ ...entry, id: nextMentionId() });
+    const trailingSpace = document.createTextNode("\u00A0");
+    const selection = window.getSelection();
+    const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+
+    if (range && editor.contains(range.commonAncestorContainer)) {
+      range.deleteContents();
+      range.insertNode(trailingSpace);
+      range.insertNode(chip);
+      range.setStartAfter(trailingSpace);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    } else {
+      editor.appendChild(chip);
+      editor.appendChild(trailingSpace);
+
+      const nextRange = document.createRange();
+      nextRange.setStartAfter(trailingSpace);
+      nextRange.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(nextRange);
+    }
+
+    syncValueFromEditor();
+    prevContentLenRef.current = (editor.textContent ?? "").length;
+    lastStableHTMLRef.current = editor.innerHTML;
+    persistDraftContent(getSerializedTextFromEditor(editor).replace(/\u00A0/g, " "));
+  }, [closeMention, closeSlashCommand, persistDraftContent, syncValueFromEditor]);
+
+  const handleComposerDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasExplorerEntryDragData(event.dataTransfer)) {
+      handleDragEnter(event);
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    pathDragDepthRef.current += 1;
+    setIsPathDragOver(true);
+  }, [handleDragEnter]);
+
+  const handleComposerDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasExplorerEntryDragData(event.dataTransfer)) {
+      handleDragOver(event);
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    setIsPathDragOver(true);
+  }, [handleDragOver]);
+
+  const handleComposerDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasExplorerEntryDragData(event.dataTransfer)) {
+      handleDragLeave(event);
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+
+    pathDragDepthRef.current = Math.max(0, pathDragDepthRef.current - 1);
+    if (pathDragDepthRef.current === 0) {
+      setIsPathDragOver(false);
+    }
+  }, [handleDragLeave]);
+
+  const handleComposerDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    const payload = readExplorerEntryDragData(event.dataTransfer);
+    if (!payload) {
+      handleDrop(event);
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    pathDragDepthRef.current = 0;
+    setIsPathDragOver(false);
+    insertMentionAtComposerCaret(payload);
+  }, [handleDrop, insertMentionAtComposerCaret]);
   const resetDraft = useCallback((options?: { clearPersisted?: boolean }) => {
     clearComposerState();
     if (options?.clearPersisted) {
@@ -1317,16 +1420,29 @@ function ComposerContent({
   return (
     <section className="px-1.5 pb-1 pt-0.5 safe-bottom sm:px-2.5 lg:px-3 lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
+        {canRenderQueuedMessages ? (
+          <div className="mx-auto w-[calc(100%-1.5rem)] max-w-[calc(48rem-1.5rem)]">
+            <QueuedMessageList
+              attached
+              messages={queuedMessages}
+              disabled={disabled}
+              onDelete={queuedMessageHandlers.onDelete}
+              onDispatch={queuedMessageHandlers.onDispatch}
+              onCancelDispatch={queuedMessageHandlers.onCancelDispatch}
+              onUpdate={queuedMessageHandlers.onUpdate}
+            />
+          </div>
+        ) : null}
         <div
           className={`relative border bg-background/35 px-3 pb-11 pt-2.5 shadow-sm backdrop-blur-sm lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
-            attachedTop ? "rounded-b-2xl rounded-t-none lg:rounded-b-3xl lg:rounded-t-none" : "rounded-2xl lg:rounded-3xl"
+            attachedTop ? "rounded-b-xl rounded-t-none" : "rounded-xl"
           } ${
-            isDragOver ? "border-primary/60 bg-primary/5" : "border-input/50"
+            isDragOver || isPathDragOver ? "border-primary/60 bg-primary/5" : "border-input/50"
           }`}
-          onDragOver={handleDragOver}
-          onDragEnter={handleDragEnter}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
+          onDragOver={handleComposerDragOver}
+          onDragEnter={handleComposerDragEnter}
+          onDragLeave={handleComposerDragLeave}
+          onDrop={handleComposerDrop}
         >
           <div
             ref={setComposerPopoverHost}
@@ -1334,9 +1450,11 @@ function ComposerContent({
             className="pointer-events-none absolute inset-0 z-[60] overflow-visible"
           />
 
-          {isDragOver && (
-            <div className={`absolute inset-0 z-10 flex items-center justify-center bg-primary/10 ${attachedTop ? "rounded-b-2xl rounded-t-none lg:rounded-b-3xl" : "rounded-2xl lg:rounded-3xl"}`}>
-              <span className="text-sm font-medium text-primary">Drop files here</span>
+          {(isDragOver || isPathDragOver) && (
+            <div className={`absolute inset-0 z-10 flex items-center justify-center bg-primary/10 ${attachedTop ? "rounded-b-xl rounded-t-none" : "rounded-xl"}`}>
+              <span className="text-sm font-medium text-primary">
+                {isPathDragOver ? "Drop to mention this path" : "Drop files here"}
+              </span>
             </div>
           )}
 
@@ -1348,17 +1466,6 @@ function ComposerContent({
             className="hidden"
             onChange={handleFileInputChange}
           />
-
-          {canRenderQueuedMessages ? (
-            <QueuedMessageList
-              embedded
-              messages={queuedMessages}
-              disabled={disabled}
-              onDelete={queuedMessageHandlers.onDelete}
-              onDispatch={queuedMessageHandlers.onDispatch}
-              onUpdate={queuedMessageHandlers.onUpdate}
-            />
-          ) : null}
 
           {mention.active && (suggestions.length > 0 || mentionFileIndexLoading) && (
             <div

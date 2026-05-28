@@ -1106,6 +1106,7 @@ export type CreateChatThreadInput = z.infer<typeof CreateChatThreadInputSchema>;
 export const FileEntrySchema = z.object({
   path: z.string(),
   type: z.enum(["file", "directory"]),
+  sourceControlStatus: z.enum(["tracked", "untracked", "ignored"]).optional(),
 });
 export type FileEntry = z.infer<typeof FileEntrySchema>;
 

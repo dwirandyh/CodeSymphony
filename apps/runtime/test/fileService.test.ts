@@ -27,6 +27,7 @@ beforeAll(async () => {
   git('commit -m "init"');
 
   await writeFile(join(repoDir, ".gitignore"), "ignored/\nsecret.txt\n");
+  await writeFile(join(repoDir, "notes.md"), "local notes");
   await mkdir(join(repoDir, "ignored"), { recursive: true });
   await writeFile(join(repoDir, "ignored/cache.json"), "{\"ok\":true}");
   await writeFile(join(repoDir, "secret.txt"), "top secret");
@@ -81,15 +82,17 @@ describe("fileService", () => {
     it("returns immediate children from the filesystem including gitignored entries", async () => {
       const results = await fileService.listDirectory(repoDir);
       expect(results).toEqual(expect.arrayContaining([
-        { path: ".gitignore", type: "file" },
-        { path: "ignored", type: "directory" },
-        { path: "secret.txt", type: "file" },
+        { path: ".gitignore", type: "file", sourceControlStatus: "untracked" },
+        { path: "ignored", type: "directory", sourceControlStatus: "ignored" },
+        { path: "notes.md", type: "file", sourceControlStatus: "untracked" },
+        { path: "README.md", type: "file", sourceControlStatus: "tracked" },
+        { path: "secret.txt", type: "file", sourceControlStatus: "ignored" },
       ]));
     });
 
     it("returns nested children for a requested directory", async () => {
       const results = await fileService.listDirectory(repoDir, "ignored");
-      expect(results).toEqual([{ path: "ignored/cache.json", type: "file" }]);
+      expect(results).toEqual([{ path: "ignored/cache.json", type: "file", sourceControlStatus: "ignored" }]);
     });
   });
 

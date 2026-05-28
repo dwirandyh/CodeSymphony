@@ -680,6 +680,19 @@ function upsertQueuedMessage(
   return updated;
 }
 
+export function applyQueuedDispatchCancellation(
+  queue: ChatQueuedMessage[],
+  queueMessageId: string,
+): ChatQueuedMessage[] {
+  return queue.map((message) => message.id === queueMessageId
+    ? {
+      ...message,
+      status: "queued",
+      dispatchRequestedAt: null,
+    }
+    : message);
+}
+
 function hasCanonicalThreadSnapshot(snapshot: ChatTimelineSnapshot | null | undefined): boolean {
   return snapshot != null && snapshot.collectionsIncluded !== false;
 }
@@ -3660,6 +3673,27 @@ export function useChatSession(
     }
   }
 
+  async function cancelQueuedDraftDispatch(queueMessageId: string) {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    const queueKey = queryKeys.threads.queue(selectedThreadId);
+    const previousQueue = queryClient.getQueryData<ChatQueuedMessage[]>(queueKey) ?? [];
+    queryClient.setQueryData<ChatQueuedMessage[]>(
+      queueKey,
+      applyQueuedDispatchCancellation(previousQueue, queueMessageId),
+    );
+
+    try {
+      await api.cancelQueuedMessageDispatch(selectedThreadId, queueMessageId);
+      void queryClient.invalidateQueries({ queryKey: queueKey });
+    } catch (error) {
+      queryClient.setQueryData(queueKey, previousQueue);
+      onError(error instanceof Error ? error.message : "Failed to cancel queued send");
+    }
+  }
+
   const timelineSeedMatchesLiveState = useMemo(
     () => selectedThreadId != null && doesSnapshotMatchLocalLiveState({
       snapshot: queriedThreadSnapshot,
@@ -4291,6 +4325,7 @@ export function useChatSession(
     updateQueuedDraft,
     deleteQueuedDraft,
     dispatchQueuedDraft,
+    cancelQueuedDraftDispatch,
     stopAssistantRun,
 
     startWaitingAssistant,
