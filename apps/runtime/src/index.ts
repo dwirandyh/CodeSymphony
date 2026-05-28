@@ -32,6 +32,7 @@ import { createResourceMonitorService } from "./services/resourceMonitorService.
 import { createResourceMonitorSessionTracker } from "./services/resourceMonitorSessionTracker.js";
 import { createWorktreeWatchService } from "./services/worktreeWatchService.js";
 import { createWorkspaceLiveUpdateService } from "./services/workspaceLiveUpdateService.js";
+import { createIssueReportService } from "./services/issueReportService.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -47,6 +48,7 @@ import { registerAutomationRoutes } from "./routes/automations.js";
 import { registerResourceMonitorRoutes } from "./routes/resourceMonitor.js";
 import { registerWorkspaceLiveResourceRoutes } from "./routes/workspaceLiveResources.js";
 import { registerWorkspaceBootstrapRoutes } from "./routes/workspaceBootstrap.js";
+import { registerIssueReportRoutes } from "./routes/issueReports.js";
 import type { PrismaMigrationExecutionPlan } from "./migrate.js";
 
 declare module "fastify" {
@@ -70,6 +72,7 @@ declare module "fastify" {
     automationService: ReturnType<typeof createAutomationService>;
     resourceMonitorService: ReturnType<typeof createResourceMonitorService>;
     workspaceLiveUpdateService: ReturnType<typeof createWorkspaceLiveUpdateService>;
+    issueReportService: ReturnType<typeof createIssueReportService>;
   }
 }
 
@@ -133,6 +136,7 @@ function createApp() {
     reviewService,
     automationService,
   });
+  const issueReportService = createIssueReportService({ prisma });
   const worktreeWatchService = createWorktreeWatchService({
     workspaceEventHub,
     listWorktrees: async () => prisma.worktree.findMany({
@@ -168,6 +172,7 @@ function createApp() {
   app.decorate("automationService", automationService);
   app.decorate("resourceMonitorService", resourceMonitorService);
   app.decorate("workspaceLiveUpdateService", workspaceLiveUpdateService);
+  app.decorate("issueReportService", issueReportService);
 
   app.register(cors, {
     origin: true,
@@ -215,6 +220,7 @@ function createApp() {
   app.register(registerResourceMonitorRoutes, { prefix: "/api" });
   app.register(registerWorkspaceLiveResourceRoutes, { prefix: "/api" });
   app.register(registerWorkspaceBootstrapRoutes, { prefix: "/api" });
+  app.register(registerIssueReportRoutes, { prefix: "/api" });
 
   app.addHook("onClose", async () => {
     worktreeWatchService.dispose();

@@ -1,6 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Root as TabsRoot, List as TabsList, Trigger as TabsTrigger, Content as TabsContent } from "@radix-ui/react-tabs";
-import { DebugConsoleTab } from "./DebugConsoleTab";
 import { ScriptOutputTab, type ScriptOutputEntry } from "./ScriptOutputTab";
 
 const TerminalTab = lazy(() =>
@@ -32,7 +31,6 @@ const collapseIcon = (
 interface BottomPanelProps {
     worktreeId: string | null;
     worktreePath: string | null;
-    selectedThreadId: string | null;
     scriptOutputs: ScriptOutputEntry[];
     activeTab: string;
     collapsed: boolean;
@@ -62,7 +60,6 @@ type BottomPanelBodyProps = {
     onOpenReadFile?: (path: string) => void | Promise<void>;
     worktreeId: string | null;
     worktreePath: string | null;
-    selectedThreadId: string | null;
 };
 
 const BottomPanelContent = memo(function BottomPanelContent({
@@ -74,7 +71,6 @@ const BottomPanelContent = memo(function BottomPanelContent({
     onOpenReadFile,
     worktreeId,
     worktreePath,
-    selectedThreadId,
 }: BottomPanelContentProps) {
     return (
         <>
@@ -112,10 +108,6 @@ const BottomPanelContent = memo(function BottomPanelContent({
                     </div>
                 )}
             </TabsContent>
-
-            <TabsContent value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
-                <DebugConsoleTab worktreeId={worktreeId} selectedThreadId={selectedThreadId} />
-            </TabsContent>
         </>
     );
 });
@@ -146,7 +138,6 @@ const BottomPanelBody = memo(function BottomPanelBody({
 export const BottomPanel = memo(function BottomPanel({
     worktreeId,
     worktreePath,
-    selectedThreadId,
     scriptOutputs,
     activeTab,
     collapsed,
@@ -274,13 +265,11 @@ export const BottomPanel = memo(function BottomPanel({
         onOpenReadFile,
         worktreeId,
         worktreePath,
-        selectedThreadId,
     }), [
         onRerunSetup,
         onRunScriptExit,
         runScriptActive,
         runScriptSessionId,
-        selectedThreadId,
         setupOutputs,
         worktreeId,
         worktreePath,
@@ -367,13 +356,6 @@ export const BottomPanel = memo(function BottomPanel({
                                     •
                                 </span>
                             )}
-                            <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
-                        </TabsTrigger>
-                        <TabsTrigger
-                            value="debug"
-                            className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
-                        >
-                            Debug Console
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
                         </TabsTrigger>
                     </TabsList>

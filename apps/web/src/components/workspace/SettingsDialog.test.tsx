@@ -209,6 +209,7 @@ function renderDialog(
     cursorModels?: readonly CursorModelCatalogEntry[];
     opencodeModels?: readonly OpencodeModelCatalogEntry[];
     modelCatalogsLoading?: boolean;
+    onOpenIssueReport?: () => void;
   },
 ) {
   act(() => {
@@ -229,6 +230,7 @@ function renderDialog(
           runtimeTitle={options?.runtimeTitle}
           onRemoveRepository={vi.fn()}
           onGeneralSettingsChange={vi.fn()}
+          onOpenIssueReport={options?.onOpenIssueReport}
           onProvidersChanged={onProvidersChanged}
         />
       </QueryClientProvider>,
@@ -457,6 +459,26 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Licenses");
     expect(document.body.textContent).toContain("Settings");
     expect(document.body.textContent).toContain("About");
+  });
+
+  it("opens the issue report dialog from Diagnostics", async () => {
+    const onOpenIssueReport = vi.fn();
+    renderDialog([makeRepo()], vi.fn(), undefined, { onOpenIssueReport });
+    await flushEffects();
+
+    const reportButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Report Issue",
+    );
+
+    if (!reportButton) {
+      throw new Error("Report Issue button not found");
+    }
+
+    await act(async () => {
+      reportButton.click();
+    });
+
+    expect(onOpenIssueReport).toHaveBeenCalledOnce();
   });
 
   it("places the General item first in the settings sidebar navigation", async () => {

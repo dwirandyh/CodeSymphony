@@ -1,4 +1,5 @@
-import { act, useState } from "react";
+import { useState } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BottomPanel } from "./BottomPanel";
@@ -9,6 +10,21 @@ vi.mock("./TerminalTab", () => ({
 
 let container: HTMLDivElement;
 let root: Root;
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+
+  if (result && typeof result === "object" && "then" in result && typeof result.then === "function") {
+    return result.then(() => Promise.resolve());
+  }
+
+  return undefined;
+}
 
 function dispatchPointerEvent(
   target: Element,
@@ -49,7 +65,6 @@ describe("BottomPanel", () => {
   const baseProps = {
     worktreeId: "w1",
     worktreePath: "/tmp/wt",
-    selectedThreadId: "t1",
     scriptOutputs: [],
     activeTab: "terminal",
     collapsed: true,
@@ -67,7 +82,7 @@ describe("BottomPanel", () => {
   const findPanelBody = () => container.querySelector<HTMLElement>('[data-testid="bottom-panel-body"]');
   const findResizeHandle = () => container.querySelector<HTMLElement>('[data-testid="bottom-panel-resize-handle"]');
 
-  it("renders Setup Script, Terminal, Run, and Debug Console tab buttons", async () => {
+  it("renders Setup Script, Terminal, and Run tab buttons", async () => {
     await act(async () => {
       root.render(<BottomPanel {...baseProps} />);
       await Promise.resolve();
@@ -75,7 +90,7 @@ describe("BottomPanel", () => {
     expect(container.textContent).toContain("Setup Script");
     expect(container.textContent).toContain("Terminal");
     expect(container.textContent).toContain("Run");
-    expect(container.textContent).toContain("Debug Console");
+    expect(container.textContent).not.toContain("Debug Console");
   });
 
   it("keeps the bottom panel shell flush to the side panels without negative bleed", () => {
@@ -110,13 +125,13 @@ describe("BottomPanel", () => {
       root.render(<BottomPanel {...baseProps} onTabChange={onTabChange} />);
     });
     const buttons = container.querySelectorAll("button");
-    const debugTab = Array.from(buttons).find((b) => b.textContent?.includes("Debug Console"));
-    if (debugTab) {
+    const runTab = Array.from(buttons).find((b) => b.textContent?.includes("Run"));
+    if (runTab) {
       act(() => {
-        debugTab.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+        runTab.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
       });
     }
-    expect(onTabChange).toHaveBeenCalledWith("debug");
+    expect(onTabChange).toHaveBeenCalledWith("run");
   });
 
   it("shows setup status chip without count when setup script outputs exist", () => {
@@ -285,29 +300,34 @@ describe("BottomPanel", () => {
     expect(findPanelBody()?.style.height).toBe("310px");
   });
 
-  it("expands when openSignal changes", () => {
-    function ControlledBottomPanel({ openSignal }: { openSignal: number }) {
-      const [collapsed, setCollapsed] = useState(true);
-
-      return (
-        <BottomPanel
-          {...baseProps}
-          openSignal={openSignal}
-          collapsed={collapsed}
-          onCollapsedChange={setCollapsed}
-        />
-      );
-    }
+  it("expands when openSignal changes", async () => {
+    const onCollapsedChange = vi.fn();
 
     act(() => {
-      root.render(<ControlledBottomPanel openSignal={0} />);
+      root.render(
+        <BottomPanel
+          {...baseProps}
+          openSignal={0}
+          collapsed={true}
+          onCollapsedChange={onCollapsedChange}
+        />,
+      );
     });
     expect(findToggleButton()?.title).toBe("Expand panel");
 
     act(() => {
-      root.render(<ControlledBottomPanel openSignal={1} />);
+      root.render(
+        <BottomPanel
+          {...baseProps}
+          openSignal={1}
+          collapsed={true}
+          onCollapsedChange={onCollapsedChange}
+        />,
+      );
     });
-    expect(findToggleButton()?.title).toBe("Collapse panel");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(onCollapsedChange).toHaveBeenCalledWith(false);
   });
 
   it("does not auto-expand when switching to another worktree with a different stored signal", () => {

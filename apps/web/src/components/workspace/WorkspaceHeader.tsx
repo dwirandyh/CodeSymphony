@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { ChatThread } from "@codesymphony/shared-types";
 import {
   CalendarCog,
+  Bug,
   ChevronDown,
   ChevronRight,
   Dot,
@@ -18,6 +19,7 @@ import { Input } from "../ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
+import { debugLog } from "../../lib/debugLog";
 import { OpenInAppButton } from "./OpenInAppButton";
 import { CreateSessionButton } from "./CreateSessionButton";
 
@@ -79,6 +81,7 @@ type WorkspaceHeaderProps = {
   onCloseReviewTab?: () => void;
   runScriptRunning?: boolean;
   onToggleRunScript?: () => void;
+  onOpenIssueReport?: () => void;
   leftPanelVisible?: boolean;
   onToggleLeftPanel?: () => void;
   mergeWithContent?: boolean;
@@ -158,6 +161,7 @@ export function WorkspaceHeader({
   onCloseReviewTab,
   runScriptRunning,
   onToggleRunScript,
+  onOpenIssueReport,
   leftPanelVisible = true,
   onToggleLeftPanel,
   resourceMonitor,
@@ -170,6 +174,7 @@ export function WorkspaceHeader({
   const targetBranchFilterInputRef = useRef<HTMLInputElement | null>(null);
   const sessionTabsScrollRef = useRef<HTMLDivElement | null>(null);
   const selectedThreadTabRef = useRef<HTMLButtonElement | null>(null);
+  const lastLoggedTabStateRef = useRef<string | null>(null);
 
   const branchContextLabel = selectedWorktreeBranch
     ?? (selectedIsRootWorkspace ? "Root worktree" : "Worktree");
@@ -209,6 +214,57 @@ export function WorkspaceHeader({
       },
     ]
     : threads.map((thread) => ({ thread, pending: false }));
+
+  useEffect(() => {
+    const renderedThreadIds = threadTabs.map(({ thread }) => thread.id);
+    const tabState = {
+      selectedThreadId,
+      renderedThreadIds,
+      sourceThreadIds: threads.map((thread) => thread.id),
+      activeFilePath,
+      activeTerminalTabId,
+      terminalTabActive,
+      reviewTabActive,
+      selectedThreadMissingFromTabs,
+    };
+    const signature = JSON.stringify(tabState);
+    if (lastLoggedTabStateRef.current === signature) {
+      return;
+    }
+    lastLoggedTabStateRef.current = signature;
+
+    debugLog("workspace.header.tabs", "tabs.state.changed", {
+      ...tabState,
+      renderedThreadCount: renderedThreadIds.length,
+      sourceThreadCount: threads.length,
+      fileTabCount: fileTabs.length,
+      fileTabPaths: fileTabs.map((tab) => tab.path),
+      terminalTabCount: terminalTabs.length,
+      terminalTabIds: terminalTabs.map((tab) => tab.id),
+      selectedThreadFallbackTitle: selectedThreadFallbackTitle ?? null,
+      branch: selectedWorktreeBranch,
+      targetBranch,
+      disabled,
+    }, {
+      threadId: selectedThreadId,
+      force: selectedThreadMissingFromTabs,
+    });
+  }, [
+    activeFilePath,
+    activeTerminalTabId,
+    disabled,
+    fileTabs,
+    reviewTabActive,
+    selectedThreadFallbackTitle,
+    selectedThreadId,
+    selectedThreadMissingFromTabs,
+    selectedWorktreeBranch,
+    targetBranch,
+    terminalTabActive,
+    terminalTabs,
+    threadTabs,
+    threads,
+  ]);
 
   useEffect(() => {
     if (!editingThreadId) {
@@ -447,6 +503,20 @@ export function WorkspaceHeader({
               )}
             </Button>
           )}
+
+          {onOpenIssueReport ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Report issue"
+              title="Report issue"
+              className="h-9 w-9 shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={onOpenIssueReport}
+            >
+              <Bug className="h-4 w-4" />
+            </Button>
+          ) : null}
         </div>
       </div>
 

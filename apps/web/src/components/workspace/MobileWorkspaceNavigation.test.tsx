@@ -1,4 +1,4 @@
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitChangeEntry } from "@codesymphony/shared-types";
@@ -10,6 +10,10 @@ vi.mock("./TerminalTab", () => ({
 
 let container: HTMLDivElement;
 let root: Root;
+
+function act(callback: () => void): void {
+  flushSync(callback);
+}
 
 function makeEntry(overrides: Partial<GitChangeEntry> = {}): GitChangeEntry {
   return {
@@ -130,15 +134,17 @@ describe("MobileMoreSheet", () => {
           onOpenRepositories={vi.fn()}
           onOpenDevices={onOpenDevices}
           onOpenSettings={vi.fn()}
+          onOpenIssueReport={vi.fn()}
           onOpenUtility={onOpenUtility}
         />,
       );
     });
 
-    expect(container.textContent).toContain("Focused tools for setup, shell access, runs, and logs.");
+    expect(container.textContent).toContain("Focused tools for setup, shell access, and runs.");
     expect(container.textContent).toContain("Devices");
     expect(container.textContent).toContain("Run Script");
     expect(container.textContent).toContain("Running");
+    expect(container.textContent).not.toContain("Debug Console");
     expect(container.textContent).not.toContain("Inspect workspace setup and rerun initialization output.");
 
     const devicesButton = Array.from(container.querySelectorAll("button")).find((element) =>
@@ -175,7 +181,6 @@ describe("MobileUtilitiesSheet", () => {
           onBack={onBack}
           worktreeId="wt-1"
           worktreePath="/repo/demo-worktree"
-          selectedThreadId="thread-1"
           scriptOutputs={[]}
           activeTab="run"
           onRerunSetup={vi.fn()}
@@ -214,7 +219,6 @@ describe("MobileUtilitiesSheet", () => {
           onBack={vi.fn()}
           worktreeId="wt-1"
           worktreePath="/repo/demo-worktree"
-          selectedThreadId="thread-1"
           scriptOutputs={[]}
           activeTab="run"
           onRerunSetup={vi.fn()}

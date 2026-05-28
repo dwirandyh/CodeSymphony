@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   ArrowLeft,
   Bot,
+  Bug,
   ChevronRight,
   FolderGit2,
   Keyboard,
@@ -563,6 +564,7 @@ interface SettingsDialogProps {
   runtimeTitle?: string | null;
   onRemoveRepository: (id: string) => void;
   onGeneralSettingsChange: (next: GeneralSettings) => void;
+  onOpenIssueReport?: () => void;
   onProvidersChanged?: (providers: ModelProvider[]) => void;
 }
 
@@ -599,6 +601,7 @@ export function SettingsDialog({
   runtimeTitle,
   onRemoveRepository,
   onGeneralSettingsChange,
+  onOpenIssueReport,
   onProvidersChanged,
 }: SettingsDialogProps) {
   const queryClient = useQueryClient();
@@ -1497,6 +1500,25 @@ export function SettingsDialog({
                           autoConvertLongTextEnabled: checked,
                         })}
                       />
+                    )}
+                  />
+
+                  <SettingsSection
+                    title="Diagnostics"
+                    description="Issue reports are saved locally with redacted runtime and workspace diagnostics."
+                    descriptionId="general-diagnostics-description"
+                    actionClassName="w-auto md:max-w-none"
+                    action={(
+                      <Button
+                        type="button"
+                        variant="default"
+                        size="sm"
+                        className="min-w-32 justify-center gap-2 px-3 text-[13px]"
+                        onClick={onOpenIssueReport}
+                      >
+                        <Bug className="h-3.5 w-3.5" />
+                        Report Issue
+                      </Button>
                     )}
                   />
                 </div>

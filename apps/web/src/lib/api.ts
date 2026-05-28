@@ -18,6 +18,7 @@ import type {
   CodexModelCatalog,
   CreateChatThreadInput,
   CreateAutomationInput,
+  CreateIssueReportInput,
   CreateModelProviderInput,
   CreateRepositoryInput,
   CreateWorktreeResult,
@@ -39,10 +40,12 @@ import type {
   GitCommitInput,
   GitDiff,
   GitStatus,
+  IssueReportResult,
   RepositoryReviewState,
   ResourceMonitorRuntimeSnapshot,
   ModelProvider,
   OpenInAppInput,
+  OpenPathInput,
   OpencodeModelCatalog,
   OpenWorktreeFileInput,
   PlanRevisionInput,
@@ -948,6 +951,13 @@ export const api = {
     return (activeApiBase ?? getCandidateApiBases()[0] ?? DEFAULT_API_BASE).replace(/\/api$/, "");
   },
   getRuntimeInfo: () => request<RuntimeInfo>("/debug/runtime-info"),
+  createIssueReport: (input: CreateIssueReportInput) =>
+    request<IssueReportResult>("/issue-reports", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  getIssueReportsDirectory: () =>
+    request<{ directoryPath: string }>("/issue-reports/directory"),
   getResourceMonitorSnapshot: () => request<ResourceMonitorRuntimeSnapshot>("/resource-monitor/snapshot"),
   browseFilesystem: (path?: string) => {
     const params = path ? `?path=${encodeURIComponent(path)}` : "";
@@ -989,6 +999,18 @@ export const api = {
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
       throw new Error(payload?.error ?? "Failed to open in app");
+    }
+  },
+  openPath: async (input: OpenPathInput) => {
+    const response = await runtimeFetch("/system/open-path", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to open path");
     }
   },
   getDevices: () => request<DeviceInventorySnapshot>("/devices"),

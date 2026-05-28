@@ -1,5 +1,5 @@
 import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Menu, Settings, X } from "lucide-react";
+import { Bug, Menu, Settings, X } from "lucide-react";
 import {
   type ClaudeModelCatalogEntry,
   type ChatThread,
@@ -43,6 +43,9 @@ const FileBrowserModal = lazy(() =>
 );
 const SettingsDialog = lazy(() =>
   import("../components/workspace/SettingsDialog").then(m => ({ default: m.SettingsDialog }))
+);
+const IssueReportDialog = lazy(() =>
+  import("../components/workspace/IssueReportDialog").then(m => ({ default: m.IssueReportDialog }))
 );
 const QuickFilePicker = lazy(() =>
   import("../components/workspace/QuickFilePicker").then(m => ({ default: m.QuickFilePicker }))
@@ -161,6 +164,7 @@ import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgroundWorktreeStatusStream";
+import type { WorktreeStatusSummary } from "./workspace/hooks/worktreeThreadStatus";
 import { useCompletionAttention } from "./workspace/hooks/useCompletionAttention";
 import { useModelProviders } from "./workspace/hooks/useModelProviders";
 import { useWorkspaceSyncStream } from "./workspace/hooks/useWorkspaceSyncStream";
@@ -1057,7 +1061,8 @@ export function WorkspacePage() {
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
 
-  const backgroundStatusRepositories = enableNonCriticalWorkspaceData
+  const enableSidebarWorktreeStatuses = desktopApp || enableNonCriticalWorkspaceData;
+  const backgroundStatusRepositories = enableSidebarWorktreeStatuses
     ? visibleRepositories
     : [];
   const backgroundStatusWorktreeIds = useMemo(
@@ -1065,7 +1070,7 @@ export function WorkspacePage() {
     [backgroundStatusRepositories],
   );
   const backgroundStatusThreadSnapshot = useThreadsByWorktreeIds(backgroundStatusWorktreeIds, {
-    enabled: enableNonCriticalWorkspaceData,
+    enabled: enableSidebarWorktreeStatuses,
   });
   const selectedWorktreeStatus = repos.selectedWorktree?.status ?? null;
   const selectedWorktreeOperational = selectedWorktreeStatus != null && isOperationalWorktreeStatus(selectedWorktreeStatus);
@@ -1314,6 +1319,38 @@ export function WorkspacePage() {
       threadId: selectedThreadIdForLiveStatus,
     } as const;
   }, [chat.selectedThreadUiStatus, repos.selectedWorktreeId, selectedThreadIdForLiveStatus]);
+  const [worktreeStatusOverrides, setWorktreeStatusOverrides] = useState<Record<string, WorktreeStatusSummary>>({});
+  useEffect(() => {
+    const selectedWorktreeId = repos.selectedWorktreeId;
+    if (!selectedWorktreeId) {
+      return;
+    }
+
+    setWorktreeStatusOverrides((current) => {
+      if (!selectedWorktreeStatusOverride) {
+        if (!(selectedWorktreeId in current)) {
+          return current;
+        }
+
+        const next = { ...current };
+        delete next[selectedWorktreeId];
+        return next;
+      }
+
+      const existing = current[selectedWorktreeId];
+      if (
+        existing?.kind === selectedWorktreeStatusOverride.kind
+        && existing.threadId === selectedWorktreeStatusOverride.threadId
+      ) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [selectedWorktreeId]: selectedWorktreeStatusOverride,
+      };
+    });
+  }, [repos.selectedWorktreeId, selectedWorktreeStatusOverride]);
   const previousLiveScopeSelectionRef = useRef<WorkspaceLiveScopeSelection | null>(null);
   const [liveScopeSwitch, setLiveScopeSwitch] = useState<WorkspaceLiveScopeSwitch | null>(null);
 
@@ -1427,6 +1464,7 @@ export function WorkspacePage() {
     selectedWorktreeId: repos.selectedWorktreeId,
     selectedThreadId: chat.selectedThreadId,
   });
+  const lastLoggedTabShellStateRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (enableNonCriticalWorkspaceData || !startupNonCriticalDataReady) {
@@ -2170,6 +2208,7 @@ export function WorkspacePage() {
   }, []);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [issueReportOpen, setIssueReportOpen] = useState(false);
   const [focusComposerSignal, setFocusComposerSignal] = useState(0);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const openSettingsDialog = useCallback(() => {
@@ -2326,6 +2365,86 @@ export function WorkspacePage() {
     selectedWorktreePath: repos.selectedWorktree?.path ?? null,
     updateSearch,
   });
+  useEffect(() => {
+    const threadIds = chat.threads.map((thread) => thread.id);
+    const fileTabPaths = workspaceFileTabs.map((tab) => tab.path);
+    const terminalTabIds = selectedTerminalTabsState.tabs.map((tab) => tab.id);
+    const selectedThreadMissingFromCollection = !!chat.selectedThreadId && !threadIds.includes(chat.selectedThreadId);
+    const routeThreadMissingFromCollection = !!search.threadId && !threadIds.includes(search.threadId);
+    const tabShellState = {
+      activeView,
+      routeRepoId: search.repoId ?? null,
+      routeWorktreeId: search.worktreeId ?? null,
+      routeThreadId: search.threadId ?? null,
+      selectedRepositoryId: repos.selectedRepositoryId,
+      selectedWorktreeId: repos.selectedWorktreeId,
+      selectedThreadId: chat.selectedThreadId,
+      selectedThreadShellId: selectedThreadShell?.id ?? null,
+      threadIds,
+      fileTabPaths,
+      terminalTabIds,
+      activeFilePath,
+      activeTerminalTabId: activeTerminalTab?.id ?? null,
+      terminalViewActive,
+      reviewTabOpen,
+      startupThreadFallbackActive,
+      preserveStartupThreadFallback,
+      messageListEmptyState: chat.messageListEmptyState,
+      selectedThreadUiStatus: chat.selectedThreadUiStatus,
+      selectedThreadMissingFromCollection,
+      routeThreadMissingFromCollection,
+    };
+    const signature = JSON.stringify(tabShellState);
+    if (lastLoggedTabShellStateRef.current === signature) {
+      return;
+    }
+    lastLoggedTabShellStateRef.current = signature;
+
+    debugLog("workspace.tabShell", "state.changed", {
+      ...tabShellState,
+      threadCount: threadIds.length,
+      fileTabCount: fileTabPaths.length,
+      terminalTabCount: terminalTabIds.length,
+      selectedThreadTitle,
+      selectedRepositoryName: repos.selectedRepository?.name ?? null,
+      selectedWorktreeBranch: repos.selectedWorktree?.branch ?? null,
+      selectedWorktreeStatus: repos.selectedWorktree?.status ?? null,
+      startupSelectionFallbackActive,
+      startupRepoFallbackActive,
+      startupWorktreeFallbackActive,
+    }, {
+      threadId: chat.selectedThreadId ?? search.threadId ?? null,
+      worktreeId: repos.selectedWorktreeId ?? search.worktreeId ?? null,
+      force: selectedThreadMissingFromCollection || routeThreadMissingFromCollection,
+    });
+  }, [
+    activeFilePath,
+    activeTerminalTab?.id,
+    activeView,
+    chat.messageListEmptyState,
+    chat.selectedThreadId,
+    chat.selectedThreadUiStatus,
+    chat.threads,
+    preserveStartupThreadFallback,
+    repos.selectedRepository?.name,
+    repos.selectedRepositoryId,
+    repos.selectedWorktree?.branch,
+    repos.selectedWorktree?.status,
+    repos.selectedWorktreeId,
+    reviewTabOpen,
+    search.repoId,
+    search.threadId,
+    search.worktreeId,
+    selectedTerminalTabsState.tabs,
+    selectedThreadShell,
+    selectedThreadTitle,
+    startupRepoFallbackActive,
+    startupSelectionFallbackActive,
+    startupThreadFallbackActive,
+    startupWorktreeFallbackActive,
+    terminalViewActive,
+    workspaceFileTabs,
+  ]);
   pushStartupRenderProfileSection("workspace-file-editor");
 
   const sessionShortcutTargets = useMemo(
@@ -2633,6 +2752,9 @@ export function WorkspacePage() {
       document.removeEventListener("focusin", handleFocusIn);
       document.removeEventListener("focusout", handleFocusOut);
     };
+  }, []);
+  const openIssueReportDialog = useCallback(() => {
+    setIssueReportOpen(true);
   }, []);
 
   useEffect(() => {
@@ -3705,6 +3827,7 @@ export function WorkspacePage() {
               selectedRepositoryId={repos.selectedRepositoryId}
               selectedWorktreeId={repos.selectedWorktreeId}
               selectedWorktreeStatusOverride={selectedWorktreeStatusOverride}
+              worktreeStatusOverrides={worktreeStatusOverrides}
               threadSnapshot={backgroundStatusThreadSnapshot}
               hiddenRepositoryIds={hiddenRepositoryIds}
               expandedByRepo={expandedByRepo}
@@ -3713,6 +3836,7 @@ export function WorkspacePage() {
               submittingWorktree={repos.submittingWorktree}
               automationActive={activeView === "automations"}
               enableRepositoryMetadata={enableNonCriticalWorkspaceData}
+              enableWorktreeStatuses={enableSidebarWorktreeStatuses}
               isVisible={leftSidebarVisible}
               onOpenAutomations={() => {
                 updateSearch({
@@ -3873,6 +3997,7 @@ export function WorkspacePage() {
                     onCloseReviewTab={handleCloseReview}
                     runScriptRunning={selectedBottomPanelState.runScriptActive}
                     onToggleRunScript={handleToggleRunScript}
+                    onOpenIssueReport={openIssueReportDialog}
                     leftPanelVisible={leftSidebarVisible}
                     onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
                     mergeWithContent={activeView === "file"}
@@ -3986,6 +4111,10 @@ export function WorkspacePage() {
                       setMobilePanelOpen(null);
                       openSettingsDialog();
                     }}
+                    onOpenIssueReport={() => {
+                      setMobilePanelOpen(null);
+                      openIssueReportDialog();
+                    }}
                     onOpenUtility={(tab) => handleOpenMobileUtilities(tab)}
                   />
                 </Suspense>
@@ -4009,7 +4138,6 @@ export function WorkspacePage() {
                     onBack={() => setMobilePanelOpen("more")}
                     worktreeId={selectedWorktreeOperational ? repos.selectedWorktreeId : null}
                     worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
-                    selectedThreadId={chat.selectedThreadId}
                     scriptOutputs={scriptOutputs}
                     activeTab={selectedBottomPanelState.activeTab}
                     onRerunSetup={handleRerunSetup}
@@ -4341,7 +4469,6 @@ export function WorkspacePage() {
               <BottomPanel
                 worktreeId={selectedWorktreeOperational ? repos.selectedWorktreeId : null}
                 worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
-                selectedThreadId={chat.selectedThreadId}
                 scriptOutputs={scriptOutputs}
                 activeTab={selectedBottomPanelState.activeTab}
                 collapsed={selectedBottomPanelState.collapsed}
@@ -4475,7 +4602,9 @@ export function WorkspacePage() {
                   selectedRepositoryId={repos.selectedRepositoryId}
                   selectedWorktreeId={repos.selectedWorktreeId}
                   selectedWorktreeStatusOverride={selectedWorktreeStatusOverride}
+                  worktreeStatusOverrides={worktreeStatusOverrides}
                   enableMetadataQueries={enableNonCriticalWorkspaceData}
+                  enableStatusQueries={enableSidebarWorktreeStatuses}
                   threadSnapshot={backgroundStatusThreadSnapshot}
                   hiddenRepositoryIds={hiddenRepositoryIds}
                   expandedByRepo={expandedByRepo}
@@ -4497,6 +4626,17 @@ export function WorkspacePage() {
               </Suspense>
             </div>
             <div className="shrink-0 border-t border-border/30 px-4 pt-2 pb-3 safe-bottom">
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-muted-foreground transition-colors active:bg-secondary/60"
+                onClick={() => {
+                  handleCloseMobileRepositories();
+                  openIssueReportDialog();
+                }}
+              >
+                <Bug className="h-3.5 w-3.5" />
+                Report Issue
+              </button>
               <button
                 type="button"
                 className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-muted-foreground transition-colors active:bg-secondary/60"
@@ -4543,11 +4683,24 @@ export function WorkspacePage() {
               void repos.removeRepository(id);
             }}
             onGeneralSettingsChange={updateGeneralSettings}
+            onOpenIssueReport={openIssueReportDialog}
           />
         </Suspense>
       ) : null}
 
-      {enableNonCriticalWorkspaceData ? (
+      {issueReportOpen ? (
+        <Suspense fallback={null}>
+          <IssueReportDialog
+            open={issueReportOpen}
+            onClose={() => setIssueReportOpen(false)}
+            repositoryId={repos.selectedRepositoryId}
+            worktreeId={repos.selectedWorktreeId}
+            threadId={chat.selectedThreadId}
+          />
+        </Suspense>
+      ) : null}
+
+      {enableSidebarWorktreeStatuses ? (
         <BackgroundWorktreeStatusStreamBridge
           repositories={backgroundStatusRepositories}
           selectedWorktreeId={repos.selectedWorktreeId}

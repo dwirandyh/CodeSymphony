@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  getBottomPanelState,
   readPersistedWorkspaceTerminalUiState,
   restoreWorkspaceTerminalUiState,
   WORKSPACE_TERMINAL_UI_STORAGE_KEY,
@@ -135,5 +136,45 @@ describe("workspaceTerminalPersistence", () => {
       },
       terminalTabsByWorktreeId: {},
     });
+  });
+
+  it("migrates removed debug console tab state to the default bottom tab", () => {
+    sessionStorage.setItem(WORKSPACE_TERMINAL_UI_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      runtimePid: 123,
+      bottomPanelStateByWorktreeId: {
+        wt1: {
+          activeTab: "debug",
+          openSignal: 1,
+          runScriptActive: false,
+          runScriptSessionId: null,
+          collapsed: false,
+        },
+      },
+      terminalTabsByWorktreeId: {},
+    }));
+
+    const persistedState = readPersistedWorkspaceTerminalUiState(sessionStorage);
+    const restoredState = restoreWorkspaceTerminalUiState({
+      persistedState,
+      runtimePid: 123,
+      terminalSessions: [],
+    });
+
+    expect(restoredState?.bottomPanelStateByWorktreeId.wt1?.activeTab).toBe("terminal");
+  });
+
+  it("normalizes removed debug console tab state already in memory", () => {
+    const state = getBottomPanelState({
+      wt1: {
+        activeTab: "debug",
+        openSignal: 1,
+        runScriptActive: false,
+        runScriptSessionId: null,
+        collapsed: false,
+      },
+    }, "wt1");
+
+    expect(state.activeTab).toBe("terminal");
   });
 });

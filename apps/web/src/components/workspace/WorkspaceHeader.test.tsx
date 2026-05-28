@@ -4,8 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread } from "@codesymphony/shared-types";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
+const debugLogMock = vi.hoisted(() => vi.fn());
+
 vi.mock("./OpenInAppButton", () => ({
   OpenInAppButton: () => null,
+}));
+
+vi.mock("../../lib/debugLog", () => ({
+  debugLog: (...args: unknown[]) => debugLogMock(...args),
 }));
 
 function act(callback: () => void): void;
@@ -441,6 +447,47 @@ describe("WorkspaceHeader", () => {
     });
 
     expect(container.querySelector('[data-testid="thread-thread-auto-automation-icon"]')).not.toBeNull();
+  });
+
+  it("logs forced diagnostics when selected thread is missing from rendered thread tabs", async () => {
+    await act(async () => {
+      root.render(
+        <WorkspaceHeader
+          selectedWorktreeBranch="main"
+          worktreePath="/repo"
+          threads={threads.slice(0, 1)}
+          selectedThreadId="missing-thread"
+          selectedThreadFallbackTitle="Chat"
+          fileTabs={[]}
+          activeFilePath={null}
+          disabled={false}
+          closingThreadId={null}
+          onSelectThread={noop}
+          onSelectFileTab={noop}
+          onPinFileTab={noop}
+          onCloseFileTab={noop}
+          onCreateThread={noop}
+          onCloseThread={noop}
+          onRenameThread={noop}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(debugLogMock).toHaveBeenCalledWith(
+      "workspace.header.tabs",
+      "tabs.state.changed",
+      expect.objectContaining({
+        selectedThreadId: "missing-thread",
+        selectedThreadMissingFromTabs: true,
+        sourceThreadIds: ["thread-1"],
+        renderedThreadIds: ["thread-1", "missing-thread"],
+      }),
+      expect.objectContaining({
+        force: true,
+        threadId: "missing-thread",
+      }),
+    );
   });
 
   it("prefetches a thread when its tab is hovered or focused", () => {

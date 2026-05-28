@@ -201,7 +201,6 @@ function renderBottomPanelShell(snapshot: StartupShellSnapshot) {
       <BottomPanel
         worktreeId={snapshot.worktreeId}
         worktreePath={snapshot.worktreePath}
-        selectedThreadId={snapshot.threadId}
         scriptOutputs={[]}
         activeTab="setup-script"
         collapsed={true}

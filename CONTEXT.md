@@ -95,3 +95,20 @@ _Avoid_: raw watcher event, ad-hoc invalidation
 - "execute approved plan with another model" was ambiguous between same-thread switching and new-thread delegation; resolved:
   - same-agent valid target => **Plan execution switch**
   - invalid same-thread target or cross-agent target => **Plan execution handoff**
+
+## Production Diagnostics
+
+**Issue Report**:
+A user-facing local artifact that captures a user's description of a production problem together with the relevant diagnostic context from the current app state.
+_Avoid_: bug ticket, debug log, uploaded issue
+
+**Diagnostic Capture**:
+The redacted runtime, workspace, thread, and instrumentation evidence attached to an Issue Report.
+_Avoid_: raw terminal dump, source snapshot, telemetry upload
+
+## Production Diagnostics Relationships
+
+- An **Issue Report** contains exactly one user description
+- An **Issue Report** may include one **Diagnostic Capture**
+- A **Diagnostic Capture** is scoped to the current workspace context by default
+- A **Diagnostic Capture** excludes raw terminal output, source snippets, environment values, API keys, tokens, and provider credentials

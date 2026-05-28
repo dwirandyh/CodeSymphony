@@ -88,6 +88,10 @@ const DEBUG_LOG_BUFFER_LIMIT = 4000;
 const runtimeDebugBuffer: DebugLogEntry[] = [];
 let lastDebugLogAppendError: string | null = null;
 
+export function getRuntimeDebugEntries(): DebugLogEntry[] {
+  return runtimeDebugBuffer.slice();
+}
+
 function appendDebugLogEntries(entries: DebugLogEntry[]): number {
   if (entries.length === 0) {
     return 0;

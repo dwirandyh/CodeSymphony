@@ -3,6 +3,7 @@ import type { WorkspaceTerminalTab } from "../../components/workspace/WorkspaceH
 
 export const WORKSPACE_TERMINAL_UI_STORAGE_KEY = "codesymphony:workspace:terminal-ui:v1";
 export const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
+const AVAILABLE_BOTTOM_PANEL_TABS = new Set(["setup-script", "terminal", "run"]);
 
 export type BottomPanelWorktreeState = {
   activeTab: string;
@@ -76,14 +77,17 @@ function sanitizeBottomPanelState(value: unknown): BottomPanelWorktreeState | nu
   if (!isPlainObject(value)) {
     return null;
   }
-
   return {
-    activeTab: sanitizeString(value.activeTab, DEFAULT_BOTTOM_PANEL_TAB),
+    activeTab: normalizeBottomPanelActiveTab(sanitizeString(value.activeTab, DEFAULT_BOTTOM_PANEL_TAB)),
     openSignal: sanitizeNonNegativeInteger(value.openSignal, 0),
     runScriptActive: sanitizeBoolean(value.runScriptActive, false),
     runScriptSessionId: sanitizeNullableString(value.runScriptSessionId),
     collapsed: sanitizeBoolean(value.collapsed, true),
   };
+}
+
+function normalizeBottomPanelActiveTab(activeTab: string): string {
+  return AVAILABLE_BOTTOM_PANEL_TABS.has(activeTab) ? activeTab : DEFAULT_BOTTOM_PANEL_TAB;
 }
 
 function sanitizeTerminalTabsState(value: unknown): WorkspaceTerminalTabsState | null {
@@ -162,7 +166,15 @@ export function getBottomPanelState(
     };
   }
 
-  return state[worktreeId] ?? {
+  const current = state[worktreeId];
+  if (current) {
+    return {
+      ...current,
+      activeTab: normalizeBottomPanelActiveTab(current.activeTab),
+    };
+  }
+
+  return {
     activeTab: DEFAULT_BOTTOM_PANEL_TAB,
     openSignal: 0,
     runScriptActive: false,

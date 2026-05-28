@@ -536,6 +536,24 @@ export const ClipboardTextSchema = z.object({
 });
 export type ClipboardText = z.infer<typeof ClipboardTextSchema>;
 
+export const CreateIssueReportInputSchema = z.object({
+  description: z.string().trim().min(1),
+  repositoryId: z.string().trim().min(1).nullable().optional(),
+  worktreeId: z.string().trim().min(1).nullable().optional(),
+  threadId: z.string().trim().min(1).nullable().optional(),
+});
+export type CreateIssueReportInput = z.infer<typeof CreateIssueReportInputSchema>;
+
+export const IssueReportResultSchema = z.object({
+  id: z.string(),
+  directoryPath: z.string(),
+  issuePath: z.string(),
+  diagnosticsPath: z.string(),
+  debugLogPath: z.string(),
+  createdAt: z.string(),
+});
+export type IssueReportResult = z.infer<typeof IssueReportResultSchema>;
+
 export const UpdateAndroidClipboardInputSchema = z.object({
   text: z.string(),
   paste: z.boolean().optional(),
@@ -1294,6 +1312,11 @@ export const OpenInAppInputSchema = z.object({
   targetPath: z.string().trim().min(1),
 });
 export type OpenInAppInput = z.infer<typeof OpenInAppInputSchema>;
+
+export const OpenPathInputSchema = z.object({
+  targetPath: z.string().trim().min(1),
+});
+export type OpenPathInput = z.infer<typeof OpenPathInputSchema>;
 
 // ── Model Provider Types ──
 

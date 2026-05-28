@@ -14,7 +14,6 @@ import type { WorkspaceFileTab } from "./WorkspaceHeader";
 import { buildQuickFileItems, filterQuickFileItems } from "./quickFilePickerUtils";
 import type { ScriptOutputEntry } from "./ScriptOutputTab";
 import { ScriptOutputTab } from "./ScriptOutputTab";
-import { DebugConsoleTab } from "./DebugConsoleTab";
 import { TerminalTab, type TerminalTabHandle } from "./TerminalTab";
 export { MobileActionBar } from "./MobileActionBar";
 
@@ -87,7 +86,7 @@ function getReviewActionLabel(reviewKind?: ReviewKind | null, reviewRef?: Review
   return reviewKind === "mr" ? "Create MR" : "Create PR";
 }
 
-type MobileUtilityTab = "setup-script" | "terminal" | "run" | "debug";
+type MobileUtilityTab = "setup-script" | "terminal" | "run";
 
 type MobileUtilityMeta = {
   title: string;
@@ -97,7 +96,7 @@ type MobileUtilityMeta = {
 };
 
 function normalizeMobileUtilityTab(tab: string): MobileUtilityTab {
-  if (tab === "terminal" || tab === "run" || tab === "debug") {
+  if (tab === "terminal" || tab === "run") {
     return tab;
   }
 
@@ -137,13 +136,11 @@ function getMobileUtilityMeta({
   latestSetupOutput,
   runScriptActive,
   worktreePath,
-  selectedThreadId,
 }: {
   tab: MobileUtilityTab;
   latestSetupOutput: ScriptOutputEntry | null;
   runScriptActive: boolean;
   worktreePath: string | null;
-  selectedThreadId: string | null;
 }): MobileUtilityMeta {
   const worktreeLabel = worktreePath ? fileName(worktreePath) : "this worktree";
 
@@ -164,17 +161,6 @@ function getMobileUtilityMeta({
         : "Monitor the run console here when a script session is started.",
       badge: runScriptActive ? "Running" : "Standby",
       badgeVariant: runScriptActive ? "default" : "outline",
-    };
-  }
-
-  if (tab === "debug") {
-    return {
-      title: "Debug Console",
-      subtitle: selectedThreadId
-        ? "Frontend and runtime logs, scoped to the active thread when possible."
-        : "Frontend and runtime logs for the current worktree.",
-      badge: "Logs",
-      badgeVariant: "secondary",
     };
   }
 
@@ -810,6 +796,7 @@ export function MobileMoreSheet({
   onOpenRepositories,
   onOpenDevices,
   onOpenSettings,
+  onOpenIssueReport,
   onOpenUtility,
 }: {
   open: boolean;
@@ -819,6 +806,7 @@ export function MobileMoreSheet({
   onOpenRepositories: () => void;
   onOpenDevices: () => void;
   onOpenSettings: () => void;
+  onOpenIssueReport: () => void;
   onOpenUtility: (tab: string) => void;
 }) {
   return (
@@ -841,6 +829,12 @@ export function MobileMoreSheet({
                 onClick={onOpenSettings}
               />
               <SectionButton
+                icon={Bug}
+                title="Report Issue"
+                description="Create a local diagnostic bundle for the current workspace."
+                onClick={onOpenIssueReport}
+              />
+              <SectionButton
                 icon={Smartphone}
                 title="Devices"
                 description="View Android emulators/devices and iOS simulators in one place."
@@ -853,7 +847,7 @@ export function MobileMoreSheet({
           <div className="overflow-hidden rounded-2xl border border-border/30 bg-background/45">
             <div className="border-b border-border/20 px-3 py-3">
               <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Utilities</div>
-              <p className="mt-1 text-xs text-muted-foreground">Focused tools for setup, shell access, runs, and logs.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Focused tools for setup, shell access, and runs.</p>
             </div>
             <div className="divide-y divide-border/15">
               <MobileUtilityRow
@@ -882,14 +876,6 @@ export function MobileMoreSheet({
                 onClick={() => onOpenUtility("run")}
                 disabled={!hasWorktree}
               />
-              <MobileUtilityRow
-                icon={Bug}
-                title="Debug Console"
-                description="Runtime and frontend logs for this workspace."
-                badge="Logs"
-                onClick={() => onOpenUtility("debug")}
-                disabled={!hasWorktree}
-              />
             </div>
           </div>
         </div>
@@ -904,7 +890,6 @@ export function MobileUtilitiesSheet({
   onBack,
   worktreeId,
   worktreePath,
-  selectedThreadId,
   scriptOutputs,
   activeTab,
   onRerunSetup,
@@ -918,7 +903,6 @@ export function MobileUtilitiesSheet({
   onBack: () => void;
   worktreeId: string | null;
   worktreePath: string | null;
-  selectedThreadId: string | null;
   scriptOutputs: ScriptOutputEntry[];
   activeTab: string;
   onRerunSetup?: () => void;
@@ -942,8 +926,7 @@ export function MobileUtilitiesSheet({
     latestSetupOutput,
     runScriptActive,
     worktreePath,
-    selectedThreadId,
-  }), [currentTab, latestSetupOutput, runScriptActive, selectedThreadId, worktreePath]);
+  }), [currentTab, latestSetupOutput, runScriptActive, worktreePath]);
   const [terminalSessionVersion, setTerminalSessionVersion] = useState(0);
   const terminalRef = useRef<TerminalTabHandle | null>(null);
   const runTerminalRef = useRef<TerminalTabHandle | null>(null);
@@ -1197,14 +1180,6 @@ export function MobileUtilitiesSheet({
                   Start the run script from the workspace header to stream it here.
                 </div>
               )}
-            </div>
-          </div>
-        ) : null}
-
-        {currentTab === "debug" ? (
-          <div className="min-h-0 flex-1 overflow-hidden px-1.5 pt-1.5">
-            <div className="h-full overflow-hidden rounded-t-[20px] border border-b-0 border-border/20 bg-card/30">
-              <DebugConsoleTab worktreeId={worktreeId} selectedThreadId={selectedThreadId} />
             </div>
           </div>
         ) : null}

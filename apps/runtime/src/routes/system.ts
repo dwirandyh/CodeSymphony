@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { ClipboardTextSchema, OpenInAppInputSchema } from "@codesymphony/shared-types";
+import { ClipboardTextSchema, OpenInAppInputSchema, OpenPathInputSchema } from "@codesymphony/shared-types";
 
 export async function registerSystemRoutes(app: FastifyInstance) {
   app.post("/system/pick-directory", async (_request, reply) => {
@@ -76,6 +76,17 @@ export async function registerSystemRoutes(app: FastifyInstance) {
       return reply.code(204).send();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to open in app";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/system/open-path", async (request, reply) => {
+    try {
+      const input = OpenPathInputSchema.parse(request.body);
+      await app.systemService.openFileDefaultApp(input.targetPath);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to open path";
       return reply.code(400).send({ error: message });
     }
   });
