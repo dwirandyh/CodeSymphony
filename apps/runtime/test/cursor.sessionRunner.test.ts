@@ -120,7 +120,7 @@ describe("cursor session runner", () => {
     ]);
   });
 
-  it("streams text, tools, permission requests, and plan events from Cursor ACP", async () => {
+  it("streams text, tools, auto-approved workspace edits, and plan events from Cursor ACP", async () => {
     const spawnMock = vi.fn(() => createMockCursorChild({
       availableModels: [
         { modelId: "default[]", name: "Auto" },
@@ -295,15 +295,7 @@ describe("cursor session runner", () => {
         output: "Applied change",
       },
     ]);
-    expect(permissionRequests).toHaveLength(1);
-    expect(permissionRequests[0]).toMatchObject({
-      toolName: "Edit",
-      blockedPath: "src/config.ts",
-      toolInput: {
-        path: "src/config.ts",
-        newString: "export const enabled = true;",
-      },
-    });
+    expect(permissionRequests).toHaveLength(0);
     expect(plans).toEqual([
       {
         filePath: ".cursor/plans/ship-cursor.plan.md",
@@ -1607,6 +1599,32 @@ describe("cursor session runner", () => {
       permissionMode: "plan",
       threadPermissionMode: "full_access",
     })).toBe("plan");
+
+    expect(__testing.shouldAutoApproveCursorWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      acpMode: "agent",
+      toolName: "Edit",
+      toolInput: {
+        path: "src/main.ts",
+      },
+      blockedPath: "/tmp/worktree/src/main.ts",
+    })).toBe(true);
+    expect(__testing.shouldAutoApproveCursorWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      acpMode: "agent",
+      toolName: "Edit",
+      toolInput: {
+        path: "../outside.ts",
+      },
+    })).toBe(false);
+    expect(__testing.shouldAutoApproveCursorWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      acpMode: "plan",
+      toolName: "Edit",
+      toolInput: {
+        path: "src/main.ts",
+      },
+    })).toBe(false);
 
     expect(__testing.buildCursorPlanMarkdown([
       { content: "Inspect the repo", status: "completed" },

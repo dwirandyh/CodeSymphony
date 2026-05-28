@@ -2995,7 +2995,7 @@ export function useChatSession(
     let createdThreadId: string | null = null;
     try {
       const created = await api.getOrCreatePrMrThread(selectedWorktreeId, {
-        permissionMode: composerPermissionMode,
+        permissionMode: "full_access",
         ...buildPreferredSelectionInput("pullRequest"),
       });
       createdThreadId = created.id;

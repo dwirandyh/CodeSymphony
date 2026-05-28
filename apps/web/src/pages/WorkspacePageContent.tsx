@@ -3102,11 +3102,17 @@ export function WorkspacePage() {
     || (!selectedReviewRef && !reviewLookupAvailable)
     || (!selectedReviewRef && prMrThreadIsActiveOrPending)
   );
-  const prMrActionTitle = selectedWorktreeIsBaseBranch
-    ? "Cannot start a PR/MR thread from the base branch"
-    : (!selectedReviewRef && prMrThreadIsActiveOrPending)
-      ? "PR/MR thread is already active"
-      : repositoryReviews.data?.unavailableReason;
+  const prMrActionTitle = !repos.selectedWorktree
+    ? "Select a worktree before starting a PR/MR thread"
+    : !selectedWorktreeOperational
+      ? "Wait for the worktree to finish preparing before starting a PR/MR thread"
+      : selectedWorktreeIsBaseBranch
+        ? "Cannot start a PR/MR thread from the base branch"
+        : (!selectedReviewRef && prMrThreadIsActiveOrPending)
+          ? "PR/MR thread is already active"
+          : (!selectedReviewRef && !reviewLookupAvailable)
+            ? (repositoryReviews.data?.unavailableReason ?? "PR/MR creation is unavailable for this worktree")
+            : undefined;
 
   const handleRerunSetup = useCallback(() => {
     const worktreeId = repos.selectedWorktreeId;

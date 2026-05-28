@@ -91,6 +91,28 @@ describe("MobileGitSheet", () => {
 
     expect(onPrMrAction).toHaveBeenCalledTimes(1);
   });
+
+  it("exposes the disabled PR/MR action reason on mobile", () => {
+    act(() => {
+      root.render(
+        <MobileGitSheet
+          {...baseProps}
+          reviewKind="mr"
+          onPrMrAction={vi.fn()}
+          prMrActionDisabled
+          prMrActionTitle="Cannot start a PR/MR thread from the base branch"
+        />,
+      );
+    });
+
+    const button = Array.from(container.querySelectorAll("button")).find((element) =>
+      element.textContent?.includes("Create MR")
+    );
+
+    expect(button?.getAttribute("aria-label")).toBe("Create MR: Cannot start a PR/MR thread from the base branch");
+    expect(button?.getAttribute("title")).toBe("Cannot start a PR/MR thread from the base branch");
+    expect((button as HTMLButtonElement | undefined)?.disabled).toBe(true);
+  });
 });
 
 describe("MobileMoreSheet", () => {

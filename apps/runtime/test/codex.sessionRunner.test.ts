@@ -8,6 +8,7 @@ import {
   resolveCodexPlanContent,
   resolveCodexRuntimePolicy,
   selectPrimaryCodexFileChange,
+  shouldAutoApproveCodexWorkspaceEdit,
   shouldAutoDeclineCodexPlanApproval,
 } from "../src/codex/sessionRunner";
 import { classifyFileChange } from "../src/codex/toolContext";
@@ -309,6 +310,53 @@ describe("codex session runner plan helpers", () => {
     expect(requestedPermissionsIncludeFileWrite({
       fileSystem: {
         read: ["/tmp/input.txt"],
+      },
+    })).toBe(false);
+  });
+
+  it("auto-approves only in-worktree Codex edit approvals outside plan mode", () => {
+    expect(shouldAutoApproveCodexWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      permissionMode: "default",
+      toolName: "Edit",
+      toolInput: {
+        file_path: "src/main.ts",
+      },
+      blockedPath: "/tmp/worktree/src/main.ts",
+    })).toBe(true);
+
+    expect(shouldAutoApproveCodexWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      permissionMode: "default",
+      toolName: "Permissions",
+      toolInput: {
+        permissions: {
+          fileSystem: {
+            write: ["src/main.ts", "/tmp/worktree/docs/guide.md"],
+          },
+        },
+      },
+    })).toBe(true);
+
+    expect(shouldAutoApproveCodexWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      permissionMode: "default",
+      toolName: "Permissions",
+      toolInput: {
+        permissions: {
+          fileSystem: {
+            write: ["src/main.ts", "/tmp/outside.ts"],
+          },
+        },
+      },
+    })).toBe(false);
+
+    expect(shouldAutoApproveCodexWorkspaceEdit({
+      cwd: "/tmp/worktree",
+      permissionMode: "plan",
+      toolName: "Edit",
+      toolInput: {
+        file_path: "src/main.ts",
       },
     })).toBe(false);
   });

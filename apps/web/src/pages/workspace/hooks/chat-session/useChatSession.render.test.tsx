@@ -755,7 +755,7 @@ describe("useChatSession", () => {
     });
 
     expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1", {
-      permissionMode: "default",
+      permissionMode: "full_access",
       agent: "claude",
       model: "claude-sonnet-4-6",
       modelProviderId: null,
