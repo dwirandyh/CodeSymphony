@@ -28,15 +28,19 @@ export function invalidateCachedWorktreeGitData(worktreeId: string) {
   }
 }
 
-export async function getCachedWorktreeGitStatus(worktreeId: string, worktreePath: string): Promise<GitStatusResult> {
+export async function getCachedWorktreeGitStatus(
+  worktreeId: string,
+  worktreePath: string,
+  options?: { refresh?: boolean },
+): Promise<GitStatusResult> {
   const now = Date.now();
   const cached = cachedGitStatusByWorktreeId.get(worktreeId);
-  if (cached && cached.expiresAt > now) {
+  if (options?.refresh !== true && cached && cached.expiresAt > now) {
     return cached.value;
   }
 
   const inFlight = inFlightGitStatusByWorktreeId.get(worktreeId);
-  if (inFlight) {
+  if (options?.refresh !== true && inFlight) {
     return inFlight;
   }
 

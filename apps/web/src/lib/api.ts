@@ -875,8 +875,10 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to revise plan");
     }
   },
-  getGitStatus: (worktreeId: string) =>
-    request<GitStatus>(`/worktrees/${worktreeId}/git/status`),
+  getGitStatus: (worktreeId: string, opts?: { refresh?: boolean }) => {
+    const params = opts?.refresh ? "?refresh=true" : "";
+    return request<GitStatus>(`/worktrees/${worktreeId}/git/status${params}`);
+  },
   getGitBranchDiffSummary: (worktreeId: string) =>
     request<GitBranchDiffSummary>(`/worktrees/${worktreeId}/git/branch-diff-summary`),
   getGitDiff: (worktreeId: string, opts?: { filePath?: string }) => {

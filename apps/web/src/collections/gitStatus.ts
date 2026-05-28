@@ -14,6 +14,8 @@ export type GitStatusRow = GitStatus & {
   worktreeId: string;
 };
 
+const forceNextGitStatusFetchByWorktreeId = new Set<string>();
+
 export function toPlainGitStatus(row: GitStatusRow): GitStatus {
   return {
     branch: row.branch,
@@ -40,8 +42,9 @@ function createGitStatusCollection(queryClient: QueryClient, worktreeId: string)
         queryKey: queryKeys.worktrees.gitStatus(worktreeId),
         queryFn: async () => {
           await waitForWorkspaceStartupBootstrap();
+          const refresh = forceNextGitStatusFetchByWorktreeId.delete(worktreeId);
 
-          if (!seededFromLocalState) {
+          if (!refresh && !seededFromLocalState) {
             seededFromLocalState = true;
 
             const currentRows = readCurrentRows();
@@ -58,7 +61,7 @@ function createGitStatusCollection(queryClient: QueryClient, worktreeId: string)
             }
           }
 
-          return [{ worktreeId, ...(await api.getGitStatus(worktreeId)) }];
+          return [{ worktreeId, ...(await api.getGitStatus(worktreeId, { refresh })) }];
         },
         queryClient,
         getKey: (row) => row.worktreeId,
@@ -114,6 +117,11 @@ export function getCachedGitStatus(queryClient: QueryClient, worktreeId: string)
 }
 
 export function refetchGitStatusCollection(queryClient: QueryClient, worktreeId: string) {
+  return getGitStatusCollection(queryClient, worktreeId).utils.refetch();
+}
+
+export function refetchGitStatusCollectionFresh(queryClient: QueryClient, worktreeId: string) {
+  forceNextGitStatusFetchByWorktreeId.add(worktreeId);
   return getGitStatusCollection(queryClient, worktreeId).utils.refetch();
 }
 

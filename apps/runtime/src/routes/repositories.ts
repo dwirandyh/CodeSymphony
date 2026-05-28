@@ -28,6 +28,9 @@ import { appendRuntimeDebugLog } from "./debug.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
+const gitStatusQuery = z.object({
+  refresh: z.string().optional().transform((value) => value === "true" || value === "1"),
+});
 // These sidebar metadata requests are non-critical and expensive enough that
 // recomputing them on every page refresh can stall other thread bootstrap
 // requests behind the browser's per-origin connection limits.
@@ -601,6 +604,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
   app.get("/worktrees/:id/git/status", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
+    const query = gitStatusQuery.parse(request.query);
     let worktree;
     try {
       worktree = await getOperationalWorktree(app, params.id);
@@ -611,7 +615,9 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const status = await getCachedWorktreeGitStatus(worktree.id, worktree.path);
+      const status = await getCachedWorktreeGitStatus(worktree.id, worktree.path, {
+        refresh: query.refresh === true,
+      });
       return { data: status };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to get git status";
