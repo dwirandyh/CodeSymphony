@@ -50,7 +50,7 @@ type BottomPanelContentProps = Omit<BottomPanelBodyProps, "activeTab" | "collaps
 type BottomPanelBodyProps = {
     collapsed: boolean;
     height: number;
-    panelRef: RefObject<HTMLDivElement | null>;
+    panelRef: RefObject<HTMLDivElement>;
     activeTab: string;
     setupOutputs: ScriptOutputEntry[];
     onRerunSetup?: () => void;

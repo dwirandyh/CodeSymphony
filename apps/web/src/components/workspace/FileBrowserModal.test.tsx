@@ -3,16 +3,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileBrowserModal } from "./FileBrowserModal";
 
+const browseFilesystemMock = vi.hoisted(() => vi.fn());
+
 vi.mock("../../lib/api", () => ({
   api: {
-    browseFilesystem: vi.fn().mockResolvedValue({
-      currentPath: "/home/user",
-      parentPath: "/home",
-      entries: [
-        { name: "project", type: "directory", isGitRepo: true },
-        { name: "docs", type: "directory", isGitRepo: false },
-      ],
-    }),
+    browseFilesystem: browseFilesystemMock,
   },
 }));
 
@@ -24,6 +19,16 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   localStorage.clear();
+  browseFilesystemMock.mockReset();
+  browseFilesystemMock.mockResolvedValue({
+    currentPath: "/home/user",
+    currentPathIsGitRepo: true,
+    parentPath: "/home",
+    entries: [
+      { name: "project", type: "directory", isGitRepo: true },
+      { name: "docs", type: "directory", isGitRepo: false },
+    ],
+  });
 });
 
 afterEach(() => {
@@ -122,5 +127,51 @@ describe("FileBrowserModal", () => {
     await flushEffects(100);
 
     expect(document.body.querySelector('button[title="/new/path"]')).toBeTruthy();
+  });
+
+  it("starts from the parent of the active repository path when provided", async () => {
+    await act(async () => {
+      root.render(
+        <FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} initialPath="/home/user/project-a" />,
+      );
+    });
+    await flushEffects(100);
+
+    expect(browseFilesystemMock).toHaveBeenCalledWith("/home/user");
+  });
+
+  it("hides hidden folders by default and disables selection outside git repos", async () => {
+    browseFilesystemMock.mockResolvedValue({
+      currentPath: "/home/user",
+      currentPathIsGitRepo: false,
+      parentPath: "/home",
+      entries: [
+        { name: "project", type: "directory", isGitRepo: true },
+        { name: ".ssh", type: "directory", isGitRepo: false },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} />);
+    });
+    await flushEffects(100);
+
+    expect(document.body.textContent).toContain("project");
+    expect(document.body.textContent).not.toContain(".ssh");
+
+    const selectButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Select this directory"),
+    ) as HTMLButtonElement;
+    expect(selectButton.disabled).toBe(true);
+
+    const toggleButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Show hidden"),
+    ) as HTMLButtonElement;
+
+    await act(async () => {
+      toggleButton.click();
+    });
+
+    expect(document.body.textContent).toContain(".ssh");
   });
 });

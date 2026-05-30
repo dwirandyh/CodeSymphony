@@ -79,7 +79,7 @@ class MockEventSource {
     this.readyState = MockEventSource.CLOSED;
   }
 
-  emit(type: string, payload: ChatEvent) {
+  emit(type: string, payload: ChatEvent | Record<string, unknown>) {
     const event = { data: JSON.stringify(payload) } as MessageEvent<string>;
     for (const listener of this.listeners.get(type) ?? []) {
       listener(event);
@@ -1356,5 +1356,58 @@ describe("useThreadEventStream", () => {
       "event-8",
     ]);
     expect(latestWaitingAssistant).toBeNull();
+  });
+
+  it("keeps an open stream healthy when heartbeat events arrive without chat events", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot([
+      makeEvent({
+        id: "event-1",
+        threadId,
+        idx: 1,
+        type: "tool.started",
+        payload: { toolUseId: "tool-1", toolName: "Read" },
+      }),
+    ]));
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+      {
+        id: threadId,
+        worktreeId: "wt-1",
+        title: "Thread",
+        kind: "default",
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: true,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      } satisfies ChatThread,
+    ]);
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.readyState = MockEventSource.OPEN;
+      stream.onopen?.();
+    });
+    expect(getThreadStreamConnectionState(threadId)).toBe("healthy");
+
+    await act(async () => {
+      vi.advanceTimersByTime(6_000);
+      stream.emit("heartbeat", { ts: "2026-01-01T00:00:06.000Z" });
+      vi.advanceTimersByTime(4_000);
+      await Promise.resolve();
+    });
+
+    expect(getThreadStreamConnectionState(threadId)).toBe("healthy");
+    expect(getThreadStatusSnapshotMock).not.toHaveBeenCalled();
+    expect(getTimelineSnapshotMock).not.toHaveBeenCalled();
   });
 });

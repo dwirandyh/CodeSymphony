@@ -22,19 +22,46 @@ function addRecentPath(path: string) {
   localStorage.setItem(RECENT_PATHS_KEY, JSON.stringify(updated));
 }
 
+function getParentDirectoryPath(inputPath: string): string | null {
+  const normalizedPath = inputPath.trim().replace(/\/+$/, "");
+  if (normalizedPath.length === 0) {
+    return null;
+  }
+  const lastSlashIndex = normalizedPath.lastIndexOf("/");
+  if (lastSlashIndex < 0) {
+    return null;
+  }
+  if (lastSlashIndex === 0) {
+    return "/";
+  }
+  return normalizedPath.slice(0, lastSlashIndex);
+}
+
+function resolveInitialBrowsePath(initialPath?: string | null): string | undefined {
+  const parentPath = initialPath ? getParentDirectoryPath(initialPath) : null;
+  if (parentPath) {
+    return parentPath;
+  }
+
+  return getRecentPaths()[0];
+}
+
 interface FileBrowserModalProps {
   open: boolean;
   onClose: () => void;
   onSelect: (path: string) => void;
+  initialPath?: string | null;
 }
 
-export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalProps) {
+export function FileBrowserModal({ open, onClose, onSelect, initialPath }: FileBrowserModalProps) {
   const [currentPath, setCurrentPath] = useState<string>("");
+  const [currentPathIsGitRepo, setCurrentPathIsGitRepo] = useState(false);
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [entries, setEntries] = useState<FilesystemEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [showHiddenEntries, setShowHiddenEntries] = useState(false);
   const [recentPaths, setRecentPaths] = useState<string[]>(() => getRecentPaths());
 
   const browse = useCallback(async (path?: string) => {
@@ -44,10 +71,14 @@ export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalPr
     try {
       const result = await api.browseFilesystem(path);
       setCurrentPath(result.currentPath);
+      setCurrentPathIsGitRepo(result.currentPathIsGitRepo);
       setParentPath(result.parentPath);
       setEntries(result.entries);
+      return true;
     } catch (e) {
+      setCurrentPathIsGitRepo(false);
       setError(e instanceof Error ? e.message : "Failed to browse filesystem");
+      return false;
     } finally {
       setLoading(false);
     }
@@ -56,15 +87,29 @@ export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalPr
   useEffect(() => {
     if (open) {
       setRecentPaths(getRecentPaths());
-      void browse();
+      setShowHiddenEntries(false);
+      void (async () => {
+        const preferredPath = resolveInitialBrowsePath(initialPath);
+        if (preferredPath && await browse(preferredPath)) {
+          return;
+        }
+        await browse();
+      })();
     }
-  }, [open, browse]);
+  }, [browse, initialPath, open]);
 
   const filteredEntries = useMemo(() => {
-    if (!filter) return entries;
     const lower = filter.toLowerCase();
-    return entries.filter((e) => e.name.toLowerCase().includes(lower));
-  }, [entries, filter]);
+    return entries.filter((entry) => {
+      if (!showHiddenEntries && entry.name.startsWith(".")) {
+        return false;
+      }
+      if (!filter) {
+        return true;
+      }
+      return entry.name.toLowerCase().includes(lower);
+    });
+  }, [entries, filter, showHiddenEntries]);
 
   const pathSegments = useMemo(() => {
     if (!currentPath) return [];
@@ -76,6 +121,9 @@ export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalPr
   }, [currentPath]);
 
   function handleSelect() {
+    if (!currentPathIsGitRepo) {
+      return;
+    }
     addRecentPath(currentPath);
     setRecentPaths(getRecentPaths());
     onSelect(currentPath);
@@ -128,15 +176,25 @@ export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalPr
         </nav>
 
         {/* Filter input */}
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="Filter directories..."
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            className="h-8 w-full rounded-md border border-border bg-background pl-8 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Filter directories..."
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              className="h-8 w-full rounded-md border border-border bg-background pl-8 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowHiddenEntries((current) => !current)}
+            className="shrink-0 rounded-md border border-border px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary/40 hover:text-foreground"
+            aria-pressed={showHiddenEntries}
+          >
+            {showHiddenEntries ? "Hide hidden" : "Show hidden"}
+          </button>
         </div>
 
         {/* Recent paths */}
@@ -216,13 +274,20 @@ export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalPr
 
         {/* Footer */}
         <div className="flex items-center justify-between gap-3">
-          <p className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground" title={currentPath}>
-            {currentPath}
-          </p>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[11px] text-muted-foreground" title={currentPath}>
+              {currentPath}
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {currentPathIsGitRepo
+                ? "Git repository selected."
+                : "Open a Git repository directory to enable selection."}
+            </p>
+          </div>
           <button
             type="button"
             onClick={handleSelect}
-            disabled={loading || !currentPath}
+            disabled={loading || !currentPath || !currentPathIsGitRepo}
             className="shrink-0 rounded-lg bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             Select this directory

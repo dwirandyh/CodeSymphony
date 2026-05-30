@@ -941,7 +941,7 @@ export function useChatSession(
     ? null
     : desiredThreadId;
 
-  const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [trackedThreads, setThreads] = useState<ChatThread[]>([]);
   const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(null);
 
   const [sendingMessage, setSendingMessage] = useState(false);
@@ -989,19 +989,7 @@ export function useChatSession(
     modelProviderId: string | null;
   } | null>(null);
   const manuallySelectedThreadIdsRef = useRef<Set<string>>(new Set());
-
-  const selectedThreadId = selectedThreadIdOverrideRef.current ?? selectedThreadIdState;
-  activeThreadIdRef.current = selectedThreadId;
-  waitingAssistantRef.current = waitingAssistant;
-  threadsRef.current = threads;
-
-  const threadByIdMap = threadByIdRef.current;
-  if (threadByIdMap.size !== threads.length || threads.some((t) => threadByIdMap.get(t.id) !== t)) {
-    threadByIdMap.clear();
-    for (const thread of threads) {
-      threadByIdMap.set(thread.id, thread);
-    }
-  }
+  const prevWorktreeIdRef2 = useRef<string | null>(selectedWorktreeId);
 
   const {
     data: queriedThreads,
@@ -1014,15 +1002,80 @@ export function useChatSession(
     () => (cachedThreadsQueryData ?? []).map((thread) => toPlainChatThread(thread)),
     [cachedThreadsQueryData],
   );
+  const requestedThreadId =
+    rawRequestedThreadId != null
+    && locallyDeletedThreadIdsRef.current.has(rawRequestedThreadId)
+    && (allowUnselectedThread || !autoCreateInitialThread)
+      ? null
+      : rawRequestedThreadId;
+  const renderWorktreeChanged = selectedWorktreeId !== prevWorktreeIdRef2.current;
+  const renderWorktreeSwitchSeed = useMemo(() => {
+    if (!renderWorktreeChanged) {
+      return null;
+    }
+
+    if (!selectedWorktreeId) {
+      return { threads: EMPTY_THREADS, selectedThreadId: null };
+    }
+
+    if (shouldUseProvisioningPlaceholder) {
+      const placeholderSelection = lastThreadSelectionRef.current?.worktreeId === selectedWorktreeId
+        ? lastThreadSelectionRef.current
+        : buildPreferredSelectionInput("newChat");
+      const placeholderThread = createPendingWorktreePlaceholderThread({
+        worktreeId: selectedWorktreeId,
+        permissionMode: pendingComposerPermissionMode,
+        selection: placeholderSelection,
+      });
+
+      return {
+        threads: [placeholderThread],
+        selectedThreadId: placeholderThread.id,
+      };
+    }
+
+    if (selectedWorktreeProvisioning) {
+      return { threads: EMPTY_THREADS, selectedThreadId: null };
+    }
+
+    return resolveWorktreeSwitchSeed({
+      cachedThreads: getCachedThreadsForWorktree(queryClient, selectedWorktreeId, cachedThreadsQuery),
+      requestedThreadId,
+      optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+      locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
+      allowUnselectedThread,
+    });
+  }, [
+    allowUnselectedThread,
+    autoCreateInitialThread,
+    cachedThreadsQuery,
+    pendingComposerPermissionMode,
+    queryClient,
+    renderWorktreeChanged,
+    requestedThreadId,
+    selectedWorktreeId,
+    selectedWorktreeProvisioning,
+    shouldUseProvisioningPlaceholder,
+  ]);
+  const threads = renderWorktreeSwitchSeed?.threads ?? trackedThreads;
+  const selectedThreadIdOverride = renderWorktreeChanged ? null : selectedThreadIdOverrideRef.current;
+  const selectedThreadIdStateForRender = renderWorktreeChanged ? null : selectedThreadIdState;
+  const selectedThreadId =
+    selectedThreadIdOverride
+    ?? renderWorktreeSwitchSeed?.selectedThreadId
+    ?? selectedThreadIdStateForRender;
+  activeThreadIdRef.current = selectedThreadId;
+  waitingAssistantRef.current = waitingAssistant;
+  threadsRef.current = threads;
+
+  const threadByIdMap = threadByIdRef.current;
+  if (threadByIdMap.size !== threads.length || threads.some((t) => threadByIdMap.get(t.id) !== t)) {
+    threadByIdMap.clear();
+    for (const thread of threads) {
+      threadByIdMap.set(thread.id, thread);
+    }
+  }
   const queriedThreadsForSelection = useMemo(() => {
-    const shouldTreatLocallyDeletedRequestedThreadAsCleared =
-      rawRequestedThreadId != null
-      && locallyDeletedThreadIdsRef.current.has(rawRequestedThreadId)
-      && (allowUnselectedThread || !autoCreateInitialThread);
-    const requestedThreadId =
-      shouldTreatLocallyDeletedRequestedThreadAsCleared
-        ? null
-        : rawRequestedThreadId;
     if (queriedThreads != null && queriedThreads.length > 0) {
       return queriedThreads;
     }
@@ -1067,15 +1120,6 @@ export function useChatSession(
     threads,
     waitingAssistant?.threadId,
   ]);
-
-  const requestedThreadId =
-    rawRequestedThreadId != null
-    && locallyDeletedThreadIdsRef.current.has(rawRequestedThreadId)
-    && (allowUnselectedThread || !autoCreateInitialThread)
-      ? null
-      : rawRequestedThreadId;
-
-  const prevWorktreeIdRef2 = useRef<string | null>(selectedWorktreeId);
 
   const setSelectedThreadId = useCallback((threadId: string | null, options?: SetSelectedThreadOptions) => {
     if (
@@ -1491,15 +1535,14 @@ export function useChatSession(
     )
       ? selectedThreadId
       : null;
+  const requestedThreadListPending =
+    queriedThreadsLoading
+    || (queriedThreadsFetching && (queriedThreads?.length ?? 0) === 0);
   const requestedThreadResolutionPending =
     requestedThreadId != null
     && !requestedThreadSelectionDeferred
     && selectedThreadIdForData == null
-    && (
-      queriedThreadsLoading
-      || queriedThreads == null
-      || (queriedThreadsFetching && queriedThreads.length === 0)
-    );
+    && requestedThreadListPending;
   const { data: liveMessages } = useLiveQuery(
     () => selectedThreadIdForData ? getThreadCollections(selectedThreadIdForData).messagesCollection : undefined,
     [selectedThreadIdForData],

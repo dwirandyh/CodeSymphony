@@ -34,9 +34,13 @@ bun run --filter @codesymphony/runtime test -- chatService.permissions.test.ts
 # Build a single workspace
 bun run --filter @codesymphony/web build
 bun run --filter @codesymphony/runtime build
+
+# Build the signed production macOS .app bundle
+make build-macos-prod-app
 ```
 
 Makefile shortcuts are also available (`make dev`, `make test`, `make lint`, `make build`, `make db-init`).
+Use the Makefile for macOS app packaging: `make build-macos-prod-app` builds the signed `.app` bundle, and `make build-macos-prod` builds the signed `.app` plus DMG. Do not invoke the desktop package build scripts directly for macOS release builds.
 
 ## Architecture
 

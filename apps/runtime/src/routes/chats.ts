@@ -61,6 +61,10 @@ export function formatSseEvent(event: ChatEvent): string {
   return `id: ${event.idx}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
+function formatSseHeartbeat(): string {
+  return `event: heartbeat\ndata: ${JSON.stringify({ ts: new Date().toISOString() })}\n\n`;
+}
+
 function summarizeTimelineEnvelope(snapshot: ChatTimelineSnapshot) {
   return {
     timelineItemsCount: snapshot.timelineItems.length,
@@ -689,9 +693,9 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const bufferedEvents: ChatEvent[] = [];
       const heartbeat = setInterval(() => {
         if (!closed) {
-          reply.raw.write(": ping\n\n");
+          reply.raw.write(formatSseHeartbeat());
         }
-      }, 15000);
+      }, 5000);
 
       const cleanup = () => {
         if (closed) {

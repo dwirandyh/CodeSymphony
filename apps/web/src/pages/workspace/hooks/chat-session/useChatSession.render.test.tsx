@@ -1461,6 +1461,26 @@ describe("useChatSession", () => {
     expect(onThreadChange).toHaveBeenLastCalledWith(null);
   });
 
+  it("renders no-thread-selected when a desired startup thread is missing and the thread query is idle without data", async () => {
+    const onThreadChange = vi.fn();
+    threadsState.data = undefined;
+    threadsState.isLoading = false;
+    threadsState.isFetching = false;
+
+    renderHook("missing-thread", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+      onThreadChange,
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
+    expect(onThreadChange).toHaveBeenLastCalledWith(null);
+  });
+
   it("reselects desiredThreadId when it appears after an initial fallback", () => {
     threadsState.data = [makeThread("thread-b", true)];
     renderHook("thread-a");
@@ -2049,6 +2069,7 @@ describe("useChatSession", () => {
 
   it("marks a requested thread as loading while selection bootstrap is unresolved", () => {
     threadsState.data = undefined;
+    threadsState.isLoading = true;
 
     renderHook("thread-a");
 

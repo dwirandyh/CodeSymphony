@@ -83,6 +83,10 @@ const WorkspaceAutomationsPanel = lazy(loadWorkspaceAutomationsPanel);
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import {
+  pruneSettledWorktreeStatusOverrides,
+  reconcileWorktreeStatusOverrides,
+} from "./workspace/worktreeStatusOverrides";
+import {
   getJumpToWorktreeShortcutIndex,
   matchesCreateTerminalShortcut,
   matchesCreateThreadShortcut,
@@ -191,7 +195,7 @@ import {
   promoteSessionShortcutTarget,
   type SessionShortcutTarget,
 } from "./workspace/sessionShortcutTargets";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
 import { useCodexModels } from "../hooks/queries/useCodexModels";
@@ -1095,6 +1099,22 @@ export function WorkspacePage() {
   const backgroundStatusThreadSnapshot = useThreadsByWorktreeIds(backgroundStatusWorktreeIds, {
     enabled: enableSidebarWorktreeStatuses,
   });
+  const activeBackgroundThreadIds = useMemo(() => {
+    return new Set(
+      Object.values(backgroundStatusThreadSnapshot.threadsByWorktreeId)
+        .flatMap((threads) => threads)
+        .filter((thread) => thread.active)
+        .map((thread) => thread.id),
+    );
+  }, [backgroundStatusThreadSnapshot]);
+  const activeBackgroundThreadIdsByWorktreeId = useMemo(() => {
+    return Object.fromEntries(
+      Object.entries(backgroundStatusThreadSnapshot.threadsByWorktreeId).map(([worktreeId, threads]) => [
+        worktreeId,
+        new Set(threads.filter((thread) => thread.active).map((thread) => thread.id)),
+      ]),
+    );
+  }, [backgroundStatusThreadSnapshot]);
   const selectedWorktreeStatus = repos.selectedWorktree?.status ?? null;
   const selectedWorktreeOperational = selectedWorktreeStatus != null && isOperationalWorktreeStatus(selectedWorktreeStatus);
   const selectedWorktreePending = selectedWorktreeStatus != null && isPendingWorktreeStatus(selectedWorktreeStatus);
@@ -1347,37 +1367,74 @@ export function WorkspacePage() {
     } as const;
   }, [chat.selectedThreadUiStatus, repos.selectedWorktreeId, selectedThreadIdForLiveStatus]);
   const [worktreeStatusOverrides, setWorktreeStatusOverrides] = useState<Record<string, WorktreeStatusSummary>>({});
+  const worktreeStatusOverridesRef = useRef(worktreeStatusOverrides);
+  const applyWorktreeStatusOverrideUpdate = useCallback(
+    (resolveNext: (current: Record<string, WorktreeStatusSummary>) => Record<string, WorktreeStatusSummary>) => {
+      const current = worktreeStatusOverridesRef.current;
+      const next = resolveNext(current);
+      if (next === current) {
+        return;
+      }
+
+      worktreeStatusOverridesRef.current = next;
+      setWorktreeStatusOverrides(next);
+    },
+    [],
+  );
+  const overrideThreadIds = useMemo(
+    () =>
+      [...new Set(
+        Object.values(worktreeStatusOverrides)
+          .map((override) => override.threadId)
+          .filter((threadId): threadId is string => typeof threadId === "string" && threadId.length > 0),
+      )].sort(),
+    [worktreeStatusOverrides],
+  );
+  const overrideStatusSnapshotResults = useQueries({
+    queries: overrideThreadIds.map((threadId) => ({
+      queryKey: queryKeys.threads.statusSnapshot(threadId),
+      queryFn: () => api.getThreadStatusSnapshot(threadId),
+      enabled: enableSidebarWorktreeStatuses && threadId.length > 0,
+      staleTime: 15_000,
+    })),
+  });
+  const overrideStatusSnapshotsByThreadId = useMemo(() => {
+    const entries = overrideThreadIds.map((threadId, index) => [
+      threadId,
+      overrideStatusSnapshotResults[index]?.data ?? null,
+    ] as const);
+    return Object.fromEntries(entries);
+  }, [overrideStatusSnapshotResults, overrideThreadIds]);
   useEffect(() => {
-    const selectedWorktreeId = repos.selectedWorktreeId;
-    if (!selectedWorktreeId) {
-      return;
-    }
-
-    setWorktreeStatusOverrides((current) => {
-      if (!selectedWorktreeStatusOverride) {
-        if (!(selectedWorktreeId in current)) {
-          return current;
-        }
-
-        const next = { ...current };
-        delete next[selectedWorktreeId];
-        return next;
-      }
-
-      const existing = current[selectedWorktreeId];
-      if (
-        existing?.kind === selectedWorktreeStatusOverride.kind
-        && existing.threadId === selectedWorktreeStatusOverride.threadId
-      ) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [selectedWorktreeId]: selectedWorktreeStatusOverride,
-      };
+    applyWorktreeStatusOverrideUpdate((current) => {
+      return reconcileWorktreeStatusOverrides({
+        current,
+        selectedWorktreeId: repos.selectedWorktreeId,
+        selectedWorktreeStatusOverride,
+        activeThreadIdsByWorktreeId: activeBackgroundThreadIdsByWorktreeId,
+      });
     });
-  }, [repos.selectedWorktreeId, selectedWorktreeStatusOverride]);
+  }, [activeBackgroundThreadIdsByWorktreeId, applyWorktreeStatusOverrideUpdate, repos.selectedWorktreeId, selectedWorktreeStatusOverride]);
+  useEffect(() => {
+    applyWorktreeStatusOverrideUpdate((current) => {
+      return pruneSettledWorktreeStatusOverrides({
+        current,
+        selectedWorktreeId: repos.selectedWorktreeId,
+        statusSnapshotsByThreadId: overrideStatusSnapshotsByThreadId,
+        activeThreadIds: activeBackgroundThreadIds,
+        selectedWorktreeStatusOverride,
+      });
+    });
+  }, [
+    activeBackgroundThreadIds,
+    applyWorktreeStatusOverrideUpdate,
+    overrideStatusSnapshotsByThreadId,
+    repos.selectedWorktreeId,
+    selectedWorktreeStatusOverride,
+  ]);
+  useEffect(() => {
+    worktreeStatusOverridesRef.current = worktreeStatusOverrides;
+  }, [worktreeStatusOverrides]);
   const previousLiveScopeSelectionRef = useRef<WorkspaceLiveScopeSelection | null>(null);
   const [liveScopeSwitch, setLiveScopeSwitch] = useState<WorkspaceLiveScopeSwitch | null>(null);
 
@@ -4731,6 +4788,7 @@ export function WorkspacePage() {
             open={repos.fileBrowserOpen}
             onClose={() => repos.setFileBrowserOpen(false)}
             onSelect={(path) => void repos.attachRepositoryFromPath(path)}
+            initialPath={repos.selectedRepository?.rootPath ?? repos.repositories[0]?.rootPath ?? null}
           />
         </Suspense>
       ) : null}

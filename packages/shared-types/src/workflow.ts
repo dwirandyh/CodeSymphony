@@ -1239,6 +1239,7 @@ export type FilesystemBrowseQuery = z.infer<typeof FilesystemBrowseQuerySchema>;
 
 export const FilesystemBrowseResponseSchema = z.object({
   currentPath: z.string(),
+  currentPathIsGitRepo: z.boolean(),
   parentPath: z.string().nullable(),
   entries: z.array(FilesystemEntrySchema),
 });

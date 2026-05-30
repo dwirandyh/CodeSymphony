@@ -1,4 +1,4 @@
-import { startTransition, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, type MutableRefObject, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, FileCode2, Folder, FolderOpen, Loader2, X } from "lucide-react";
 import type { FileEntry, GitChangeEntry, GitChangeStatus } from "@codesymphony/shared-types";
@@ -316,7 +316,7 @@ function WorkspaceExplorerShell({
   empty: boolean;
   error: string | null;
   onClose: () => void;
-  scrollAreaRef: RefObject<HTMLDivElement | null>;
+  scrollAreaRef: MutableRefObject<HTMLDivElement | null>;
   showHeader?: boolean;
   children: ReactNode;
 }) {
@@ -342,7 +342,12 @@ function WorkspaceExplorerShell({
         </div>
       ) : null}
 
-      <ScrollArea ref={scrollAreaRef} className={cn("min-h-0 flex-1 px-2 py-2", !showHeader && "pb-4")}>
+      <ScrollArea
+        ref={(node) => {
+          scrollAreaRef.current = node;
+        }}
+        className={cn("min-h-0 flex-1 px-2 py-2", !showHeader && "pb-4")}
+      >
         {pending ? (
           <PendingExplorerSkeleton />
         ) : loading ? (

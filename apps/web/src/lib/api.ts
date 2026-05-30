@@ -1020,7 +1020,7 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to open path");
     }
   },
-  getDevices: () => request<DeviceInventorySnapshot>("/devices"),
+  getDevices: (signal?: AbortSignal) => request<DeviceInventorySnapshot>("/devices", signal ? { signal } : undefined),
   streamDevices: () => createEventSource("/devices/stream"),
   startDeviceStream: (deviceId: string, input: StartDeviceStreamInput = {}) =>
     request<DeviceStreamSession>(`/devices/${encodeURIComponent(deviceId)}/stream/start`, {

@@ -376,7 +376,14 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     let watchdogTimer: ReturnType<typeof setInterval> | null = null;
     let resyncInFlight = false;
     let lastStreamActivityAtMs = getNowMs();
+    let lastOpenAtMs: number | null = null;
+    let lastHeartbeatAtMs: number | null = null;
+    let lastChatEventAtMs: number | null = null;
     let lastResyncAttemptAtMs = 0;
+    let heartbeatCount = 0;
+    let chatEventCount = 0;
+    let staleResyncCount = 0;
+    let streamRestartCount = 0;
 
     const logLifecycle = (message: string, data?: Record<string, unknown>) => {
       debugLog("thread.stream.lifecycle", message, {
@@ -399,6 +406,33 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         worktreeId: selectedWorktreeId,
         ...(data ?? {}),
       }, { threadId: selectedThreadId, worktreeId: selectedWorktreeId });
+    };
+
+    const getAgeMs = (timestampMs: number | null, nowMs = getNowMs()) => {
+      return timestampMs == null ? null : nowMs - timestampMs;
+    };
+
+    const logHealth = (message: string, data?: Record<string, unknown>) => {
+      const nowMs = getNowMs();
+      debugLog("thread.stream.health", message, {
+        threadId: selectedThreadId,
+        worktreeId: selectedWorktreeId,
+        connectionState: getThreadStreamConnectionState(selectedThreadId),
+        eventSourceReadyState: stream?.readyState ?? null,
+        localNewestIdx: getThreadLastEventIdx(selectedThreadId),
+        lastActivityAgeMs: getAgeMs(lastStreamActivityAtMs, nowMs),
+        lastOpenAgeMs: getAgeMs(lastOpenAtMs, nowMs),
+        lastHeartbeatAgeMs: getAgeMs(lastHeartbeatAtMs, nowMs),
+        lastChatEventAgeMs: getAgeMs(lastChatEventAtMs, nowMs),
+        lastResyncAttemptAgeMs: getAgeMs(lastResyncAttemptAtMs || null, nowMs),
+        heartbeatCount,
+        chatEventCount,
+        staleResyncCount,
+        streamRestartCount,
+        resyncInFlight,
+        reconnectAttempts: getThreadReconnectAttempts(selectedThreadId),
+        ...(data ?? {}),
+      }, { threadId: selectedThreadId, worktreeId: selectedWorktreeId, force: true });
     };
 
     const updateConnectionState = (
@@ -426,6 +460,19 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       lastStreamActivityAtMs = getNowMs();
     };
 
+    const onHeartbeat = () => {
+      if (disposed) {
+        return;
+      }
+
+      heartbeatCount += 1;
+      lastHeartbeatAtMs = getNowMs();
+      markStreamActivity();
+      if (heartbeatCount === 1 || heartbeatCount % 12 === 0) {
+        logHealth("heartbeat.received");
+      }
+    };
+
     const closeStream = () => {
       if (!stream) {
         return;
@@ -434,6 +481,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       for (const eventType of EVENT_TYPES) {
         stream.removeEventListener(eventType, onEvent as EventListener);
       }
+      stream.removeEventListener("heartbeat", onHeartbeat as EventListener);
       stream.close();
       stream = null;
     };
@@ -444,8 +492,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       resyncInFlight = true;
+      staleResyncCount += reason === "stale-watchdog" ? 1 : 0;
       lastResyncAttemptAtMs = getNowMs();
       const localNewestIdxBefore = getThreadLastEventIdx(selectedThreadId);
+      logHealth("resync.started", {
+        reason,
+      });
       logWatchdog("status.check.started", {
         reason,
         localNewestIdx: localNewestIdxBefore,
@@ -510,6 +562,11 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         syncThreadStreamCursorFromSnapshot(selectedThreadId, timelineSnapshot);
         markStreamActivity();
         onError(null);
+        logHealth("resync.completed", {
+          reason,
+          snapshotNewestIdx: timelineSnapshot.newestIdx,
+          snapshotEventCount: timelineSnapshot.events.length,
+        });
         logWatchdog("timeline.resync.completed", {
           reason,
           snapshotNewestIdx: timelineSnapshot.newestIdx,
@@ -518,6 +575,10 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           snapshotMessageCount: timelineSnapshot.messages.length,
         });
       } catch (error) {
+        logHealth("resync.failed", {
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
         logWatchdog("resync.failed", {
           reason,
           error: error instanceof Error ? error.message : String(error),
@@ -538,6 +599,8 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       markStreamActivity();
+      lastChatEventAtMs = getNowMs();
+      chatEventCount += 1;
       markThreadEventSeen(selectedThreadId, payload.id);
       setThreadLastEventIdx(selectedThreadId, payload.idx);
       logEvent("event.accepted", {
@@ -837,13 +900,18 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       for (const eventType of EVENT_TYPES) {
         stream.addEventListener(eventType, onEvent as EventListener);
       }
+      stream.addEventListener("heartbeat", onHeartbeat as EventListener);
 
       stream.onopen = () => {
+        lastOpenAtMs = getNowMs();
         markStreamActivity();
         resetThreadReconnectAttempts(selectedThreadId);
         clearThreadReconnectTimer(selectedThreadId);
         updateConnectionState("healthy", undefined, "stream.open");
         onError(null);
+        logHealth("stream.open", {
+          afterIdx: lastEventIdx,
+        });
         logLifecycle("stream.open", {
           afterIdx: lastEventIdx,
         });
@@ -857,6 +925,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           readyState: stream?.readyState ?? null,
           reconnectAttempts: getThreadReconnectAttempts(selectedThreadId),
         });
+        logHealth("stream.error");
         if (stream && stream.readyState === EventSource.CLOSED) {
           closeStream();
 
@@ -957,6 +1026,13 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           updateConnectionState("stale", undefined, "watchdog.stale", {
             staleForMs,
           });
+          logHealth("watchdog.stale", {
+            staleForMs,
+            cachedStatus: selectedThreadStatus?.status ?? null,
+            cachedNewestIdx: selectedThreadStatus?.newestIdx ?? null,
+            waitingForAssistant,
+            threadActive: selectedThread?.active ?? false,
+          });
           logWatchdog("stale.detected", {
             staleForMs,
             streamReadyState: stream?.readyState ?? null,
@@ -973,6 +1049,10 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             && staleForMs >= STREAM_CONNECTING_RESTART_THRESHOLD_MS
           ) {
             logWatchdog("stream.restart.connecting", {
+              staleForMs,
+            });
+            streamRestartCount += 1;
+            logHealth("stream.restart.connecting", {
               staleForMs,
             });
             closeStream();
@@ -1031,6 +1111,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       logLifecycle("stream.cleanup", {
         localNewestIdx: getThreadLastEventIdx(selectedThreadId),
       });
+      logHealth("stream.cleanup");
     };
   }, [queryClient, selectedThreadId, selectedWorktreeId]);
 }

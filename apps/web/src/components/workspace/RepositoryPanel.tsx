@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { useQueries } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -94,6 +95,16 @@ type RepositoryPanelProps = {
 
 function sameIds(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function sameOptionalIds(a: string[] | null, b: string[] | null): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (!a || !b) {
+    return false;
+  }
+  return sameIds(a, b);
 }
 
 function reorderRepositoryIds(
@@ -578,6 +589,21 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     previewVisibleRepositoryIdsRef.current = previewVisibleRepositoryIds;
   }, [previewVisibleRepositoryIds]);
 
+  function updatePreviewVisibleRepositoryIds(
+    resolveNext: (current: string[] | null) => string[] | null,
+  ) {
+    const current = previewVisibleRepositoryIdsRef.current;
+    const next = resolveNext(current);
+    if (sameOptionalIds(current, next)) {
+      return;
+    }
+
+    previewVisibleRepositoryIdsRef.current = next;
+    flushSync(() => {
+      setPreviewVisibleRepositoryIds(next);
+    });
+  }
+
   const metadataRepositoryWorktreeIndex = useMemo(
     () => buildRepositoryWorktreeIndex(metadataRepositories),
     [metadataRepositories],
@@ -830,8 +856,8 @@ export const RepositoryPanel = memo(function RepositoryPanel({
       }
 
       setDraggedRepositoryId(repositoryId);
-      setPreviewVisibleRepositoryIds(
-        visibleRepositories.map((repository) => repository.id),
+      updatePreviewVisibleRepositoryIds((current) =>
+        current ?? visibleRepositoryIdsRef.current
       );
     }, 0);
   }
@@ -851,7 +877,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
       setDraggedRepositoryHeight(null);
     }
     setDraggedRepositoryId(dragState.repositoryId);
-    setPreviewVisibleRepositoryIds(visibleRepositoryIdsRef.current);
+    updatePreviewVisibleRepositoryIds(() => visibleRepositoryIdsRef.current);
   }
 
   function handleDesktopPointerReorderMove(clientX: number, clientY: number) {
@@ -885,7 +911,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     );
 
     if (!sameIds(currentOrder, nextOrder)) {
-      setPreviewVisibleRepositoryIds(nextOrder);
+      updatePreviewVisibleRepositoryIds(() => nextOrder);
     }
   }
 
@@ -921,10 +947,10 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     pendingDropTargetRef.current = { repositoryId, position };
 
     if (enableNativeReorderPreview) {
-      const currentOrder = previewVisibleRepositoryIds ?? visibleRepositoryIds;
+      const currentOrder = previewVisibleRepositoryIdsRef.current ?? visibleRepositoryIdsRef.current;
       const nextOrder = reorderRepositoryIds(currentOrder, sourceRepositoryId, repositoryId, position);
       if (!sameIds(currentOrder, nextOrder)) {
-        setPreviewVisibleRepositoryIds(nextOrder);
+        updatePreviewVisibleRepositoryIds(() => nextOrder);
       }
     }
 
@@ -1002,6 +1028,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     disposeDragResources();
     setDraggedRepositoryId(null);
     setDraggedRepositoryHeight(null);
+    previewVisibleRepositoryIdsRef.current = null;
     setPreviewVisibleRepositoryIds(null);
   }
 
