@@ -54,6 +54,7 @@ import type { ChatAgentAttachment, RuntimeDeps } from "../../types.js";
 import { mapChatMessage, mapChatQueuedMessage, mapChatThread } from "../mappers.js";
 import { resolveReviewRemote } from "../git.js";
 import type {
+  AlwaysAllowScope,
   PendingPermissionEntry,
   PendingPlanEntry,
   PendingQuestionEntry,
@@ -369,6 +370,48 @@ function normalizePermissionProfile(kind: ChatThreadKind): ChatThreadPermissionP
 
 function normalizePermissionMode(permissionMode: ChatThreadPermissionMode | undefined): ChatThreadPermissionMode {
   return permissionMode === "full_access" ? "full_access" : "default";
+}
+
+function defaultAlwaysAllowScopeForAgent(agent: CliAgent): AlwaysAllowScope {
+  if (agent === "claude") {
+    return "workspace";
+  }
+  if (agent === "codex") {
+    return "session";
+  }
+  return "native";
+}
+
+function alwaysAllowDescriptionForScope(scope: AlwaysAllowScope): string {
+  switch (scope) {
+    case "workspace":
+      return "Persists this approval in the workspace for matching future requests.";
+    case "session":
+      return "Remembers this approval for the current Codex session only.";
+    case "native":
+      return "Uses the agent's native always-allow option for matching future requests.";
+  }
+}
+
+function resolveAlwaysAllowMetadata(params: {
+  agent: CliAgent;
+  canAlwaysAllow: boolean;
+  requestedScope?: AlwaysAllowScope | null;
+  requestedDescription?: string | null;
+}): {
+  scope: AlwaysAllowScope | null;
+  description: string | null;
+} {
+  if (!params.canAlwaysAllow) {
+    return { scope: null, description: null };
+  }
+
+  const scope = params.requestedScope ?? defaultAlwaysAllowScopeForAgent(params.agent);
+  const requestedDescription = params.requestedDescription?.trim() ?? "";
+  return {
+    scope,
+    description: requestedDescription.length > 0 ? requestedDescription : alwaysAllowDescriptionForScope(scope),
+  };
 }
 
 function normalizePermissionRequestTargetPath(worktreePath: string, target: string | null | undefined): string | null {
@@ -2188,6 +2231,15 @@ export function createChatService(deps: RuntimeDeps) {
           entry.toolName = payload.toolName;
           const command = payload.toolInput.command;
           entry.command = typeof command === "string" && command.trim().length > 0 ? command.trim() : null;
+          entry.canAlwaysAllow = payload.canAlwaysAllow ?? (selection.agent === "claude" && entry.command !== null);
+          const alwaysAllowMetadata = resolveAlwaysAllowMetadata({
+            agent: selection.agent,
+            canAlwaysAllow: entry.canAlwaysAllow,
+            requestedScope: payload.alwaysAllowScope,
+            requestedDescription: payload.alwaysAllowDescription,
+          });
+          entry.alwaysAllowScope = alwaysAllowMetadata.scope;
+          entry.alwaysAllowDescription = alwaysAllowMetadata.description;
           entry.subagentOwnerToolUseId = payload.subagentOwnerToolUseId;
           entry.launcherToolUseId = payload.launcherToolUseId;
           entry.ownershipReason = payload.ownershipReason ?? null;
@@ -2207,6 +2259,9 @@ export function createChatService(deps: RuntimeDeps) {
               toolName: payload.toolName,
               toolInput: payload.toolInput,
               command: entry.command,
+              canAlwaysAllow: entry.canAlwaysAllow,
+              alwaysAllowScope: entry.alwaysAllowScope,
+              alwaysAllowDescription: entry.alwaysAllowDescription,
               blockedPath: payload.blockedPath,
               decisionReason: payload.decisionReason,
               suggestions: payload.suggestions ?? [],
@@ -3126,7 +3181,7 @@ export function createChatService(deps: RuntimeDeps) {
       let persisted = false;
       let settingsPath: string | null = null;
       let permissionRule: string | null = null;
-      if (isAlwaysAllow && thread.agent === "claude") {
+      if (isAlwaysAllow && entry.canAlwaysAllow && thread.agent === "claude") {
         if (!entry.command) {
           throw new Error("Always allow requires a command in the permission request.");
         }
@@ -3139,7 +3194,11 @@ export function createChatService(deps: RuntimeDeps) {
       const decisionMessage = input.decision === "allow"
         ? "Allowed once by user."
         : input.decision === "allow_always"
-          ? "Always allowed in this workspace by user."
+          ? entry.alwaysAllowScope === "session"
+            ? "Always allowed for this session by user."
+            : entry.alwaysAllowScope === "native"
+              ? "Always allowed through the agent's native permission scope by user."
+              : "Always allowed in this workspace by user."
           : denialMessage;
 
       try {
@@ -3160,7 +3219,11 @@ export function createChatService(deps: RuntimeDeps) {
         });
       } finally {
         const result: PermissionDecisionResult = isAllow
-          ? { decision: "allow" }
+          ? {
+            decision: isAlwaysAllow && entry.canAlwaysAllow && thread.agent !== "claude"
+              ? "allow_always"
+              : "allow",
+          }
           : {
             decision: "deny",
             message: denialMessage,

@@ -41,6 +41,7 @@ import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { ScrollArea } from "../../components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+import { Dialog, DialogContent } from "../../components/ui/dialog";
 import { api } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { queryKeys } from "../../lib/queryKeys";
@@ -1820,14 +1821,13 @@ export function AutomationsListPage({
           )}
         </section>
 
-      {createDialogOpen ? (
-        <div
-          role="dialog"
-          aria-modal="true"
+      <Dialog open={createDialogOpen} onOpenChange={handleCreateDialogOpenChange}>
+        <DialogContent
           aria-label="Create automation"
-          className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/60 px-4 py-4 backdrop-blur-sm"
+          className="z-[70] max-w-none border-0 bg-transparent p-0 shadow-none sm:rounded-none"
         >
-          <div
+          <div className="flex max-h-[calc(100vh-32px)] items-center justify-center overflow-y-auto px-4 py-4">
+            <div
             className={cn(
               "relative my-auto w-full overflow-visible rounded-xl border border-border/50 bg-background p-0 text-foreground shadow-xl",
               compactLayout
@@ -2000,9 +2000,10 @@ export function AutomationsListPage({
                 </div>
               </div>
             </div>
+            </div>
           </div>
-        </div>
-      ) : null}
+        </DialogContent>
+      </Dialog>
       </div>
     </AutomationPageShell>
   );

@@ -9,6 +9,7 @@ import {
   type Worktree,
 } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
+import { AGENT_LABELS } from "../components/workspace/composer/AgentModelSelector";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { disposeTerminalRuntime } from "../components/workspace/terminalRuntimeRegistry";
@@ -265,6 +266,7 @@ import {
 } from "./workspace/visibleRepositorySelection";
 import {
   buildInitialWorkspaceLandingHoldState,
+  deriveVisibleUserGates,
   deriveWorkingStatus,
   FilledPauseIcon,
   FilledPlayIcon,
@@ -2196,6 +2198,7 @@ export function WorkspacePage() {
   });
   pushStartupRenderProfileSection("pending-gates");
   const [activePermissionRequestId, setActivePermissionRequestId] = useState<string | null>(null);
+  const [activeQuestionRequestId, setActiveQuestionRequestId] = useState<string | null>(null);
 
   const activePermissionIndex = useMemo(() => {
     if (gates.pendingPermissionRequests.length === 0) {
@@ -2213,6 +2216,25 @@ export function WorkspacePage() {
     ? gates.pendingPermissionRequests[activePermissionIndex] ?? null
     : null;
   const hasMultiplePendingPermissions = gates.pendingPermissionRequests.length > 1;
+  const activeQuestionIndex = useMemo(() => {
+    if (gates.pendingQuestionRequests.length === 0) {
+      return -1;
+    }
+
+    if (!activeQuestionRequestId) {
+      return 0;
+    }
+
+    return gates.pendingQuestionRequests.findIndex((request) => request.requestId === activeQuestionRequestId);
+  }, [activeQuestionRequestId, gates.pendingQuestionRequests]);
+  const activeQuestionRequest = activeQuestionIndex >= 0
+    ? gates.pendingQuestionRequests[activeQuestionIndex] ?? null
+    : null;
+  const hasMultiplePendingQuestions = gates.pendingQuestionRequests.length > 1;
+  const { showPermissionGate, showQuestionGate } = deriveVisibleUserGates({
+    pendingPermissionRequestCount: gates.pendingPermissionRequests.length,
+    pendingQuestionRequestCount: gates.pendingQuestionRequests.length,
+  });
   const [mobilePanelOpen, setMobilePanelOpen] = useState<MobilePanelState>(null);
   const [mobileReposOrigin, setMobileReposOrigin] = useState<MobileReposOrigin | null>(null);
   const [isDesktopViewport, setIsDesktopViewport] = useState(() => desktopApp || isDesktopViewportNow());
@@ -2861,6 +2883,26 @@ export function WorkspacePage() {
     setActivePermissionRequestId(fallbackRequest?.requestId ?? null);
   }, [activePermissionIndex, activePermissionRequestId, gates.pendingPermissionRequests]);
 
+  useEffect(() => {
+    if (gates.pendingQuestionRequests.length === 0) {
+      setActiveQuestionRequestId(null);
+      return;
+    }
+
+    if (
+      activeQuestionRequestId
+      && gates.pendingQuestionRequests.some((request) => request.requestId === activeQuestionRequestId)
+    ) {
+      return;
+    }
+
+    const fallbackIndex = activeQuestionIndex >= 0
+      ? Math.min(activeQuestionIndex, gates.pendingQuestionRequests.length - 1)
+      : 0;
+    const fallbackRequest = gates.pendingQuestionRequests[fallbackIndex] ?? gates.pendingQuestionRequests[0];
+    setActiveQuestionRequestId(fallbackRequest?.requestId ?? null);
+  }, [activeQuestionIndex, activeQuestionRequestId, gates.pendingQuestionRequests]);
+
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
   const workingStatus = useMemo(
@@ -3445,6 +3487,28 @@ export function WorkspacePage() {
     }
   }, [activePermissionIndex, gates.pendingPermissionRequests]);
 
+  const handleShowPreviousQuestion = useCallback(() => {
+    if (activeQuestionIndex <= 0) {
+      return;
+    }
+
+    const previousRequest = gates.pendingQuestionRequests[activeQuestionIndex - 1];
+    if (previousRequest) {
+      setActiveQuestionRequestId(previousRequest.requestId);
+    }
+  }, [activeQuestionIndex, gates.pendingQuestionRequests]);
+
+  const handleShowNextQuestion = useCallback(() => {
+    if (activeQuestionIndex < 0 || activeQuestionIndex >= gates.pendingQuestionRequests.length - 1) {
+      return;
+    }
+
+    const nextRequest = gates.pendingQuestionRequests[activeQuestionIndex + 1];
+    if (nextRequest) {
+      setActiveQuestionRequestId(nextRequest.requestId);
+    }
+  }, [activeQuestionIndex, gates.pendingQuestionRequests]);
+
   const handleSelectDiffFile = useCallback((filePath: string) => {
     if (!confirmSwitchAwayFromActiveFile()) {
       return;
@@ -3970,7 +4034,7 @@ export function WorkspacePage() {
                   view: "automations",
                   automationId: undefined,
                   automationCreate: undefined,
-                });
+                }, { replace: false });
               }}
               onOpenSettings={openSettingsDialog}
               onAttachRepository={repos.openFileBrowser}
@@ -4435,7 +4499,7 @@ export function WorkspacePage() {
                     </Suspense>
                   </div>
                 </section>
-                {gates.pendingPermissionRequests.length > 0 ? (
+                {showPermissionGate ? (
                   <section className="mx-auto w-full max-w-3xl px-3" data-testid="permission-prompts-container">
                     <div className="space-y-2">
                       {hasMultiplePendingPermissions ? (
@@ -4450,7 +4514,9 @@ export function WorkspacePage() {
                               blockedPath={activePermissionRequest.blockedPath}
                               decisionReason={activePermissionRequest.decisionReason}
                               busy={gates.resolvingPermissionIds.has(activePermissionRequest.requestId)}
-                              canAlwaysAllow={Boolean(activePermissionRequest.command)}
+                              canAlwaysAllow={activePermissionRequest.canAlwaysAllow}
+                              alwaysAllowScope={activePermissionRequest.alwaysAllowScope}
+                              alwaysAllowDescription={activePermissionRequest.alwaysAllowDescription}
                               position={{
                                 current: activePermissionIndex + 1,
                                 total: gates.pendingPermissionRequests.length,
@@ -4476,7 +4542,9 @@ export function WorkspacePage() {
                               blockedPath={request.blockedPath}
                               decisionReason={request.decisionReason}
                               busy={gates.resolvingPermissionIds.has(request.requestId)}
-                              canAlwaysAllow={Boolean(request.command)}
+                              canAlwaysAllow={request.canAlwaysAllow}
+                              alwaysAllowScope={request.alwaysAllowScope}
+                              alwaysAllowDescription={request.alwaysAllowDescription}
                               onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
                               onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
                               onDeny={(requestId) => {
@@ -4489,20 +4557,30 @@ export function WorkspacePage() {
                     </div>
                   </section>
                 ) : null}
-                {gates.pendingQuestionRequests.length > 0 ? (
+                {showQuestionGate ? (
                   <section className="mx-auto w-full max-w-3xl px-3" data-testid="question-prompts-container">
                     <div className="space-y-2">
-                      {gates.pendingQuestionRequests.map((request) => (
-                        <Suspense fallback={null} key={request.requestId}>
+                      {activeQuestionRequest ? (
+                        <Suspense fallback={null} key={activeQuestionRequest.requestId}>
                           <QuestionCard
-                            requestId={request.requestId}
-                            questions={request.questions}
-                            busy={gates.answeringQuestionIds.has(request.requestId) || gates.dismissingQuestionIds.has(request.requestId)}
+                            requestId={activeQuestionRequest.requestId}
+                            agentLabel={AGENT_LABELS[selectedChatThread?.agent ?? "claude"]}
+                            questions={activeQuestionRequest.questions}
+                            busy={
+                              gates.answeringQuestionIds.has(activeQuestionRequest.requestId)
+                              || gates.dismissingQuestionIds.has(activeQuestionRequest.requestId)
+                            }
+                            position={hasMultiplePendingQuestions ? {
+                              current: activeQuestionIndex + 1,
+                              total: gates.pendingQuestionRequests.length,
+                            } : undefined}
+                            onPrevious={handleShowPreviousQuestion}
+                            onNext={handleShowNextQuestion}
                             onAnswer={(requestId, answers) => void gates.answerQuestion(requestId, answers)}
                             onDismiss={(requestId) => void gates.dismissQuestion(requestId)}
                           />
                         </Suspense>
-                      ))}
+                      ) : null}
                     </div>
                   </section>
                 ) : null}

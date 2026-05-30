@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
 import {
   buildInitialWorkspaceLandingHoldState,
+  deriveVisibleUserGates,
   deriveWorkingStatus,
   resolveWorkspaceThreadlessFallbackSurface,
   shouldReturnToWorkspaceLandingAfterClosingContent,
@@ -246,6 +247,48 @@ describe("shouldShowWorkspaceEmptyState", () => {
       terminalViewActive: true,
       messageListEmptyState: "no-thread-selected",
     })).toBe(false);
+  });
+});
+
+describe("deriveVisibleUserGates", () => {
+  it("hides all user gates when there are no pending requests", () => {
+    expect(deriveVisibleUserGates({
+      pendingPermissionRequestCount: 0,
+      pendingQuestionRequestCount: 0,
+    })).toEqual({
+      showPermissionGate: false,
+      showQuestionGate: false,
+    });
+  });
+
+  it("shows the permission gate when only permissions are pending", () => {
+    expect(deriveVisibleUserGates({
+      pendingPermissionRequestCount: 1,
+      pendingQuestionRequestCount: 0,
+    })).toEqual({
+      showPermissionGate: true,
+      showQuestionGate: false,
+    });
+  });
+
+  it("shows the question gate when only questions are pending", () => {
+    expect(deriveVisibleUserGates({
+      pendingPermissionRequestCount: 0,
+      pendingQuestionRequestCount: 1,
+    })).toEqual({
+      showPermissionGate: false,
+      showQuestionGate: true,
+    });
+  });
+
+  it("prioritizes permission over question when both are pending", () => {
+    expect(deriveVisibleUserGates({
+      pendingPermissionRequestCount: 2,
+      pendingQuestionRequestCount: 1,
+    })).toEqual({
+      showPermissionGate: true,
+      showQuestionGate: false,
+    });
   });
 });
 

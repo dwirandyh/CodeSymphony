@@ -36,6 +36,10 @@ _Avoid_: one-off override, transient target
 Plan approval that creates a new execution thread because the target cannot run as a same-thread switch.
 _Avoid_: implicit retry, background clone
 
+**Agent permission grant**:
+A user approval whose persistence and scope follow the CLI agent running the thread.
+_Avoid_: CodeSymphony permission rule, forced workspace approval
+
 ## Relationships
 
 - A **Thread selection** chooses exactly one agent and one model
@@ -49,6 +53,8 @@ _Avoid_: implicit retry, background clone
 - A **Plan execution switch** persists its new thread selection before execution starts
 - A **Plan execution handoff** creates a new default execution thread on the same worktree
 - A **Plan execution handoff** inherits permission settings from the source thread
+- An **Agent permission grant** belongs to the active **Thread selection**
+- An **Agent permission grant** may be session-scoped or workspace-persistent depending on the selected CLI agent
 
 ## Example dialogue
 
@@ -63,6 +69,9 @@ _Avoid_: implicit retry, background clone
 >
 > **Dev:** "What if the user keeps the same agent but the source thread is provider-backed Claude and locked?"
 > **Domain expert:** "Approval still succeeds, but it becomes a plan execution handoff to a new execution thread."
+>
+> **Dev:** "Can the UI say 'always allow in this workspace' for a session-only approval?"
+> **Domain expert:** "No. Say 'Always allow' and let the Agent permission grant follow the selected CLI agent's scope."
 
 ## Worktree Live State
 
@@ -95,6 +104,7 @@ _Avoid_: raw watcher event, ad-hoc invalidation
 - "execute approved plan with another model" was ambiguous between same-thread switching and new-thread delegation; resolved:
   - same-agent valid target => **Plan execution switch**
   - invalid same-thread target or cross-agent target => **Plan execution handoff**
+- "always allow" was used to imply workspace persistence even when the selected agent only remembered approvals for the current session; resolved: use **Agent permission grant** and avoid promising a specific scope in generic UI copy.
 
 ## Production Diagnostics
 

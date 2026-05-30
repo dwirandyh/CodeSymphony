@@ -106,6 +106,9 @@ export type PendingPermissionRequest = {
   editTarget: string | null;
   blockedPath: string | null;
   decisionReason: string | null;
+  canAlwaysAllow: boolean;
+  alwaysAllowScope: "session" | "workspace" | "native" | null;
+  alwaysAllowDescription: string | null;
   idx: number;
 };
 

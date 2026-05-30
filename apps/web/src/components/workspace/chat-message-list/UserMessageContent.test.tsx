@@ -204,6 +204,20 @@ describe("UserMessageContent", () => {
     vi.clearAllMocks();
   });
 
+  it("renders multiline user message content with preserved whitespace", () => {
+    act(() => {
+      root.render(
+        <UserMessageContent
+          content={"first line\nsecond line\nthird line"}
+        />,
+      );
+    });
+
+    const paragraph = container.querySelector("p");
+    expect(paragraph?.textContent).toBe("first line\nsecond line\nthird line");
+    expect(paragraph?.className).toContain("whitespace-pre-wrap");
+  });
+
   it("renders clipboard text attachments with a line-based chip label", () => {
     act(() => {
       root.render(

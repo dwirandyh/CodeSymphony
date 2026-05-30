@@ -157,6 +157,7 @@ export function FileBrowserModal({ open, onClose, onSelect, initialPath }: FileB
           <button
             type="button"
             onClick={() => void browse("/")}
+            aria-label="Go to filesystem root"
             className="flex items-center rounded px-1 py-0.5 hover:bg-secondary/60 hover:text-foreground"
           >
             <Home className="h-3.5 w-3.5" />

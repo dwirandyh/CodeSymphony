@@ -1,4 +1,5 @@
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "../ui/button";
 
 const EDIT_TOOL_REGEX = /^(edit|multiedit|write)$/i;
@@ -12,6 +13,8 @@ type PermissionPromptCardProps = {
   decisionReason: string | null;
   busy: boolean;
   canAlwaysAllow: boolean;
+  alwaysAllowScope: "session" | "workspace" | "native" | null;
+  alwaysAllowDescription: string | null;
   position?: {
     current: number;
     total: number;
@@ -28,10 +31,10 @@ export function PermissionPromptCard({
   toolName,
   command,
   editTarget,
-  blockedPath,
-  decisionReason,
   busy,
   canAlwaysAllow,
+  alwaysAllowScope,
+  alwaysAllowDescription,
   position,
   onPrevious,
   onNext,
@@ -40,15 +43,34 @@ export function PermissionPromptCard({
   onDeny,
 }: PermissionPromptCardProps) {
   const isEditPermission = EDIT_TOOL_REGEX.test(toolName.trim());
-  const hasMetadata = Boolean(decisionReason || blockedPath);
   const promptTitle = isEditPermission ? "Apply this edit?" : "Run this command?";
   const promptDetail = isEditPermission
     ? editTarget ?? "Current file"
     : command ?? `Tool: ${toolName}`;
   const allowOnceLabel = isEditPermission ? "Apply edit" : "Allow once";
   const denyLabel = isEditPermission ? "Keep file" : "Deny";
-  const hasDetails = hasMetadata || canAlwaysAllow;
   const hasPosition = Boolean(position && position.total > 1);
+  const [alwaysAllowOpen, setAlwaysAllowOpen] = useState(false);
+
+  useEffect(() => {
+    if (busy || !canAlwaysAllow) {
+      setAlwaysAllowOpen(false);
+    }
+  }, [busy, canAlwaysAllow]);
+
+  useEffect(() => {
+    setAlwaysAllowOpen(false);
+  }, [requestId]);
+
+  const alwaysAllowScopeDescription = alwaysAllowDescription ?? (
+    alwaysAllowScope === "workspace"
+      ? "Persists this approval in the workspace for matching future requests."
+      : alwaysAllowScope === "session"
+        ? "Remembers this approval for the current Codex session only."
+        : alwaysAllowScope === "native"
+          ? "Uses the agent's native always-allow option for matching future requests."
+          : "Remembers this choice using the selected agent's permission scope."
+  );
 
   return (
     <section
@@ -106,16 +128,56 @@ export function PermissionPromptCard({
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-1.5">
-          <Button
-            type="button"
-            size="sm"
-            disabled={busy}
-            className="h-7 rounded-md px-2.5 text-[11px]"
-            onClick={() => onAllowOnce(requestId)}
-            aria-label={`Allow once ${requestId}`}
-          >
-            {allowOnceLabel}
-          </Button>
+          <div className="relative flex items-center">
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy}
+              className={`h-7 px-2.5 text-[11px] ${canAlwaysAllow ? "rounded-r-none" : "rounded-md"}`}
+              onClick={() => onAllowOnce(requestId)}
+              aria-label={`${allowOnceLabel} ${requestId}`}
+            >
+              {allowOnceLabel}
+            </Button>
+            {canAlwaysAllow ? (
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy}
+                className="h-7 w-7 rounded-l-none border-l border-primary-foreground/20 p-0"
+                onClick={() => setAlwaysAllowOpen((open) => !open)}
+                aria-label={`Show always allow options ${requestId}`}
+                aria-expanded={alwaysAllowOpen}
+              >
+                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${alwaysAllowOpen ? "rotate-180" : ""}`} />
+              </Button>
+            ) : null}
+
+            {canAlwaysAllow && alwaysAllowOpen ? (
+              <div
+                className="absolute bottom-full right-0 z-50 mb-1 w-72 max-w-[calc(100vw-2rem)] rounded-md border border-border/45 bg-popover p-2 text-xs text-popover-foreground shadow-lg"
+                role="menu"
+              >
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy}
+                  className="h-7 rounded-md px-2.5 text-[11px]"
+                  onClick={() => {
+                    setAlwaysAllowOpen(false);
+                    onAllowAlways(requestId);
+                  }}
+                  aria-label={`Always allow ${requestId}`}
+                >
+                  Always allow
+                </Button>
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  {alwaysAllowScopeDescription}
+                </p>
+              </div>
+            ) : null}
+          </div>
           <Button
             type="button"
             size="sm"
@@ -129,48 +191,6 @@ export function PermissionPromptCard({
           </Button>
         </div>
       </div>
-
-      {hasDetails ? (
-        <details className="group mt-2">
-          <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
-            <span>More options</span>
-            <span className="text-[10px] transition-transform group-open:rotate-180">▾</span>
-          </summary>
-
-          <div className="mt-1.5 space-y-1.5 text-xs text-muted-foreground">
-            {decisionReason ? (
-              <div className="rounded-md border border-border/25 bg-secondary/10 px-2 py-1.5">
-                Why approval is needed: {decisionReason}
-              </div>
-            ) : null}
-
-            {blockedPath ? (
-              <div className="rounded-md border border-border/25 bg-secondary/10 px-2 py-1.5">
-                Restricted path: {blockedPath}
-              </div>
-            ) : null}
-
-            {canAlwaysAllow ? (
-              <div className="space-y-1">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  disabled={busy}
-                  className="h-7 rounded-md px-2.5 text-[11px]"
-                  onClick={() => onAllowAlways(requestId)}
-                  aria-label={`Always allow in workspace ${requestId}`}
-                >
-                  Always allow in this workspace
-                </Button>
-                <p className="text-[11px] text-muted-foreground">
-                  Updates <code>.claude/settings.local.json</code>.
-                </p>
-              </div>
-            ) : null}
-          </div>
-        </details>
-      ) : null}
     </section>
   );
 }

@@ -95,7 +95,7 @@ vi.mock("../../components/ui/dialog", () => ({
   DialogContent: ({
     children,
     ...props
-  }: React.HTMLAttributes<HTMLDivElement>) => <div {...props}>{children}</div>,
+  }: React.HTMLAttributes<HTMLDivElement>) => <div role="dialog" aria-modal="true" {...props}>{children}</div>,
   DialogDescription: ({
     children,
     ...props
@@ -577,6 +577,21 @@ describe("AutomationsListPage", () => {
 
     expect(titleInput).toBeTruthy();
     expect(promptField).toBeTruthy();
+  });
+
+  it("renders create automation inside a modal dialog", async () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage prefills={{ create: true }} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+
+    const dialog = document.body.querySelector('[role="dialog"][aria-modal="true"][aria-label="Create automation"]');
+    expect(dialog).toBeTruthy();
   });
 
   it("uses workspace-header-style pickers for create automation targets", async () => {

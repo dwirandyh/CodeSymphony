@@ -69,6 +69,15 @@ describe("FileBrowserModal", () => {
     expect(input).toBeTruthy();
   });
 
+  it("labels the filesystem root breadcrumb button", async () => {
+    await act(async () => {
+      root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} />);
+    });
+    await flushEffects();
+
+    expect(document.body.querySelector('button[aria-label="Go to filesystem root"]')).toBeTruthy();
+  });
+
   it("shows directory entries after load", async () => {
     await act(async () => {
       root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} />);

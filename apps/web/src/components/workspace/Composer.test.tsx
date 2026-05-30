@@ -1,3 +1,4 @@
+import { act as reactAct } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -1575,6 +1576,18 @@ describe("Composer", () => {
     expect(getSerializedTextFromEditor(editor)).toBe("first line\nsecond line\nthird line\n");
   });
 
+  it("preserves newline before native contenteditable block nodes after plain text", () => {
+    renderComposer();
+    const editor = getEditor();
+
+    act(() => {
+      editor.innerHTML = "first line<div>second line</div><div>third line</div>";
+    });
+
+    expect(getPlainTextFromEditor(editor)).toBe("first line\nsecond line\nthird line\n");
+    expect(getSerializedTextFromEditor(editor)).toBe("first line\nsecond line\nthird line\n");
+  });
+
   it("submits newline-separated content created by contenteditable block nodes", async () => {
     const onSubmitMessage = vi.fn().mockResolvedValue(true);
     renderComposer({ onSubmitMessage });
@@ -1592,6 +1605,31 @@ describe("Composer", () => {
 
     await act(async () => {
       sendButton?.click();
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    const [payload] = onSubmitMessage.mock.calls[0] as [{
+      content: string;
+      mode: string;
+      attachments: Array<{ source: string; content: string }>;
+    }];
+    expect(payload.content).toBe("first line\nsecond line\nthird line");
+  });
+
+  it("submits newline-separated content when native editing mixes text and block nodes", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
+
+    const editor = getEditor();
+
+    act(() => {
+      editor.innerHTML = "first line<div>second line</div><div>third line</div>";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
     expect(onSubmitMessage).toHaveBeenCalledTimes(1);
@@ -1782,7 +1820,7 @@ describe("Composer", () => {
       const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
       Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
 
-      act(() => {
+      await reactAct(async () => {
         dropTarget.dispatchEvent(dragEnterEvent);
       });
 
@@ -1792,7 +1830,7 @@ describe("Composer", () => {
       Object.defineProperty(dragLeaveEvent, "dataTransfer", { value: dragData, configurable: true });
       Object.defineProperty(dragLeaveEvent, "relatedTarget", { value: editor, configurable: true });
 
-      act(() => {
+      await reactAct(async () => {
         dropTarget.dispatchEvent(dragLeaveEvent);
       });
 
@@ -1801,10 +1839,12 @@ describe("Composer", () => {
       const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
       Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
 
-      await act(async () => {
+      await reactAct(async () => {
         dropTarget.dispatchEvent(dropEvent);
       });
-      await flushMicrotasks();
+      await reactAct(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
 
       expect(container.textContent).not.toContain("Drop files here");
       expect(container.textContent).toContain("dropped.png");

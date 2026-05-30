@@ -250,6 +250,9 @@ export type ClaudeRunner = (args: {
     blockedPath: string | null;
     decisionReason: string | null;
     suggestions: unknown[] | null;
+    canAlwaysAllow?: boolean;
+    alwaysAllowScope?: "session" | "workspace" | "native" | null;
+    alwaysAllowDescription?: string | null;
     subagentOwnerToolUseId: string | null;
     launcherToolUseId: string | null;
     ownershipReason?: ClaudeOwnershipReason;

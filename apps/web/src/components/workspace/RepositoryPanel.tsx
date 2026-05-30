@@ -1555,6 +1555,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                     editingWorktreeId === worktree.id ? (
                                       <input
                                         type="text"
+                                        aria-label={`Rename branch ${worktree.branch}`}
                                         className="min-w-0 flex-1 rounded border border-input bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
                                         value={editingBranchValue}
                                         autoFocus

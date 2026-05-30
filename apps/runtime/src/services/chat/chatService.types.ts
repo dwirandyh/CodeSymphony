@@ -45,7 +45,8 @@ export type ParsedDiffSections = {
   order: string[];
 };
 
-export type PermissionDecisionResult = { decision: "allow" | "deny"; message?: string };
+export type PermissionDecisionResult = { decision: "allow" | "allow_always" | "deny"; message?: string };
+export type AlwaysAllowScope = "session" | "workspace" | "native";
 export type PendingPermissionEntry = {
   status: "pending" | "resolved";
   promise: Promise<PermissionDecisionResult>;
@@ -55,6 +56,9 @@ export type PendingPermissionEntry = {
   assistantMessageId: string | null;
   toolName: string;
   command: string | null;
+  canAlwaysAllow: boolean;
+  alwaysAllowScope: AlwaysAllowScope | null;
+  alwaysAllowDescription: string | null;
   permissionSignatures: string[];
   subagentOwnerToolUseId: string | null;
   launcherToolUseId: string | null;

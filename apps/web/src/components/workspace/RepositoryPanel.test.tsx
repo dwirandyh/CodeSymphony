@@ -332,6 +332,25 @@ describe("RepositoryPanel", () => {
     expect(container.textContent).toContain("feature-x");
   });
 
+  it("labels the inline branch rename input", () => {
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-root",
+    });
+
+    const branchLabel = Array.from(container.querySelectorAll("span"))
+      .find((element) => element.textContent === "feature-x");
+    expect(branchLabel).toBeTruthy();
+
+    act(() => {
+      branchLabel?.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    expect(container.querySelector('input[aria-label="Rename branch feature-x"]')).toBeTruthy();
+  });
+
   it("renders jump shortcut hints in the status slot while the shortcut modifier is held", () => {
     Object.defineProperty(window.navigator, "platform", {
       value: "MacIntel",

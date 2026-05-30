@@ -1212,6 +1212,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
             blockedPath: normalizedPermission.blockedPath,
             decisionReason: null,
             suggestions: null,
+            canAlwaysAllow: true,
             subagentOwnerToolUseId: null,
             launcherToolUseId: null,
           });
