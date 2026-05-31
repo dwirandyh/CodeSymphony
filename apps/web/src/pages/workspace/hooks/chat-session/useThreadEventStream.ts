@@ -19,6 +19,7 @@ import { debugLog } from "../../../../lib/debugLog";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { logService } from "../../../../lib/logService";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
+import { isOptimisticThreadId } from "../../../../lib/threadIds";
 import {
   getThreadCollections,
   getThreadEventsCollection,
@@ -352,7 +353,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
   }
 
   useEffect(() => {
-    if (!selectedThreadId) {
+    if (!selectedThreadId || isOptimisticThreadId(selectedThreadId)) {
       clearPendingStreamBuffers();
       setWaitingAssistant(null);
       setStoppingThreadId(null);

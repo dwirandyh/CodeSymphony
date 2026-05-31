@@ -1780,6 +1780,111 @@ describe("useChatSession", () => {
     });
   });
 
+  it("deduplicates concurrent default thread creation", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    const createDeferredThread = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(createDeferredThread.promise);
+
+    renderHook("thread-a");
+
+    let firstCreatePromise: Promise<ChatThread | null> | undefined;
+    let secondCreatePromise: Promise<ChatThread | null> | undefined;
+    await act(async () => {
+      firstCreatePromise = hookResult.createAdditionalThread();
+      secondCreatePromise = hookResult.createAdditionalThread();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(hookResult.threads.filter((thread) => thread.id.startsWith("optimistic-thread:"))).toHaveLength(1);
+    if (!firstCreatePromise || !secondCreatePromise) {
+      throw new Error("Expected concurrent create promises to be captured");
+    }
+    const firstCreate = firstCreatePromise;
+    const secondCreate = secondCreatePromise;
+
+    let createdThreads: [ChatThread | null, ChatThread | null] | undefined;
+    await act(async () => {
+      createDeferredThread.resolve({
+        ...makeThread("thread-new"),
+        title: "New Thread",
+      });
+      createdThreads = await Promise.all([firstCreate, secondCreate]);
+    });
+
+    expect(createdThreads).toEqual([
+      expect.objectContaining({ id: "thread-new" }),
+      expect.objectContaining({ id: "thread-new" }),
+    ]);
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.threads.map((thread) => thread.id)).not.toContain(expect.stringMatching(/^optimistic-thread:/));
+    expect(
+      (queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1")) ?? [])
+        .map((thread) => thread.id),
+    ).not.toContain(expect.stringMatching(/^optimistic-thread:/));
+  });
+
+  it("does not leave an optimistic tab when the thread query echoes the optimistic shell before creation resolves", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    const createDeferredThread = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(createDeferredThread.promise);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      void hookResult.createAdditionalThread();
+      await Promise.resolve();
+    });
+
+    const optimisticThreadId = hookResult.selectedThreadId;
+    expect(optimisticThreadId).toMatch(/^optimistic-thread:/);
+    if (!optimisticThreadId) {
+      throw new Error("Expected optimistic thread selection");
+    }
+
+    threadsState.data = [...hookResult.threads];
+    renderHook(optimisticThreadId);
+
+    await act(async () => {
+      createDeferredThread.resolve({
+        ...makeThread("thread-new"),
+        title: "New Thread",
+      });
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-new"]);
+    expect(
+      (queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1")) ?? [])
+        .map((thread) => thread.id),
+    ).toEqual(["thread-new"]);
+  });
+
+  it("does not bootstrap remote data for optimistic thread ids", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    const createDeferredThread = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(createDeferredThread.promise);
+
+    renderHook("thread-a");
+    vi.mocked(useThreadSnapshot).mockClear();
+    vi.mocked(useThreadStatusSnapshot).mockClear();
+    vi.mocked(useThreadEventStream).mockClear();
+    vi.mocked(api.listQueuedMessages).mockClear();
+
+    await act(async () => {
+      void hookResult.createAdditionalThread();
+      await Promise.resolve();
+    });
+
+    const optimisticThreadId = hookResult.selectedThreadId;
+    expect(optimisticThreadId).toMatch(/^optimistic-thread:/);
+    expect(vi.mocked(useThreadSnapshot).mock.calls.map(([threadId]) => threadId)).not.toContain(optimisticThreadId);
+    expect(vi.mocked(useThreadStatusSnapshot).mock.calls.map(([threadId]) => threadId)).not.toContain(optimisticThreadId);
+    expect(vi.mocked(useThreadEventStream).mock.calls.map(([params]) => params.selectedThreadId)).not.toContain(optimisticThreadId);
+    expect(api.listQueuedMessages).not.toHaveBeenCalledWith(optimisticThreadId);
+  });
+
   it("keeps a newly created thread selected while the query list is still stale", async () => {
     threadsState.data = [makeThread("thread-a", true)];
     vi.mocked(api.createThread).mockResolvedValue({

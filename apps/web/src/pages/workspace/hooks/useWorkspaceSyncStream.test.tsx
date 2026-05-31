@@ -370,6 +370,38 @@ describe("useWorkspaceSyncStream", () => {
     expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot("thread-1"))).toEqual(makeStatusSnapshot());
   });
 
+  it("does not refresh remote snapshots for optimistic thread ids", async () => {
+    getThreadCollectionCountsMock.mockReturnValue({
+      messagesCount: 1,
+      eventsCount: 1,
+    });
+
+    renderHook();
+
+    act(() => {
+      MockWebSocket.instances[0]!.open();
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.emit({
+        id: "ws-optimistic",
+        type: "thread.updated",
+        repositoryId: "repo-1",
+        worktreeId: "wt-1",
+        threadId: "optimistic-thread:wt-1:test",
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(refetchThreadsCollectionMock).toHaveBeenCalledWith(queryClient, "wt-1");
+    expect(getTimelineSnapshotMock).not.toHaveBeenCalled();
+    expect(getThreadStatusSnapshotMock).not.toHaveBeenCalled();
+  });
+
   it("keeps automation run updates on coarse sync responsibilities only", async () => {
     renderHook();
 

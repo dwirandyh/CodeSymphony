@@ -3,6 +3,7 @@ import { useQueries } from "@tanstack/react-query";
 import type { ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
+import { isOptimisticThreadId } from "../../lib/threadIds";
 import {
   aggregateWorktreeStatus,
   type WorktreeStatusSummary,
@@ -29,10 +30,10 @@ function pickStatusSnapshotCandidateIds(threadsByWorktreeId: Record<string, Chat
 
   for (const threads of Object.values(threadsByWorktreeId)) {
     const activeThreadIds = threads
-      .filter((thread) => thread.active)
+      .filter((thread) => thread.active && !isOptimisticThreadId(thread.id))
       .map((thread) => thread.id);
     const inactiveThreadIds = threads
-      .filter((thread) => !thread.active)
+      .filter((thread) => !thread.active && !isOptimisticThreadId(thread.id))
       .sort(compareThreadRecency)
       .slice(0, MAX_INACTIVE_STATUS_SNAPSHOTS_PER_WORKTREE)
       .map((thread) => thread.id);

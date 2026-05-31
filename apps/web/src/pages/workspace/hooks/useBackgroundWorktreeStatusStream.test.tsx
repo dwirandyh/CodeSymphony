@@ -270,6 +270,31 @@ afterEach(() => {
 });
 
 describe("useBackgroundWorktreeStatusStream", () => {
+  it("does not open a background stream for optimistic thread ids", async () => {
+    const thread = makeThread({ id: "optimistic-thread:wt-2:test", active: true, worktreeId: "wt-2" });
+    const repository = makeRepository();
+    repository.worktrees.push({
+      id: "wt-2",
+      repositoryId: "r1",
+      branch: "feat-2",
+      path: "/repo-wt-2",
+      baseBranch: "main",
+      status: "active",
+      branchRenamed: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    });
+    queryClient.setQueryData(queryKeys.threads.list("wt-2"), [thread]);
+
+    renderHook([repository], "wt-1", null);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(MockEventSource.instances).toHaveLength(0);
+  });
+
   it("excludes the selected thread from background subscriptions", async () => {
     const thread = makeThread({ id: "selected-thread", active: true });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);

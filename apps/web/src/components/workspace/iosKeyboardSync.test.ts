@@ -32,6 +32,35 @@ describe("iosKeyboardSync", () => {
     });
   });
 
+  it("disables all bridge UI/focus state when the mobile browser bridge is disabled", () => {
+    expect(resolveIosKeyboardUiState({
+      keyboardBridgeEnabled: false,
+      keyboardBridgeFocused: true,
+      keyboardSyncAvailable: true,
+      showMobileViewerControls: true,
+      softwareKeyboardVisible: true,
+    })).toEqual({
+      keyboardButtonActive: false,
+      showMobileKeyboardBridge: false,
+      usesSimulatorKeyboardSync: false,
+    });
+
+    expect(shouldFocusIosKeyboardBridgeOnSurfacePointerDown({
+      keyboardBridgeEnabled: false,
+      keyboardBridgeFocused: true,
+      keyboardSyncAvailable: true,
+      showMobileViewerControls: true,
+      softwareKeyboardVisible: true,
+    })).toBe(false);
+
+    expect(shouldMaintainIosKeyboardBridgeFocusOnBlur({
+      keyboardBridgeEnabled: false,
+      keyboardSyncAvailable: true,
+      showMobileViewerControls: true,
+      softwareKeyboardVisible: true,
+    })).toBe(false);
+  });
+
   it("does not auto-focus the bridge on mobile while the simulator keyboard is hidden", () => {
     expect(shouldFocusIosKeyboardBridgeOnSurfacePointerDown({
       keyboardBridgeFocused: false,

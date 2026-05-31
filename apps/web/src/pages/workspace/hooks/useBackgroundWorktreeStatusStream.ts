@@ -4,6 +4,7 @@ import type { MutableRefObject } from "react";
 import type { ChatEvent, ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
+import { isOptimisticThreadId } from "../../../lib/threadIds";
 import { EVENT_TYPES } from "../constants";
 import { GIT_STATUS_INVALIDATION_EVENT_TYPES, isMetadataToolEvent, payloadStringOrNull } from "../eventUtils";
 import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./chat-session/snapshotSeed";
@@ -143,7 +144,11 @@ export function useBackgroundWorktreeStatusStream(
   );
 
   const subscribedThreads = useMemo(
-    () => threadEntries.filter(({ thread }) => thread.active && thread.id !== selectedThreadId),
+    () => threadEntries.filter(({ thread }) => (
+      thread.active
+      && thread.id !== selectedThreadId
+      && !isOptimisticThreadId(thread.id)
+    )),
     [selectedThreadId, threadEntries],
   );
 

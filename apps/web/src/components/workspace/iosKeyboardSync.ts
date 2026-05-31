@@ -1,4 +1,5 @@
 export type ResolveIosKeyboardUiStateArgs = {
+  keyboardBridgeEnabled?: boolean;
   keyboardBridgeFocused: boolean;
   keyboardSyncAvailable: boolean;
   showMobileViewerControls: boolean;
@@ -11,9 +12,10 @@ export function resolveIosKeyboardUiState(args: ResolveIosKeyboardUiStateArgs): 
   usesSimulatorKeyboardSync: boolean;
 } {
   const { keyboardBridgeFocused, keyboardSyncAvailable, showMobileViewerControls, softwareKeyboardVisible } = args;
-  const usesSimulatorKeyboardSync = showMobileViewerControls && keyboardSyncAvailable;
-  const keyboardButtonActive = usesSimulatorKeyboardSync ? softwareKeyboardVisible : keyboardBridgeFocused;
-  const showMobileKeyboardBridge = showMobileViewerControls && (
+  const keyboardBridgeEnabled = args.keyboardBridgeEnabled ?? true;
+  const usesSimulatorKeyboardSync = keyboardBridgeEnabled && showMobileViewerControls && keyboardSyncAvailable;
+  const keyboardButtonActive = keyboardBridgeEnabled && (usesSimulatorKeyboardSync ? softwareKeyboardVisible : keyboardBridgeFocused);
+  const showMobileKeyboardBridge = keyboardBridgeEnabled && showMobileViewerControls && (
     usesSimulatorKeyboardSync ? softwareKeyboardVisible : keyboardBridgeFocused
   );
 
@@ -26,6 +28,10 @@ export function resolveIosKeyboardUiState(args: ResolveIosKeyboardUiStateArgs): 
 
 export function shouldFocusIosKeyboardBridgeOnSurfacePointerDown(args: ResolveIosKeyboardUiStateArgs): boolean {
   const { keyboardBridgeFocused, keyboardSyncAvailable, showMobileViewerControls, softwareKeyboardVisible } = args;
+  if (args.keyboardBridgeEnabled === false) {
+    return false;
+  }
+
   if (!showMobileViewerControls) {
     return true;
   }
@@ -38,9 +44,14 @@ export function shouldFocusIosKeyboardBridgeOnSurfacePointerDown(args: ResolveIo
 }
 
 export function shouldMaintainIosKeyboardBridgeFocusOnBlur(args: {
+  keyboardBridgeEnabled?: boolean;
   keyboardSyncAvailable: boolean;
   showMobileViewerControls: boolean;
   softwareKeyboardVisible: boolean;
 }): boolean {
+  if (args.keyboardBridgeEnabled === false) {
+    return false;
+  }
+
   return args.showMobileViewerControls && args.keyboardSyncAvailable && args.softwareKeyboardVisible;
 }

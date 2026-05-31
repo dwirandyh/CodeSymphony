@@ -158,6 +158,7 @@ import {
   trackStartupPersistedRead,
 } from "../lib/startupPerf";
 import { cn } from "../lib/utils";
+import { isOptimisticThreadId } from "../lib/threadIds";
 import {
   findRootWorktree,
   isOperationalWorktreeStatus,
@@ -1353,7 +1354,10 @@ export function WorkspacePage() {
     setLoadAllSlashCommandCatalogs(true);
   }, [loadAllSlashCommandCatalogs, slashCommandCatalogsEnabled]);
   pushStartupRenderProfileSection("chat-session");
-  const selectedThreadIdForLiveStatus = chat.selectedThreadIdForData ?? chat.selectedThreadId;
+  const selectedThreadIdCandidateForLiveStatus = chat.selectedThreadIdForData ?? chat.selectedThreadId;
+  const selectedThreadIdForLiveStatus = isOptimisticThreadId(selectedThreadIdCandidateForLiveStatus)
+    ? null
+    : selectedThreadIdCandidateForLiveStatus;
   const selectedWorktreeStatusOverride = useMemo(() => {
     if (
       !repos.selectedWorktreeId
@@ -1388,7 +1392,11 @@ export function WorkspacePage() {
       [...new Set(
         Object.values(worktreeStatusOverrides)
           .map((override) => override.threadId)
-          .filter((threadId): threadId is string => typeof threadId === "string" && threadId.length > 0),
+          .filter((threadId): threadId is string => (
+            typeof threadId === "string"
+            && threadId.length > 0
+            && !isOptimisticThreadId(threadId)
+          )),
       )].sort(),
     [worktreeStatusOverrides],
   );
@@ -1915,7 +1923,7 @@ export function WorkspacePage() {
 
   const isThreadHistoryLocallyComplete = chat.isThreadHistoryLocallyComplete;
   const prefetchDisplayThreadSnapshot = useCallback((threadId: string) => {
-    if (isThreadHistoryLocallyComplete(threadId)) {
+    if (isOptimisticThreadId(threadId) || isThreadHistoryLocallyComplete(threadId)) {
       return Promise.resolve();
     }
 
@@ -4912,7 +4920,7 @@ export function WorkspacePage() {
         <BackgroundWorktreeStatusStreamBridge
           repositories={backgroundStatusRepositories}
           selectedWorktreeId={repos.selectedWorktreeId}
-          selectedThreadId={chat.selectedThreadIdForData ?? chat.selectedThreadId}
+          selectedThreadId={selectedThreadIdForLiveStatus}
           threadSnapshot={backgroundStatusThreadSnapshot}
           onCompletionAttentionEvent={handleCompletionAttentionEvent}
         />

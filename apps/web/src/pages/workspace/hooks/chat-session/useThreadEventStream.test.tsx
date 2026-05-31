@@ -351,6 +351,20 @@ afterEach(() => {
 });
 
 describe("useThreadEventStream", () => {
+  it("does not open a stream or fetch snapshots for optimistic thread ids", async () => {
+    const threadId = "optimistic-thread:wt-1:test";
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(MockEventSource.instances).toHaveLength(0);
+    expect(getThreadStatusSnapshotMock).not.toHaveBeenCalled();
+    expect(getTimelineSnapshotMock).not.toHaveBeenCalled();
+  });
+
   it("does not hit a render loop while bootstrapping with no selected thread", async () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 

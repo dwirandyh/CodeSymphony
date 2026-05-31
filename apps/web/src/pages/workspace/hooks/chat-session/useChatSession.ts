@@ -94,6 +94,7 @@ import {
 } from "./snapshotSeed";
 import { useThreadEventStream } from "./useThreadEventStream";
 import { resolveAgentDefaultModel } from "../../../../lib/agentModelDefaults";
+import { isOptimisticThreadId } from "../../../../lib/threadIds";
 
 const DEFAULT_THREAD_TITLE = "New Thread";
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -184,7 +185,7 @@ function mergeTrackedThreads(params: {
     optimisticCreatedThreadIds.has(thread.id) && !locallyDeletedThreadIds.has(thread.id),
   );
   const mergedThreads = queriedThreads
-    .filter((thread) => !locallyDeletedThreadIds.has(thread.id))
+    .filter((thread) => !locallyDeletedThreadIds.has(thread.id) && !isOptimisticThreadId(thread.id))
     .map((thread) => (
       pendingAgentSelectionUpdateThreadIds.has(thread.id)
         ? currentThreadsById.get(thread.id) ?? thread
@@ -951,6 +952,7 @@ export function useChatSession(
   const [deferredCanonicalThreadSnapshotThreadId, setDeferredCanonicalThreadSnapshotThreadId] = useState<string | null>(null);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(null);
   const [pendingComposerPermissionMode, setPendingComposerPermissionMode] = useState<ChatThreadPermissionMode>("default");
+  const [optimisticUserMessageVersion, setOptimisticUserMessageVersion] = useState(0);
 
   const streamingMessageIdsRef = useRef<Set<string>>(new Set());
   const stickyRawFallbackMessageIdsRef = useRef<Set<string>>(new Set());
@@ -966,6 +968,10 @@ export function useChatSession(
   const threadsRef = useRef<ChatThread[]>([]);
   const threadByIdRef = useRef<Map<string, ChatThread>>(new Map());
   const creatingThreadRef = useRef(false);
+  const additionalThreadCreationRef = useRef<{
+    worktreeId: string | null;
+    promise: Promise<ChatThread | null>;
+  } | null>(null);
   const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
   const preservedThreadShellsRef = useRef<Map<string, ChatThread>>(new Map());
   const preservedHandoffSourceExecutionIdsRef = useRef<Map<string, string>>(new Map());
@@ -980,6 +986,7 @@ export function useChatSession(
   const awaitingProvisionedThreadByWorktreeRef = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
   const pendingAgentSelectionUpdatesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const optimisticUserMessagesByThreadRef = useRef<Map<string, Map<string, ChatMessage>>>(new Map());
   const activeThreadNavigationPerfRef = useRef<ThreadNavigationPerfSession | null>(null);
   const previousThreadNavigationPerfThreadIdRef = useRef<string | null>(null);
   const lastThreadSelectionRef = useRef<{
@@ -1291,7 +1298,7 @@ export function useChatSession(
     const reconciledOptimisticThreadIds: string[] = [];
     const queriedThreadIds = new Set(queriedThreadsForSelection.map((thread) => thread.id));
     for (const thread of queriedThreadsForSelection) {
-      if (optimisticCreatedThreadIdsRef.current.delete(thread.id)) {
+      if (!isOptimisticThreadId(thread.id) && optimisticCreatedThreadIdsRef.current.delete(thread.id)) {
         reconciledOptimisticThreadIds.push(thread.id);
       }
       const preservedHandoffExecutionId = preservedHandoffSourceExecutionIdsRef.current.get(thread.id);
@@ -1553,14 +1560,27 @@ export function useChatSession(
   );
   const messages = useMemo(
     () => {
-      if (!liveMessages) {
+      const pendingMessages = selectedThreadIdForData
+        ? optimisticUserMessagesByThreadRef.current.get(selectedThreadIdForData)
+        : undefined;
+      if (!liveMessages && (!pendingMessages || pendingMessages.size === 0)) {
         return EMPTY_MESSAGES;
       }
 
-      const plainMessages = liveMessages.map((message) => toPlainChatMessage(message as ChatMessage));
+      const plainMessagesById = new Map<string, ChatMessage>();
+      for (const message of liveMessages ?? []) {
+        const plainMessage = toPlainChatMessage(message as ChatMessage);
+        plainMessagesById.set(plainMessage.id, plainMessage);
+      }
+      for (const message of pendingMessages?.values() ?? []) {
+        if (!plainMessagesById.has(message.id)) {
+          plainMessagesById.set(message.id, message);
+        }
+      }
+      const plainMessages = [...plainMessagesById.values()];
       return cloneSortedIfNeeded(plainMessages, (left, right) => left.seq - right.seq);
     },
-    [liveMessages],
+    [liveMessages, optimisticUserMessageVersion, selectedThreadIdForData],
   );
   const events = useMemo(
     () => {
@@ -1740,14 +1760,17 @@ export function useChatSession(
     && !eventDerivedThreadRunning
     && selectedThread?.active !== true
     && waitingAssistant?.threadId !== selectedThreadId;
+  const selectedServerThreadIdForRemote = isOptimisticThreadId(selectedThreadIdForData)
+    ? null
+    : selectedThreadIdForData;
   const snapshotBootstrapThreadId =
     shouldDelaySelectedThreadRemoteBootstrap
       ? null
-      : selectedThreadIdForData;
+      : selectedServerThreadIdForRemote;
   const remoteBootstrapThreadId =
     shouldDelaySelectedThreadRemoteBootstrap || shouldUseLocalCompleteThreadCache
       ? null
-      : selectedThreadIdForData;
+      : selectedServerThreadIdForRemote;
   const selectedThreadConnectionState = useThreadStreamConnectionState(remoteBootstrapThreadId);
   const selectedThreadConnectionErrorMessage = useThreadStreamConnectionErrorMessage(remoteBootstrapThreadId);
   const shouldFetchThreadSnapshot = !shouldUseLocalCompleteThreadCache;
@@ -1793,9 +1816,9 @@ export function useChatSession(
   const {
     data: queuedMessages = [],
   } = useQuery({
-    queryKey: selectedThreadIdForData ? queryKeys.threads.queue(selectedThreadIdForData) : ["threads", "__no_thread__", "queue"],
-    queryFn: () => api.listQueuedMessages(selectedThreadIdForData!),
-    enabled: selectedThreadIdForData != null && !shouldDelaySelectedThreadRemoteBootstrap,
+    queryKey: selectedServerThreadIdForRemote ? queryKeys.threads.queue(selectedServerThreadIdForRemote) : ["threads", "__no_thread__", "queue"],
+    queryFn: () => api.listQueuedMessages(selectedServerThreadIdForRemote!),
+    enabled: selectedServerThreadIdForRemote != null && !shouldDelaySelectedThreadRemoteBootstrap,
   });
 
   useEffect(() => {
@@ -1852,8 +1875,8 @@ export function useChatSession(
     compactThreadSnapshotFetching || canonicalThreadSnapshotFetching;
   const {
     data: queriedThreadStatusSnapshot,
-  } = useThreadStatusSnapshot(selectedThreadIdForData, {
-    enabled: selectedThreadIdForData != null,
+  } = useThreadStatusSnapshot(selectedServerThreadIdForRemote, {
+    enabled: selectedServerThreadIdForRemote != null,
   });
 
   useEffect(() => {
@@ -2405,6 +2428,7 @@ export function useChatSession(
 
   function clearThreadTrackingState(threadId: string) {
     optimisticCreatedThreadIdsRef.current.delete(threadId);
+    optimisticUserMessagesByThreadRef.current.delete(threadId);
     serverBackedThreadIdsRef.current.delete(threadId);
     loggedOrphanEventIdsByThreadRef.current.delete(threadId);
     const claimedKeyPrefix = `${threadId}:`;
@@ -2415,6 +2439,28 @@ export function useChatSession(
     }
     clearThreadStreamState(threadId);
     disposeThreadCollections(threadId);
+  }
+
+  function rememberOptimisticUserMessage(message: ChatMessage) {
+    let messagesById = optimisticUserMessagesByThreadRef.current.get(message.threadId);
+    if (!messagesById) {
+      messagesById = new Map();
+      optimisticUserMessagesByThreadRef.current.set(message.threadId, messagesById);
+    }
+    messagesById.set(message.id, message);
+    setOptimisticUserMessageVersion((current) => current + 1);
+  }
+
+  function forgetOptimisticUserMessage(threadId: string, messageId: string) {
+    const messagesById = optimisticUserMessagesByThreadRef.current.get(threadId);
+    if (!messagesById?.delete(messageId)) {
+      return;
+    }
+
+    if (messagesById.size === 0) {
+      optimisticUserMessagesByThreadRef.current.delete(threadId);
+    }
+    setOptimisticUserMessageVersion((current) => current + 1);
   }
 
   function markThreadServerBacked(threadId: string, reason: string) {
@@ -2512,15 +2558,29 @@ export function useChatSession(
 
     const previousCollections = getThreadCollections(previousThreadId);
     const nextCollections = getThreadCollections(nextThread.id);
-    const optimisticMessages = (previousCollections.messagesCollection.toArray as ChatMessage[])
-      .map((message) => ({
+    const optimisticMessagesById = new Map<string, ChatMessage>();
+    for (const message of previousCollections.messagesCollection.toArray as ChatMessage[]) {
+      optimisticMessagesById.set(message.id, {
         ...message,
         threadId: nextThread.id,
         attachments: message.attachments.map((attachment) => ({
           ...attachment,
           messageId: message.id,
         })),
-      }));
+      });
+    }
+    const pendingOptimisticMessages = optimisticUserMessagesByThreadRef.current.get(previousThreadId);
+    for (const message of pendingOptimisticMessages?.values() ?? []) {
+      optimisticMessagesById.set(message.id, {
+        ...message,
+        threadId: nextThread.id,
+        attachments: message.attachments.map((attachment) => ({
+          ...attachment,
+          messageId: message.id,
+        })),
+      });
+    }
+    const optimisticMessages = [...optimisticMessagesById.values()];
     const optimisticEvents = (previousCollections.eventsCollection.toArray as ChatEvent[])
       .map((event) => ({
         ...event,
@@ -2556,6 +2616,13 @@ export function useChatSession(
     setThreadLastAppliedSnapshotKey(nextThread.id, getThreadLastAppliedSnapshotKey(previousThreadId), {
       includesCollections: getThreadLastAppliedSnapshotIncludesCollections(previousThreadId),
     });
+    if (optimisticMessages.length > 0) {
+      optimisticUserMessagesByThreadRef.current.set(
+        nextThread.id,
+        new Map(optimisticMessages.map((message) => [message.id, message])),
+      );
+      setOptimisticUserMessageVersion((current) => current + 1);
+    }
     clearThreadTrackingState(previousThreadId);
   }
 
@@ -2680,6 +2747,7 @@ export function useChatSession(
     }
 
     messagesCollection.insert(optimisticMessage);
+    rememberOptimisticUserMessage(optimisticMessage);
     setThreadLastMessageSeq(optimisticMessage.threadId, optimisticMessage.seq);
   }
 
@@ -2695,6 +2763,7 @@ export function useChatSession(
     }
 
     messagesCollection.delete(optimisticMessageId);
+    forgetOptimisticUserMessage(threadId, optimisticMessageId);
   }
 
   function mergeReturnedMessageIntoVisibleState(
@@ -2709,6 +2778,9 @@ export function useChatSession(
     const messagesCollection = getThreadMessagesCollection(threadId);
     if (options?.optimisticMessageId && messagesCollection.toArray.some((message) => message.id === options.optimisticMessageId)) {
       messagesCollection.delete(options.optimisticMessageId);
+    }
+    if (options?.optimisticMessageId) {
+      forgetOptimisticUserMessage(threadId, options.optimisticMessageId);
     }
 
     const existingMessages = messagesCollection.toArray as ChatMessage[];
@@ -2988,30 +3060,49 @@ export function useChatSession(
       return null;
     }
 
-    onError(null);
-    logNewThreadSendDebug("createAdditionalThread.start");
-    try {
-      const result = await createThreadInCurrentContext(DEFAULT_THREAD_TITLE);
-      if (!result) return null;
-      logNewThreadSendDebug("createAdditionalThread.optimisticCreated", {
-        threadId: result.created.id,
-        optimisticThreadId: result.optimisticThreadId,
-        createdTitle: result.created.title,
-      });
-      const finalizedThread = await result.finalize;
-      logNewThreadSendDebug("createAdditionalThread.finalized", {
-        threadId: finalizedThread.id,
-        finalizedThreadId: finalizedThread.id,
-        finalizedTitle: finalizedThread.title,
-      });
-      return finalizedThread;
-    } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to create thread");
-      logNewThreadSendDebug("createAdditionalThread.failed", {
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return null;
+    const inFlightCreation = additionalThreadCreationRef.current;
+    if (inFlightCreation?.worktreeId === selectedWorktreeId) {
+      return inFlightCreation.promise;
     }
+
+    const creationPromise = (async () => {
+      onError(null);
+      logNewThreadSendDebug("createAdditionalThread.start");
+      try {
+        const result = await createThreadInCurrentContext(DEFAULT_THREAD_TITLE);
+        if (!result) return null;
+        logNewThreadSendDebug("createAdditionalThread.optimisticCreated", {
+          threadId: result.created.id,
+          optimisticThreadId: result.optimisticThreadId,
+          createdTitle: result.created.title,
+        });
+        const finalizedThread = await result.finalize;
+        logNewThreadSendDebug("createAdditionalThread.finalized", {
+          threadId: finalizedThread.id,
+          finalizedThreadId: finalizedThread.id,
+          finalizedTitle: finalizedThread.title,
+        });
+        return finalizedThread;
+      } catch (e) {
+        onError(e instanceof Error ? e.message : "Failed to create thread");
+        logNewThreadSendDebug("createAdditionalThread.failed", {
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return null;
+      }
+    })();
+
+    additionalThreadCreationRef.current = {
+      worktreeId: selectedWorktreeId,
+      promise: creationPromise,
+    };
+    void creationPromise.finally(() => {
+      if (additionalThreadCreationRef.current?.promise === creationPromise) {
+        additionalThreadCreationRef.current = null;
+      }
+    });
+
+    return creationPromise;
   }
 
   async function createThreadAndSendMessage(title: string, content: string, mode: ChatMode = "default") {
