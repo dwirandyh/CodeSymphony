@@ -7,7 +7,7 @@ import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { ZodError } from "zod";
 import { prisma } from "./db/prisma.js";
-import { assertDatabaseReady, DatabaseNotReadyError } from "./db/databaseReadiness.js";
+import { assertDatabaseReady, isDatabaseNotReadyError } from "./db/databaseReadiness.js";
 import { createEventHub } from "./events/eventHub.js";
 import { createWorkspaceEventHub } from "./events/workspaceEventHub.js";
 import { runClaudeWithStreaming } from "./claude/sessionRunner.js";
@@ -76,6 +76,11 @@ declare module "fastify" {
   }
 }
 
+function isProductionRuntime() {
+  const nodeEnvKey = ["NODE", "ENV"].join("_");
+  return process.env[nodeEnvKey] === "production";
+}
+
 function createApp() {
   const enableHttpLogger = process.env.CODESYMPHONY_ENABLE_HTTP_LOGS?.trim().toLowerCase();
   const app = Fastify({
@@ -83,7 +88,7 @@ function createApp() {
       ? true
       : enableHttpLogger === "0" || enableHttpLogger === "false"
         ? false
-        : !(process.env.NODE_ENV === "production" && process.env.WEB_DIST_PATH?.trim()),
+        : !(isProductionRuntime() && process.env.WEB_DIST_PATH?.trim()),
   });
   const eventHub = createEventHub(prisma);
   const workspaceEventHub = createWorkspaceEventHub();
@@ -392,7 +397,7 @@ async function main() {
     let startupMigrationPlan: PrismaMigrationExecutionPlan | null = null;
     let startupMigrationResult: { executed: boolean } = { executed: false };
     const templateDatabasePath = process.env.PRISMA_TEMPLATE_DB_PATH;
-    if (process.env.NODE_ENV === "production" && !templateDatabasePath) {
+    if (isProductionRuntime() && !templateDatabasePath) {
       const { createPrismaMigrationExecutionPlan, runPrismaMigrations } = await import("./migrate.js");
       startupMigrationPlan = createPrismaMigrationExecutionPlan();
       startupMigrationResult = await runPrismaMigrations({ plan: startupMigrationPlan });
@@ -401,7 +406,7 @@ async function main() {
     try {
       await assertDatabaseReady(prisma);
     } catch (error) {
-      if (error instanceof DatabaseNotReadyError && process.env.NODE_ENV === "production" && templateDatabasePath) {
+      if (isDatabaseNotReadyError(error) && isProductionRuntime() && templateDatabasePath) {
         await prisma.$disconnect();
         const restoredDatabasePath = await restoreBundledDatabaseFromTemplate(
           templateDatabasePath,
@@ -410,8 +415,8 @@ async function main() {
         console.log(`Restored runtime database from bundled template: ${restoredDatabasePath}`);
         await assertDatabaseReady(prisma);
       } else if (
-        error instanceof DatabaseNotReadyError &&
-        process.env.NODE_ENV === "production" &&
+        isDatabaseNotReadyError(error) &&
+        isProductionRuntime() &&
         !startupMigrationResult.executed
       ) {
         const { runPrismaMigrations } = await import("./migrate.js");
@@ -449,7 +454,7 @@ async function main() {
     }, `Runtime listening on http://${listenHost}:${port}`);
     void runPostListenStartupTasks(app);
   } catch (error) {
-    if (error instanceof DatabaseNotReadyError) {
+    if (isDatabaseNotReadyError(error)) {
       console.error(error.message);
     } else {
       console.error("Failed to start runtime.", error);

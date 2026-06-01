@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
-import * as pty from "node-pty";
+import * as fs from "node:fs";
 
 const mockPtyProcess = () => {
   const emitter = new EventEmitter();
@@ -19,26 +19,55 @@ const mockPtyProcess = () => {
 };
 
 let currentMockPty: ReturnType<typeof mockPtyProcess>;
+let currentExitResolve: ((exitCode: number) => void) | undefined;
 
-vi.mock("node-pty", () => ({
-  spawn: vi.fn((shell: string, args: string[], options: { cwd: string }) => {
-    if (options.cwd === "/missing") {
-      throw new Error("ENOENT: missing cwd");
+const bunSpawn = vi.fn((command: string[], options: { cwd: string; terminal: { data: (terminal: unknown, data: Uint8Array) => void } }) => {
+  if (options.cwd === "/missing") {
+    throw new Error("ENOENT: missing cwd");
+  }
+
+  currentMockPty = mockPtyProcess();
+  const exited = new Promise<number>((resolve) => {
+    currentExitResolve = resolve;
+  });
+
+  currentMockPty.write.mockImplementation((data: string) => {
+    options.terminal.data(undefined, new TextEncoder().encode(data));
+  });
+  currentMockPty.kill.mockImplementation(() => {
+    currentExitResolve?.(0);
+  });
+  currentMockPty._emit = (event: string, data: unknown) => {
+    if (event === "data") {
+      options.terminal.data(undefined, new TextEncoder().encode(String(data)));
+      return true;
     }
-    currentMockPty = mockPtyProcess();
-    return currentMockPty;
-  }),
-}));
+
+    if (event === "exit") {
+      currentExitResolve?.((data as { exitCode?: number }).exitCode ?? 0);
+      return true;
+    }
+
+    return false;
+  };
+
+  return {
+    pid: 123,
+    terminal: {
+      write: currentMockPty.write,
+      resize: currentMockPty.resize,
+    },
+    signalCode: 0,
+    exited,
+    kill: currentMockPty.kill,
+  };
+});
 
 vi.mock("node:fs", () => ({
   existsSync: vi.fn(() => true),
+  copyFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
   chmodSync: vi.fn(),
-}));
-
-vi.mock("node:module", () => ({
-  createRequire: vi.fn(() => ({
-    resolve: vi.fn(() => "/fake/node_modules/node-pty/package.json"),
-  })),
 }));
 
 vi.mock("../src/claude/shellEnv.js", () => ({
@@ -53,6 +82,11 @@ describe("terminalService", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    currentExitResolve = undefined;
+    Object.defineProperty(globalThis, "Bun", {
+      configurable: true,
+      value: { spawn: bunSpawn },
+    });
     service = createTerminalService();
   });
 
@@ -71,18 +105,19 @@ describe("terminalService", () => {
       expect(first).toBe(second);
     });
 
-    it("respawns exited workspace terminal sessions when reconnecting", () => {
+    it("respawns exited workspace terminal sessions when reconnecting", async () => {
       const first = service.spawn("wt1:terminal:abc", "/tmp");
       const exitedPty = currentMockPty;
 
-      exitedPty._emit("exit", { exitCode: 0, signal: 0 });
+      currentExitResolve?.(0);
+      await Promise.resolve();
 
       const second = service.spawn("wt1:terminal:abc", "/tmp");
 
       expect(second).not.toBe(first);
       expect(second.active).toBe(true);
       expect(currentMockPty).not.toBe(exitedPty);
-      expect(vi.mocked(pty.spawn)).toHaveBeenCalledTimes(2);
+      expect(bunSpawn).toHaveBeenCalledTimes(2);
     });
 
     it("replaces the session when cwd changes", () => {
@@ -120,8 +155,8 @@ describe("terminalService", () => {
       try {
         service.spawn("s1", "/tmp", { replace: true });
 
-        const spawnCall = vi.mocked(pty.spawn).mock.calls.at(-1);
-        const env = spawnCall?.[2]?.env as Record<string, string> | undefined;
+        const spawnCall = bunSpawn.mock.calls.at(-1);
+        const env = spawnCall?.[1]?.env as Record<string, string> | undefined;
         expect(env?.NO_COLOR).toBeUndefined();
         expect(env?.FORCE_COLOR).toBe("1");
       } finally {
@@ -137,6 +172,8 @@ describe("terminalService", () => {
         CURSOR_AGENT: process.env.CURSOR_AGENT,
         CURSOR_INVOKED_AS: process.env.CURSOR_INVOKED_AS,
         TERM_PROGRAM: process.env.TERM_PROGRAM,
+        CODESYMPHONY_TERMINAL_ZDOTDIR: process.env.CODESYMPHONY_TERMINAL_ZDOTDIR,
+        CODESYMPHONY_TERMINAL_ZSHRC_TEMPLATE: process.env.CODESYMPHONY_TERMINAL_ZSHRC_TEMPLATE,
         SHELL: process.env.SHELL,
       };
       process.env.NO_COLOR = "1";
@@ -144,18 +181,25 @@ describe("terminalService", () => {
       process.env.CURSOR_AGENT = "1";
       process.env.CURSOR_INVOKED_AS = "agent";
       process.env.TERM_PROGRAM = "zed";
+      process.env.CODESYMPHONY_TERMINAL_ZDOTDIR = "/tmp/codesymphony-terminal-zsh";
+      process.env.CODESYMPHONY_TERMINAL_ZSHRC_TEMPLATE = "/Applications/CodeSymphony.app/Contents/Resources/runtime-bundle/terminal-zsh/.zshrc";
       process.env.SHELL = "/bin/zsh";
 
       try {
         service.spawn("s1", "/tmp", { replace: true });
 
-        const env = vi.mocked(pty.spawn).mock.calls.at(-1)?.[2]?.env as Record<string, string> | undefined;
+        const env = bunSpawn.mock.calls.at(-1)?.[1]?.env as Record<string, string> | undefined;
         expect(env?.NO_COLOR).toBeUndefined();
         expect(env?.FORCE_COLOR).toBe("1");
         expect(env?.CURSOR_AGENT).toBeUndefined();
         expect(env?.CURSOR_INVOKED_AS).toBeUndefined();
         expect(env?.TERM_PROGRAM).toBe("CodeSymphony");
-        expect(env?.ZDOTDIR).toContain("terminal-zsh");
+        expect(env?.ZDOTDIR).toBe("/tmp/codesymphony-terminal-zsh");
+        expect(fs.mkdirSync).toHaveBeenCalledWith("/tmp/codesymphony-terminal-zsh", { recursive: true });
+        expect(fs.copyFileSync).toHaveBeenCalledWith(
+          "/Applications/CodeSymphony.app/Contents/Resources/runtime-bundle/terminal-zsh/.zshrc",
+          "/tmp/codesymphony-terminal-zsh/.zshrc",
+        );
       } finally {
         for (const [key, value] of Object.entries(originals)) {
           if (value === undefined) {
@@ -175,9 +219,8 @@ describe("terminalService", () => {
       service.spawn("s1", "/tmp");
 
       expect(buildClaudeRuntimeEnv).toHaveBeenCalled();
-      expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
-        expect.any(String),
-        ["-o", "nopromptsp"],
+      expect(bunSpawn).toHaveBeenCalledWith(
+        [expect.any(String), "-o", "nopromptsp"],
         expect.objectContaining({
           cwd: "/tmp",
           env: expect.objectContaining({
@@ -201,9 +244,8 @@ describe("terminalService", () => {
       try {
         service.spawn("s1", "/tmp", { mode: "exec", command: "pwd", replace: true });
 
-        expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
-          "/bin/zsh",
-          ["-lic", "pwd"],
+        expect(bunSpawn).toHaveBeenCalledWith(
+          ["/bin/zsh", "-lic", "pwd"],
           expect.objectContaining({
             cwd: "/tmp",
           }),
@@ -215,9 +257,9 @@ describe("terminalService", () => {
 
     it("does not fall back to HOME when an explicit cwd fails", () => {
       expect(() => service.spawn("s1", "/missing")).toThrow("ENOENT: missing cwd");
-      const spawnCalls = vi.mocked(pty.spawn).mock.calls;
+      const spawnCalls = bunSpawn.mock.calls;
       expect(spawnCalls.length).toBeGreaterThan(0);
-      expect(spawnCalls.every(([, , options]) => options.cwd === "/missing")).toBe(true);
+      expect(spawnCalls.every(([, options]) => options.cwd === "/missing")).toBe(true);
     });
 
     it("falls back when no cwd is provided", () => {
@@ -230,9 +272,8 @@ describe("terminalService", () => {
         const session = service.spawn("s1");
         expect(session.requestedCwd).toBeUndefined();
         expect(session.resolvedCwd).toBe("/Users/tester");
-        expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
-          expect.any(String),
-          ["-o", "nopromptsp"],
+        expect(bunSpawn).toHaveBeenCalledWith(
+          [expect.any(String), "-o", "nopromptsp"],
           expect.objectContaining({
             cwd: "/Users/tester",
           }),
@@ -342,12 +383,13 @@ describe("terminalService", () => {
   });
 
   describe("addExitListener", () => {
-    it("registers exit listener", () => {
+    it("registers exit listener", async () => {
       service.spawn("s1", "/tmp");
       const listener = vi.fn();
       service.addExitListener("s1", listener);
 
       currentMockPty._emit("exit", { exitCode: 0, signal: 0 });
+      await Promise.resolve();
       expect(listener).toHaveBeenCalledWith({ exitCode: 0, signal: 0 });
     });
 
@@ -356,28 +398,31 @@ describe("terminalService", () => {
       expect(typeof unsub).toBe("function");
     });
 
-    it("removes listener on unsub", () => {
+    it("removes listener on unsub", async () => {
       service.spawn("s1", "/tmp");
       const listener = vi.fn();
       const unsub = service.addExitListener("s1", listener);
       unsub();
       currentMockPty._emit("exit", { exitCode: 1 });
+      await Promise.resolve();
       expect(listener).not.toHaveBeenCalled();
     });
 
-    it("replays the exit event for an already exited session", () => {
+    it("replays the exit event for an already exited session", async () => {
       service.spawn("s1", "/tmp");
       currentMockPty._emit("exit", { exitCode: 0, signal: 9 });
+      await Promise.resolve();
 
       const listener = vi.fn();
       service.addExitListener("s1", listener);
 
-      expect(listener).toHaveBeenCalledWith({ exitCode: 0, signal: 9 });
+      expect(listener).toHaveBeenCalledWith({ exitCode: 0, signal: 0 });
     });
 
-    it("can skip immediate exit replay when requested", () => {
+    it("can skip immediate exit replay when requested", async () => {
       service.spawn("s1", "/tmp");
       currentMockPty._emit("exit", { exitCode: 0, signal: 9 });
+      await Promise.resolve();
 
       const listener = vi.fn();
       service.addExitListener("s1", listener, { replay: false });
@@ -387,12 +432,13 @@ describe("terminalService", () => {
   });
 
   describe("session persistence", () => {
-    it("retains exited sessions for reconnect and excludes them from resource sessions", () => {
+    it("retains exited sessions for reconnect and excludes them from resource sessions", async () => {
       const session = service.spawn("s1", "/tmp");
-      const spawnCountBeforeExit = vi.mocked(pty.spawn).mock.calls.length;
+      const spawnCountBeforeExit = bunSpawn.mock.calls.length;
 
       currentMockPty._emit("data", "done\n");
       currentMockPty._emit("exit", { exitCode: 0, signal: 0 });
+      await Promise.resolve();
 
       expect(service.has("s1")).toBe(true);
       expect(service.listResourceSessions()).toEqual([]);
@@ -413,13 +459,14 @@ describe("terminalService", () => {
 
       const reconnectedSession = service.spawn("s1", "/tmp");
       expect(reconnectedSession).toBe(session);
-      expect(vi.mocked(pty.spawn).mock.calls).toHaveLength(spawnCountBeforeExit);
+      expect(bunSpawn.mock.calls).toHaveLength(spawnCountBeforeExit);
     });
 
-    it("returns stored scrollback and exit metadata", () => {
+    it("returns stored scrollback and exit metadata", async () => {
       service.spawn("s1", "/tmp");
       currentMockPty._emit("data", "done\n");
       currentMockPty._emit("exit", { exitCode: 7, signal: 0 });
+      await Promise.resolve();
 
       expect(service.getScrollback("s1")).toBe("done\n");
       expect(service.getExitEvent("s1")).toEqual({ exitCode: 7, signal: 0 });

@@ -575,6 +575,8 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         .join("index.js");
     let runtime_bundle_dir = resource_dir.join("runtime-bundle");
     let prisma_dir = resource_dir.join("runtime-bundle").join("prisma");
+    let terminal_zdotdir = app_data_dir.join("terminal-zsh");
+    let terminal_zshrc_template = runtime_bundle_dir.join("terminal-zsh").join(".zshrc");
     let db_path = app_data_dir.join("codesymphony.db");
     let debug_log_path = app_data_dir.join("debug.log");
 
@@ -603,6 +605,8 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         .env("RUNTIME_HOST", desktop_runtime_host(false))
         .env("RUNTIME_PORT", port.to_string())
         .env("CODESYMPHONY_DEBUG_LOG_PATH", &debug_log_path)
+        .env("CODESYMPHONY_TERMINAL_ZDOTDIR", &terminal_zdotdir)
+        .env("CODESYMPHONY_TERMINAL_ZSHRC_TEMPLATE", &terminal_zshrc_template)
         .env(
             "WEB_DIST_PATH",
             resource_dir.join("runtime-bundle").join("web-dist"),

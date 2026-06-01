@@ -10,7 +10,6 @@
     "prisma/schema.prisma"
   ],
   "scripts": {
-    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true",
     "dev": "prisma generate && prisma migrate deploy && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && bun --watch --env-file=.env src/index.ts",
     "start": "prisma generate && prisma migrate deploy && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && bun --env-file=.env src/index.ts",
     "build": "prisma generate && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && if [ ! -d dist ]; then rm -f tsconfig.tsbuildinfo; fi; tsc -p tsconfig.json",
@@ -35,7 +34,6 @@
     "@opencode-ai/sdk": "^1.14.20",
     "@prisma/client": "^6.4.1",
     "fastify": "^5.2.1",
-    "node-pty": "^1.1.0",
     "prisma": "^6.4.1",
     "ws": "^8.18.3",
     "zod": "^4.0.0"

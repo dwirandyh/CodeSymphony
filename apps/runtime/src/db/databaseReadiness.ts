@@ -7,6 +7,11 @@ export class DatabaseNotReadyError extends Error {
   }
 }
 
+export function isDatabaseNotReadyError(error: unknown): error is DatabaseNotReadyError {
+  return error instanceof DatabaseNotReadyError
+    || (error instanceof Error && error.name === "DatabaseNotReadyError");
+}
+
 function isPrismaSchemaNotReadyError(error: unknown): error is { code: string; meta?: Record<string, unknown> } {
   if (!error || typeof error !== "object" || !("code" in error)) {
     return false;

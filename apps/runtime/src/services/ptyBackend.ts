@@ -1,8 +1,3 @@
-import { chmodSync, existsSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import * as nodePty from "node-pty";
-
 interface BunTerminalHandle {
     write(data: string): void;
     resize?(cols: number, rows: number): void;
@@ -52,13 +47,6 @@ export interface PtySpawnOptions {
     rows: number;
     cwd: string;
     env: Record<string, string>;
-}
-
-let nodeSpawnHelperPermissionsFixed = false;
-const require = createRequire(import.meta.url);
-
-function isBunRuntime(): boolean {
-    return "Bun" in globalThis;
 }
 
 class BunPtyProcess implements PtyProcess {
@@ -173,61 +161,12 @@ function spawnBunPty(
     return processHandle;
 }
 
-/**
- * Ensure node-pty's spawn-helper binary has executable permissions.
- * Tauri's resource copying can strip the +x bit, causing posix_spawnp to fail.
- */
-function fixNodePtySpawnHelperPermissions(): void {
-    if (nodeSpawnHelperPermissionsFixed) {
-        return;
-    }
-
-    nodeSpawnHelperPermissionsFixed = true;
-
-    try {
-        const nodePtyRoot = dirname(require.resolve("node-pty/package.json"));
-        const platform = process.platform === "darwin" ? "darwin" : process.platform;
-        const arch = process.arch;
-        const candidates = [
-            join(nodePtyRoot, "build", "Release", "spawn-helper"),
-            join(nodePtyRoot, "build", "Debug", "spawn-helper"),
-            join(nodePtyRoot, "prebuilds", `${platform}-${arch}`, "spawn-helper"),
-        ];
-
-        for (const spawnHelper of candidates) {
-            if (existsSync(spawnHelper)) {
-                chmodSync(spawnHelper, 0o755);
-                return;
-            }
-        }
-    } catch {
-        // Best-effort; if we can't fix it, pty.spawn will throw with a clear error
-    }
-}
-
-function spawnNodePty(
-    file: string,
-    args: string[],
-    options: PtySpawnOptions,
-): PtyProcess {
-    fixNodePtySpawnHelperPermissions();
-    const name = process.platform === "win32" ? "xterm-color" : options.name;
-    return nodePty.spawn(file, args, {
-        ...options,
-        name,
-    }) as PtyProcess;
-}
-
 export function spawnPty(
     file: string,
     args: string[],
     options: PtySpawnOptions,
 ): PtyProcess {
-    if (isBunRuntime()) {
-        return spawnBunPty(file, args, options);
-    }
-
-    return spawnNodePty(file, args, options);
+    return spawnBunPty(file, args, options);
 }
 
 export function isPtyIoError(error: unknown): boolean {

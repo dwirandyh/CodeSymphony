@@ -12,6 +12,7 @@ declare global {
 
 export const prisma = globalThis.__codesymphonyPrisma ?? new PrismaClient();
 
-if (process.env.NODE_ENV !== "production") {
+const nodeEnvKey = ["NODE", "ENV"].join("_");
+if (process.env[nodeEnvKey] !== "production") {
   globalThis.__codesymphonyPrisma = prisma;
 }
