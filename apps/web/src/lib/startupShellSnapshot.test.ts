@@ -307,6 +307,80 @@ describe("startupShellSnapshot", () => {
     });
   });
 
+  it("does not restore a snapshot thread into a different routed worktree", () => {
+    const snapshot = buildStartupShellSnapshot({
+      capturedAt: "2026-05-19T12:00:00.000Z",
+      repoId: "repo-1",
+      repoName: "Repo One",
+      worktreeId: "wt-1",
+      worktreeBranch: "main",
+      worktreePath: "/tmp/repo",
+      worktreeStatus: "active",
+      threadId: "thread-1",
+      threadTitle: "Fix startup",
+      threadStatus: "idle",
+    });
+
+    expect(resolveStartupWorkspaceSelection({
+      repoId: "repo-2",
+      worktreeId: "wt-2",
+      snapshot,
+    })).toEqual({
+      repoId: "repo-2",
+      worktreeId: "wt-2",
+      threadId: undefined,
+    });
+  });
+
+  it("replays the macOS issue report route without carrying the stale startup thread", () => {
+    const snapshot = buildStartupShellSnapshot({
+      capturedAt: "2026-06-01T07:44:42.774Z",
+      repoId: "cmm5hkkmr002bm9f44ocaqax7",
+      repoName: "codesymphony",
+      worktreeId: "cmnonq88x0001m9bpkdncl8i4",
+      worktreeBranch: "feat/core/app-stability",
+      worktreePath: "~/Work/Personal/codesymphony",
+      worktreeStatus: "active",
+      threadId: "cmptt1kgf0005m9maw4b5sc4u",
+      threadTitle: "School Lesson Last Grade",
+      threadStatus: "idle",
+    });
+
+    expect(resolveStartupWorkspaceSelection({
+      repoId: "cmnpip9eu06wqm97ccr7bjrwc",
+      worktreeId: "cmnpip9ew06wsm97co4mse0lp",
+      snapshot,
+    })).toEqual({
+      repoId: "cmnpip9eu06wqm97ccr7bjrwc",
+      worktreeId: "cmnpip9ew06wsm97co4mse0lp",
+      threadId: undefined,
+    });
+  });
+
+  it("does not restore a snapshot worktree into a different routed repository", () => {
+    const snapshot = buildStartupShellSnapshot({
+      capturedAt: "2026-05-19T12:00:00.000Z",
+      repoId: "repo-1",
+      repoName: "Repo One",
+      worktreeId: "wt-1",
+      worktreeBranch: "main",
+      worktreePath: "/tmp/repo",
+      worktreeStatus: "active",
+      threadId: "thread-1",
+      threadTitle: "Fix startup",
+      threadStatus: "idle",
+    });
+
+    expect(resolveStartupWorkspaceSelection({
+      repoId: "repo-2",
+      snapshot,
+    })).toEqual({
+      repoId: "repo-2",
+      worktreeId: undefined,
+      threadId: undefined,
+    });
+  });
+
   it("keeps fallback shell labels until live selection metadata finishes loading", () => {
     const snapshot = buildStartupShellSnapshot({
       capturedAt: "2026-05-19T12:00:00.000Z",

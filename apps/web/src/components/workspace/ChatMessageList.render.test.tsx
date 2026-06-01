@@ -454,6 +454,33 @@ describe("AssistantContent", () => {
       "/Users/dwirandyh/Work/algostudio/marketing-2019-android/app/src/main/java/com/algostudio/marketingprogram/module/shopkeeper/presenter/SummaryRedeemShopkeeperPresenter.java#L53",
     );
   });
+
+  it("opens Codex skill links outside the worktree in the internal editor flow", () => {
+    const onOpenFilePath = vi.fn();
+
+    act(() => {
+      root.render(
+        <AssistantContent
+          content={"Buka skill: [SKILL.md](/Users/dwirandyh/.codex/skills/laravel-api-verification/SKILL.md)"}
+          renderHint="markdown"
+          isCompleted={true}
+          onOpenFilePath={onOpenFilePath}
+          worktreePath="/Users/dwirandyh/Work/Personal/codesymphony"
+        />,
+      );
+    });
+
+    const fileLink = container.querySelector("a") as HTMLAnchorElement | null;
+    expect(fileLink).toBeTruthy();
+
+    act(() => {
+      fileLink?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    expect(onOpenFilePath).toHaveBeenCalledWith(
+      "/Users/dwirandyh/.codex/skills/laravel-api-verification/SKILL.md",
+    );
+  });
 });
 
 describe("ChatMessageList", () => {

@@ -812,6 +812,7 @@ export const insertSoftTabOrIndentSelection: StateCommand = ({ state, dispatch }
 
 export interface CodeEditorPanelProps {
   filePath: string;
+  externalFile?: boolean;
   targetLine?: number;
   targetColumn?: number;
   fileEntries?: FileEntry[];
@@ -914,6 +915,7 @@ function BreadcrumbPopover({
 
 export function CodeEditorPanel({
   filePath,
+  externalFile = false,
   targetLine,
   targetColumn,
   fileEntries = [],
@@ -959,10 +961,10 @@ export function CodeEditorPanel({
   }, [onSave]);
 
   const gitModel = useMemo(() => (
-    gitBaselineReady
+    gitBaselineReady && !externalFile
       ? buildEditorGitModel(filePath, gitHeadContent, deferredContent)
       : { diff: null, hunks: [], lines: [] }
-  ), [deferredContent, filePath, gitBaselineReady, gitHeadContent]);
+  ), [deferredContent, externalFile, filePath, gitBaselineReady, gitHeadContent]);
   const effectiveGitStatus = useMemo(
     () => deriveEditorGitStatus(gitStatus, gitModel.diff),
     [gitModel.diff, gitStatus],
@@ -992,7 +994,7 @@ export function CodeEditorPanel({
     [activeGitHunk],
   );
   const compareDiff = useMemo(() => {
-    if (!gitBaselineReady) {
+    if (externalFile || !gitBaselineReady) {
       return null;
     }
 
@@ -1001,7 +1003,7 @@ export function CodeEditorPanel({
     }
 
     return buildEditorGitModel(filePath, gitHeadContent, content).diff;
-  }, [compareMode, content, filePath, gitBaselineReady, gitHeadContent, gitModel.diff]);
+  }, [compareMode, content, externalFile, filePath, gitBaselineReady, gitHeadContent, gitModel.diff]);
 
   const extensions = useMemo<Extension[]>(() => ([
     basicSetup,
@@ -1156,15 +1158,17 @@ export function CodeEditorPanel({
     setCompareMode((current) => !current);
   };
 
-  const canNavigateGitChanges = inlineGitModel.hunks.length > 0 && !compareMode;
-  const canCompare = !isImageFile && (!gitBaselineLoading || gitBaselineReady);
+  const canNavigateGitChanges = !externalFile && inlineGitModel.hunks.length > 0 && !compareMode;
+  const canCompare = !externalFile && !isImageFile && (!gitBaselineLoading || gitBaselineReady);
   const canUseHistoryActions = !isImageFile && !compareMode;
   const canSave = !isImageFile && !loading && !saving && dirty;
-  const gitStateLabel = gitBaselineLoading && !gitBaselineReady
-    ? "Git is loading"
-    : isNewFileGitMode
-      ? "New File"
-      : gitStatusLabel(effectiveGitStatus);
+  const gitStateLabel = externalFile
+    ? "External file"
+    : gitBaselineLoading && !gitBaselineReady
+      ? "Git is loading"
+      : isNewFileGitMode
+        ? "New File"
+        : gitStatusLabel(effectiveGitStatus);
 
   useEffect(() => {
     if (gitPeek === null) {
@@ -1175,6 +1179,15 @@ export function CodeEditorPanel({
       setGitPeek(null);
     }
   }, [gitPeek, inlineGitModel.hunks]);
+
+  useEffect(() => {
+    if (!externalFile) {
+      return;
+    }
+
+    setCompareMode(false);
+    setGitPeek(null);
+  }, [externalFile]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1493,19 +1506,21 @@ export function CodeEditorPanel({
                   <div className="h-9" aria-hidden="true" />
                 </>
               )}
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex h-9 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-                  compareMode ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
-                )}
-                onClick={handleToggleCompareMode}
-                disabled={!canCompare}
-                aria-label={compareMode ? "Return to editor" : "Compare with HEAD"}
-                title={compareMode ? "Return to editor" : "Compare with HEAD"}
-              >
-                <Eye className="h-4 w-4" />
-              </button>
+              {!externalFile ? (
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex h-9 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                    compareMode ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
+                  )}
+                  onClick={handleToggleCompareMode}
+                  disabled={!canCompare}
+                  aria-label={compareMode ? "Return to editor" : "Compare with HEAD"}
+                  title={compareMode ? "Return to editor" : "Compare with HEAD"}
+                >
+                  <Eye className="h-4 w-4" />
+                </button>
+              ) : <div className="h-9" aria-hidden="true" />}
               <button
                 type="button"
                 className={cn(
@@ -1539,22 +1554,26 @@ export function CodeEditorPanel({
                     </div>
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-muted-foreground">Status</span>
-                      <span className="text-right" style={{ color: gitStatusColor(effectiveGitStatus) }}>{gitStateLabel}</span>
+                      <span className="text-right" style={{ color: externalFile ? undefined : gitStatusColor(effectiveGitStatus) }}>{gitStateLabel}</span>
                     </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-muted-foreground">Branch</span>
-                      <span className="truncate text-right text-foreground">{gitBranch || "No branch"}</span>
-                    </div>
+                    {!externalFile ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-muted-foreground">Branch</span>
+                        <span className="truncate text-right text-foreground">{gitBranch || "No branch"}</span>
+                      </div>
+                    ) : null}
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-muted-foreground">Language</span>
                       <span className="text-right text-[#9cdcfe]">{languageLabel(filePath)}</span>
                     </div>
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-muted-foreground">Changes</span>
-                      <span className="text-right text-foreground">
-                        {inlineGitModel.hunks.length > 0 ? `${activeGitHunkIndex + 1}/${inlineGitModel.hunks.length}` : "No hunks"}
-                      </span>
-                    </div>
+                    {!externalFile ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-muted-foreground">Changes</span>
+                        <span className="text-right text-foreground">
+                          {inlineGitModel.hunks.length > 0 ? `${activeGitHunkIndex + 1}/${inlineGitModel.hunks.length}` : "No hunks"}
+                        </span>
+                      </div>
+                    ) : null}
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-muted-foreground">State</span>
                       <span className="text-right text-foreground">
@@ -1578,14 +1597,16 @@ export function CodeEditorPanel({
               <span className="truncate">
                 {saving ? "Saving..." : loading ? "Loading file..." : dirty ? "Unsaved changes" : "Saved"}
               </span>
-              <span className="inline-flex shrink-0 items-center gap-1">
-                <GitBranch className="h-3 w-3" />
-                <span className="truncate">{gitBranch || "No branch"}</span>
-              </span>
-              <span className="shrink-0" style={{ color: gitStatusColor(effectiveGitStatus) }}>
+              {!externalFile ? (
+                <span className="inline-flex shrink-0 items-center gap-1">
+                  <GitBranch className="h-3 w-3" />
+                  <span className="truncate">{gitBranch || "No branch"}</span>
+                </span>
+              ) : null}
+              <span className="shrink-0" style={{ color: externalFile ? undefined : gitStatusColor(effectiveGitStatus) }}>
                 {gitStateLabel}
               </span>
-              {inlineGitModel.hunks.length > 0 ? (
+              {!externalFile && inlineGitModel.hunks.length > 0 ? (
                 <>
                   <button
                     type="button"
@@ -1612,15 +1633,17 @@ export function CodeEditorPanel({
               ) : null}
             </div>
             <div className="flex shrink-0 items-center gap-3">
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={handleToggleCompareMode}
-                disabled={!canCompare}
-              >
-                <Eye className="h-3 w-3" />
-                <span>{compareMode ? "Editor" : "Compare"}</span>
-              </button>
+              {!externalFile ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={handleToggleCompareMode}
+                  disabled={!canCompare}
+                >
+                  <Eye className="h-3 w-3" />
+                  <span>{compareMode ? "Editor" : "Compare"}</span>
+                </button>
+              ) : null}
               <span className="text-[#9cdcfe]">{languageLabel(filePath)}</span>
               <span>{navigator.platform.toLowerCase().includes("mac") ? "⌘S" : "Ctrl+S"}</span>
             </div>

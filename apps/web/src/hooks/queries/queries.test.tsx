@@ -141,6 +141,7 @@ afterEach(async () => {
     resetFileIndexCollectionRegistryForTest(),
     resetThreadsCollectionRegistryForTest(),
   ]);
+  window.localStorage.clear();
   queryClient.clear();
   container.remove();
 });
@@ -519,6 +520,41 @@ describe("query hooks", () => {
     expect(container.textContent).toContain("repos:1");
   });
 
+  it("useRepositories keeps startup shell repositories while the live collection is still loading", async () => {
+    const { buildStartupShellSnapshot, saveStartupShellSnapshot } = await import("../../lib/startupShellSnapshot");
+    const snapshot = buildStartupShellSnapshot({
+      capturedAt: "2026-01-01T00:00:00.000Z",
+      repoId: "r1",
+      repoName: "repo",
+      worktreeId: "wt-1",
+      worktreeBranch: "main",
+      worktreePath: "/repo",
+      worktreeStatus: "active",
+      threadId: null,
+      threadTitle: null,
+      threadStatus: null,
+      repositories: repoFixture,
+    });
+    saveStartupShellSnapshot(snapshot);
+    vi.mocked(api.listRepositories).mockImplementation(() => new Promise<Repository[]>(() => {}));
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <RepositoriesToggleHarness enabled />
+        </QueryClientProvider>
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("repos:1");
+    expect(container.textContent).toContain("loading:false");
+  });
+
   it("useRepositories recovers when delayed startup bootstrap arrives after the initial live fetch failure", async () => {
     const { startWorkspaceStartupBootstrap } = await import("../../lib/workspaceStartupBootstrap");
     let resolveBootstrap: ((value: Awaited<ReturnType<typeof api.getWorkspaceBootstrap>>) => void) | null = null;
@@ -769,6 +805,68 @@ describe("query hooks", () => {
     });
 
     expect(container.textContent).toContain("threads:1");
+  });
+
+  it("useThreads adopts a late empty startup bootstrap after the collection already mounted", async () => {
+    const { applyWorkspaceStartupBootstrap } = await import("../../lib/workspaceStartupBootstrap");
+    vi.mocked(api.listThreads).mockResolvedValueOnce([{
+      id: "stale-thread",
+      worktreeId: "wt-1",
+      title: "Stale thread",
+      kind: "default",
+      isAutomation: false,
+      permissionProfile: "default",
+      permissionMode: "default",
+      mode: "default",
+      titleEditedManually: false,
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      claudeSessionId: null,
+      codexSessionId: null,
+      cursorSessionId: null,
+      opencodeSessionId: null,
+      active: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }]);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ThreadsToggleHarness worktreeId="wt-1" />
+        </QueryClientProvider>
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("threads:1");
+
+    await act(async () => {
+      applyWorkspaceStartupBootstrap(queryClient, {
+        selection: {
+          repositoryId: "r1",
+          worktreeId: "wt-1",
+          threadId: "stale-thread",
+        },
+        repository: repoFixture[0] ?? null,
+        worktree: repoFixture[0]?.worktrees[0] ?? null,
+        threads: [],
+        threadsLoaded: true,
+        thread: null,
+        gitStatus: null,
+        capturedAt: "2026-01-01T00:00:00.000Z",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("threads:0");
   });
 
   it("useThreads settles from startup bootstrap when the selected worktree is confirmed empty", async () => {

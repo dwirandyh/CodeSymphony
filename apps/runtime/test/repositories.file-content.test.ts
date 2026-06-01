@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -140,6 +140,54 @@ describe("worktree file content routes", () => {
       repositoryId: "repo-1",
       worktreeId: "wt-1",
     });
+  });
+
+  it("reads a text file outside the worktree by absolute path", async () => {
+    const worktreePath = path.join(tempRoot, "worktree");
+    const externalPath = path.join(tempRoot, "external", "SKILL.md");
+    await mkdir(worktreePath, { recursive: true });
+    await mkdir(path.dirname(externalPath), { recursive: true });
+    await writeFile(externalPath, "# External skill\n");
+    getWorktreeById.mockResolvedValueOnce(buildWorktree(worktreePath));
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/worktrees/wt-1/files/content?path=${encodeURIComponent(externalPath)}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual({
+      path: await realpath(externalPath),
+      content: "# External skill\n",
+      mimeType: "text/markdown",
+    });
+  });
+
+  it("saves external file content without emitting a worktree update", async () => {
+    const worktreePath = path.join(tempRoot, "worktree");
+    const externalPath = path.join(tempRoot, "external", "settings.md");
+    await mkdir(worktreePath, { recursive: true });
+    await mkdir(path.dirname(externalPath), { recursive: true });
+    await writeFile(externalPath, "before\n");
+    getWorktreeById.mockResolvedValueOnce(buildWorktree(worktreePath));
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/worktrees/wt-1/files/content",
+      payload: {
+        path: externalPath,
+        content: "after\n",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(await readFile(externalPath, "utf8")).toBe("after\n");
+    expect(response.json().data).toEqual({
+      path: await realpath(externalPath),
+      content: "after\n",
+      mimeType: "text/markdown",
+    });
+    expect(workspaceEventHubEmit).not.toHaveBeenCalled();
   });
 
   it("rejects save requests that escape the worktree root", async () => {

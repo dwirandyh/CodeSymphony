@@ -267,6 +267,109 @@ describe("useWorkspaceFileEditor", () => {
     ]);
   });
 
+  it("keeps absolute external paths instead of suffix-matching them to worktree files", async () => {
+    vi.mocked(api.getWorktreeFileContent).mockResolvedValue({
+      path: "src/example.ts",
+      content: "export const value = 1;\n",
+      mimeType: "text/typescript",
+    });
+    testFileEntries = [{ path: "src/example.ts", type: "file" }];
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TestComponent />
+        </QueryClientProvider>,
+      );
+      await flushPromises();
+    });
+
+    act(() => {
+      void hookResult.openReadFile("/tmp/other/src/example.ts#L12");
+    });
+
+    expect(updateSearch).toHaveBeenCalledWith({
+      view: "file",
+      file: "/tmp/other/src/example.ts",
+      fileLine: 12,
+      fileColumn: undefined,
+    });
+  });
+
+  it("loads external absolute files without loading a git baseline", async () => {
+    testActiveFilePath = "/tmp/codesymphony-external/SKILL.md";
+    vi.mocked(api.getWorktreeFileContent).mockResolvedValue({
+      path: testActiveFilePath,
+      content: "# Skill\n",
+      mimeType: "text/markdown",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TestComponent />
+        </QueryClientProvider>,
+      );
+      await flushPromises();
+    });
+
+    expect(hookResult.activeFileExternal).toBe(true);
+    expect(api.getWorktreeFileContent).toHaveBeenCalledWith("worktree-1", testActiveFilePath, expect.any(AbortSignal));
+    expect(api.getFileContents).not.toHaveBeenCalled();
+  });
+
+  it("saves external absolute files without worktree git updates or save automation", async () => {
+    vi.useFakeTimers();
+    testActiveFilePath = "/tmp/codesymphony-external/settings.md";
+    testSaveAutomation = {
+      enabled: true,
+      target: "active_run_session",
+      filePatterns: ["**/*.md"],
+      actionType: "send_stdin",
+      payload: "r",
+      debounceMs: 250,
+    };
+    vi.mocked(api.getWorktreeFileContent).mockResolvedValue({
+      path: testActiveFilePath,
+      content: "before\n",
+      mimeType: "text/markdown",
+    });
+    vi.mocked(api.saveWorktreeFileContent).mockResolvedValue({
+      path: testActiveFilePath,
+      content: "after\n",
+      mimeType: "text/markdown",
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <TestComponent />
+          </QueryClientProvider>,
+        );
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      act(() => {
+        hookResult.handleEditorDraftChange(testActiveFilePath, "after\n");
+      });
+
+      await act(async () => {
+        await hookResult.handleSaveActiveFile();
+        await vi.advanceTimersByTimeAsync(250);
+      });
+
+      expect(api.saveWorktreeFileContent).toHaveBeenCalledWith("worktree-1", {
+        path: testActiveFilePath,
+        content: "after\n",
+      });
+      expect(mockMarkWorktreeGitStatusChanged).not.toHaveBeenCalled();
+      expect(api.runTerminalCommand).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses an explicit fallback thread id when the last active file closes", async () => {
     vi.mocked(api.getWorktreeFileContent).mockResolvedValue({
       path: "src/example.ts",

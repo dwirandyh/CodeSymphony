@@ -77,6 +77,42 @@ async function resolveWorktreeFile(worktree: { path: string }, inputPath: string
   };
 }
 
+async function resolveEditorFile(worktree: { path: string }, inputPath: string) {
+  const rootPath = path.resolve(worktree.path);
+  const targetPath = path.isAbsolute(inputPath)
+    ? path.resolve(inputPath)
+    : path.resolve(rootPath, inputPath);
+
+  if (!path.isAbsolute(inputPath) && !isPathInsideRoot(rootPath, targetPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  const targetStat = await stat(targetPath).catch(() => null);
+  if (!targetStat || !targetStat.isFile()) {
+    throw new Error("Target file does not exist");
+  }
+
+  const canonicalRootPath = await realpath(rootPath).catch(() => rootPath);
+  const canonicalTargetPath = await realpath(targetPath).catch(() => targetPath);
+  if (isPathInsideRoot(canonicalRootPath, canonicalTargetPath)) {
+    return {
+      canonicalTargetPath,
+      editorPath: path.relative(canonicalRootPath, canonicalTargetPath).split(path.sep).join("/"),
+      external: false,
+    };
+  }
+
+  if (!path.isAbsolute(inputPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  return {
+    canonicalTargetPath,
+    editorPath: canonicalTargetPath,
+    external: true,
+  };
+}
+
 async function resolveWorktreeDirectory(worktree: { path: string }, inputPath?: string) {
   const rootPath = path.resolve(worktree.path);
   const targetPath = inputPath && inputPath.trim().length > 0
@@ -538,13 +574,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, query.path);
+      const { canonicalTargetPath, editorPath } = await resolveEditorFile(worktree, query.path);
       const buffer = await readFile(canonicalTargetPath);
       const mimeType = detectMimeType(canonicalTargetPath);
       if (isImageMimeType(mimeType)) {
         return {
           data: {
-            path: relativePath,
+            path: editorPath,
             content: buffer.toString("base64"),
             mimeType,
           },
@@ -557,7 +593,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
       return {
         data: {
-          path: relativePath,
+          path: editorPath,
           content: buffer.toString("utf8"),
           mimeType,
         },
@@ -582,16 +618,18 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, input.path);
+      const { canonicalTargetPath, editorPath, external } = await resolveEditorFile(worktree, input.path);
       await writeFile(canonicalTargetPath, input.content, "utf8");
-      publishWorktreeActivity({
-        workspaceEventHub: app.workspaceEventHub,
-        worktree,
-        activity: WORKTREE_ACTIVITY.FILE_SAVED,
-      });
+      if (!external) {
+        publishWorktreeActivity({
+          workspaceEventHub: app.workspaceEventHub,
+          worktree,
+          activity: WORKTREE_ACTIVITY.FILE_SAVED,
+        });
+      }
       return {
         data: {
-          path: relativePath,
+          path: editorPath,
           content: input.content,
           mimeType: detectMimeType(canonicalTargetPath),
         },

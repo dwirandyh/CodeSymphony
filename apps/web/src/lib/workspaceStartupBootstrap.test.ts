@@ -134,7 +134,32 @@ describe("workspaceStartupBootstrap", () => {
     })).toEqual({
       repositoryId: "repo-1",
       worktreeId: "wt-2",
-      threadId: "thread-1",
+      threadId: undefined,
+    });
+  });
+
+  it("resolves desktop startup bootstrap selection from a persisted shell snapshot when search is empty", async () => {
+    const { resolveWorkspaceStartupBootstrapSelection } = await import("./workspaceStartupBootstrap");
+
+    expect(resolveWorkspaceStartupBootstrapSelection({
+      search: "",
+      snapshot: {
+        version: 1,
+        capturedAt: "2026-06-01T08:15:00.000Z",
+        repoId: "cmnr1vc3l0004m9yo94fp28om",
+        repoName: "winkatsu-backend",
+        worktreeId: "cmpuffnnx000fm9jja3717nmi",
+        worktreeBranch: "feat/school-lesson-last-played-map",
+        worktreePath: "/repo",
+        worktreeStatus: "active",
+        threadId: "cmpuleont000xm9j2t6hk90xm",
+        threadTitle: "Last Played Chapter Selection",
+        threadStatus: "idle",
+      },
+    })).toEqual({
+      repositoryId: "cmnr1vc3l0004m9yo94fp28om",
+      worktreeId: "cmpuffnnx000fm9jja3717nmi",
+      threadId: "cmpuleont000xm9j2t6hk90xm",
     });
   });
 

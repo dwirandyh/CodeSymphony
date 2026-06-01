@@ -1578,7 +1578,7 @@ describe("useChatSession", () => {
     expect(onThreadChange).toHaveBeenCalledWith("thread-target");
   });
 
-  it("keeps the requested thread in navigation while an empty cached list is still refetching", () => {
+  it("settles an empty fetched thread list even while a background refetch is active", () => {
     const onThreadChange = vi.fn();
     threadsState.data = [];
     threadsState.isLoading = false;
@@ -1591,8 +1591,10 @@ describe("useChatSession", () => {
     });
 
     expect(hookResult.selectedThreadId).toBe(null);
-    expect(hookResult.messageListEmptyState).toBe("loading-thread");
-    expect(onThreadChange).not.toHaveBeenCalled();
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
+    expect(onThreadChange).toHaveBeenCalledWith(null);
+
+    onThreadChange.mockClear();
 
     threadsState.data = [{ ...makeThread("thread-target"), worktreeId: "wt-2" }];
     threadsState.isFetching = false;

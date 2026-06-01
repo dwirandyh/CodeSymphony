@@ -75,6 +75,7 @@ export async function registerWorkspaceBootstrapRoutes(app: FastifyInstance) {
       getGitStatusForBootstrap(worktree),
     ]);
     const { threads, threadsLoaded } = threadResult;
+    const selectedThread = thread ?? threads.find((candidate) => candidate.preferred === true) ?? null;
 
     const durationMs = Date.now() - startedAt;
     if (durationMs >= 250) {
@@ -87,7 +88,7 @@ export async function registerWorkspaceBootstrapRoutes(app: FastifyInstance) {
           requestedThreadId: query.threadId ?? null,
           resolvedRepositoryId: repository?.id ?? null,
           resolvedWorktreeId: worktree?.id ?? null,
-          resolvedThreadId: thread?.id ?? null,
+          resolvedThreadId: selectedThread?.id ?? null,
           durationMs,
           threadsCount: threads.length,
           threadsLoaded,
@@ -101,14 +102,14 @@ export async function registerWorkspaceBootstrapRoutes(app: FastifyInstance) {
         selection: {
           repositoryId: repository?.id ?? null,
           worktreeId: worktree?.id ?? null,
-          threadId: thread?.id ?? null,
+          threadId: selectedThread?.id ?? null,
         },
         repositories: repositories ?? undefined,
         repository,
         worktree,
         threads,
         threadsLoaded,
-        thread,
+        thread: selectedThread,
         gitStatus,
         capturedAt: new Date().toISOString(),
       },

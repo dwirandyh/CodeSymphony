@@ -28,6 +28,10 @@ const mockDeleteRepoMutateAsync = vi.fn();
 const mockRenameBranchMutateAsync = vi.fn();
 const mockUpdateWorktreeBaseBranchMutateAsync = vi.fn();
 const measureStartupMetricSinceBootMock = vi.fn();
+const repositoriesCollectionState = vi.hoisted(() => ({
+  refetchRepositoriesCollection: vi.fn(),
+  upsertRepositoryInCollection: vi.fn(),
+}));
 
 function makeRepositories(): Repository[] {
   return [
@@ -85,6 +89,11 @@ vi.mock("../../../hooks/queries/useRepositories", () => ({
         }
       : repositoriesState
   )),
+}));
+
+vi.mock("../../../collections/repositories", () => ({
+  refetchRepositoriesCollection: (...args: unknown[]) => repositoriesCollectionState.refetchRepositoriesCollection(...args),
+  upsertRepositoryInCollection: (...args: unknown[]) => repositoriesCollectionState.upsertRepositoryInCollection(...args),
 }));
 
 vi.mock("../../../hooks/mutations/useCreateRepository", () => ({
@@ -150,13 +159,23 @@ let mockOptions: {
   onScriptOutputChunk?: ReturnType<typeof vi.fn>;
   desiredRepoId?: string;
   desiredWorktreeId?: string;
+  preserveMissingDesiredWorktree?: boolean;
 };
 
-function TestComponent({ desiredRepoId, desiredWorktreeId }: { desiredRepoId?: string; desiredWorktreeId?: string }) {
+function TestComponent({
+  desiredRepoId,
+  desiredWorktreeId,
+  preserveMissingDesiredWorktree,
+}: {
+  desiredRepoId?: string;
+  desiredWorktreeId?: string;
+  preserveMissingDesiredWorktree?: boolean;
+}) {
   hookResult = useRepositoryManager(mockOnError, {
     ...mockOptions,
     desiredRepoId,
     desiredWorktreeId,
+    preserveMissingDesiredWorktree,
   });
   return (
     <div>
@@ -211,6 +230,22 @@ beforeEach(() => {
   };
   vi.clearAllMocks();
   measureStartupMetricSinceBootMock.mockReset();
+  repositoriesCollectionState.refetchRepositoriesCollection.mockResolvedValue(undefined);
+  repositoriesCollectionState.upsertRepositoryInCollection.mockImplementation((targetQueryClient: QueryClient, repository: Repository) => {
+    repositoriesState.data = repositoriesState.data.map((current) =>
+      current.id === repository.id ? repository : current,
+    );
+    targetQueryClient.setQueryData<Repository[] | undefined>(queryKeys.repositories.all, (current) => {
+      const next = [...(current ?? repositoriesState.data)];
+      const existingIndex = next.findIndex((entry) => entry.id === repository.id);
+      if (existingIndex === -1) {
+        next.push(repository);
+      } else {
+        next[existingIndex] = repository;
+      }
+      return next;
+    });
+  });
 });
 
 afterEach(() => {
@@ -218,7 +253,7 @@ afterEach(() => {
   container.remove();
 });
 
-function render(props: { desiredRepoId?: string; desiredWorktreeId?: string } = {}) {
+function render(props: { desiredRepoId?: string; desiredWorktreeId?: string; preserveMissingDesiredWorktree?: boolean } = {}) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -302,7 +337,7 @@ describe("useRepositoryManager", () => {
     });
   });
 
-  it("preserves requested startup worktree selection while clearing stale caches when repositories disappear", async () => {
+  it("preserves requested startup worktree selection and current repository while clearing stale caches when repositories disappear", async () => {
     render({ desiredWorktreeId: "wt-feat" });
     queryClient.setQueryData(queryKeys.threads.list("wt-feat"), [{ id: "t1" }]);
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot("t1"), { seed: { messages: { data: [] }, events: { data: [] } } });
@@ -323,7 +358,7 @@ describe("useRepositoryManager", () => {
       await Promise.resolve();
     });
 
-    expect(hookResult.selectedRepositoryId).toBeNull();
+    expect(hookResult.selectedRepositoryId).toBe("r1");
     expect(hookResult.selectedWorktreeId).toBe("wt-feat");
     expect(queryClient.getQueryData(queryKeys.threads.list("wt-feat"))).toBeUndefined();
     expect(queryClient.getQueryData(queryKeys.threads.timelineSnapshot("t1"))).toBeUndefined();
@@ -392,6 +427,44 @@ describe("useRepositoryManager", () => {
     expect(hookResult.selectedWorktreeId).toBe("wt-feat");
   });
 
+  it("keeps desired route worktree when the repository is loaded before the worktree appears", () => {
+    repositoriesState.data = [
+      {
+        ...makeRepositories()[0],
+        worktrees: makeRepositories()[0].worktrees.filter((worktree) => worktree.id !== "wt-feat"),
+      },
+    ];
+
+    render({ desiredRepoId: "r1", desiredWorktreeId: "wt-feat" });
+
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+
+    repositoriesState.data = makeRepositories();
+    render({ desiredRepoId: "r1", desiredWorktreeId: "wt-feat" });
+
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+  });
+
+  it("falls back when a snapshot-derived desired worktree is absent from live repository data", () => {
+    repositoriesState.data = [
+      {
+        ...makeRepositories()[0],
+        worktrees: makeRepositories()[0].worktrees.filter((worktree) => worktree.id !== "wt-feat"),
+      },
+    ];
+
+    render({
+      desiredRepoId: "r1",
+      desiredWorktreeId: "wt-feat",
+      preserveMissingDesiredWorktree: false,
+    });
+
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-root");
+  });
+
   it("falls back to the repository primary worktree when desiredRepoId changes after mount", () => {
     repositoriesState.data = [
       ...makeRepositories(),
@@ -458,6 +531,16 @@ describe("useRepositoryManager", () => {
     expect(hookResult.selectedWorktreeId).toBe("wt-feat");
   });
 
+  it("does not reapply a stale desired worktree after selecting another worktree in the same repository", () => {
+    render({ desiredRepoId: "r1", desiredWorktreeId: "wt-root" });
+    expect(hookResult.selectedWorktreeId).toBe("wt-root");
+
+    act(() => hookResult.setSelectedWorktreeId("wt-feat"));
+
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+  });
+
   it("opens file browser", () => {
     render();
     act(() => hookResult.openFileBrowser());
@@ -467,8 +550,10 @@ describe("useRepositoryManager", () => {
   describe("submitWorktree", () => {
     it("creates a pending worktree and selects it immediately", async () => {
       render();
+      let createdWorktreeId: string | null = null;
       await act(async () => {
-        await hookResult.submitWorktree("r1");
+        const worktree = await hookResult.submitWorktree("r1");
+        createdWorktreeId = worktree?.id ?? null;
       });
 
       const cachedRepositories = queryClient.getQueryData<Repository[]>(queryKeys.repositories.all) ?? [];
@@ -477,10 +562,40 @@ describe("useRepositoryManager", () => {
         .find((worktree) => worktree.id === "wt-new");
 
       expect(mockCreateWorktreeMutateAsync).toHaveBeenCalledWith({ repositoryId: "r1" });
+      expect(createdWorktreeId).toBe("wt-new");
       expect(hookResult.selectedWorktreeId).toBe("wt-new");
       expect(hookResult.selectedRepositoryId).toBe("r1");
+      expect(hookResult.selectedWorktree?.id).toBe("wt-new");
       expect(pendingWorktree?.status).toBe("creating");
+      expect(repositoriesCollectionState.upsertRepositoryInCollection).toHaveBeenCalledWith(
+        queryClient,
+        expect.objectContaining({
+          id: "r1",
+          worktrees: expect.arrayContaining([expect.objectContaining({ id: "wt-new" })]),
+        }),
+      );
       expect(mockRunSetupStream).not.toHaveBeenCalled();
+    });
+
+    it("can create a pending worktree without selecting it", async () => {
+      render({ desiredWorktreeId: "wt-root" });
+
+      let createdWorktreeId: string | null = null;
+      await act(async () => {
+        const worktree = await hookResult.submitWorktree("r1", { select: false });
+        createdWorktreeId = worktree?.id ?? null;
+      });
+
+      expect(createdWorktreeId).toBe("wt-new");
+      expect(hookResult.selectedRepositoryId).toBe("r1");
+      expect(hookResult.selectedWorktreeId).toBe("wt-root");
+      expect(repositoriesCollectionState.upsertRepositoryInCollection).toHaveBeenCalledWith(
+        queryClient,
+        expect.objectContaining({
+          id: "r1",
+          worktrees: expect.arrayContaining([expect.objectContaining({ id: "wt-new" })]),
+        }),
+      );
     });
 
     it("starts setup streaming after the pending worktree becomes active", async () => {
@@ -590,6 +705,35 @@ describe("useRepositoryManager", () => {
         worktreeId: "wt-feat",
         options: { force: undefined },
       });
+      expect(hookResult.selectedWorktreeId).toBe("wt-root");
+      expect(repositoriesCollectionState.upsertRepositoryInCollection).toHaveBeenCalledWith(
+        queryClient,
+        expect.objectContaining({
+          id: "r1",
+          worktrees: expect.arrayContaining([
+            expect.objectContaining({ id: "wt-feat", status: "deleting" }),
+          ]),
+        }),
+      );
+      expect(repositoriesCollectionState.refetchRepositoriesCollection).toHaveBeenCalledWith(queryClient);
+    });
+
+    it("keeps the fallback selection after the deleted worktree disappears from repository data", async () => {
+      render({ desiredRepoId: "r1", desiredWorktreeId: "wt-feat" });
+      expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+
+      await act(async () => {
+        await hookResult.removeWorktree("wt-feat");
+      });
+      expect(hookResult.selectedWorktreeId).toBe("wt-root");
+
+      repositoriesState.data = [{
+        ...makeRepositories()[0],
+        worktrees: makeRepositories()[0].worktrees.filter((worktree) => worktree.id !== "wt-feat"),
+      }];
+      render({ desiredRepoId: "r1", desiredWorktreeId: "wt-feat" });
+
+      expect(hookResult.selectedRepositoryId).toBe("r1");
       expect(hookResult.selectedWorktreeId).toBe("wt-root");
     });
 

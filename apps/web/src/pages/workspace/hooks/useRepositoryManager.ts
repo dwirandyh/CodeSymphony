@@ -3,6 +3,7 @@ import type { Repository, ScriptResult, Worktree } from "@codesymphony/shared-ty
 import { useQueryClient } from "@tanstack/react-query";
 import { markWorktreeGitStatusChanged } from "../../../hooks/queries/useGitStatus";
 import { api } from "../../../lib/api";
+import { debugLog } from "../../../lib/debugLog";
 import { queryKeys } from "../../../lib/queryKeys";
 import { measureStartupMetricSinceBoot } from "../../../lib/startupPerf";
 import { useRepositories } from "../../../hooks/queries/useRepositories";
@@ -12,6 +13,7 @@ import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
 import { useDeleteRepository } from "../../../hooks/mutations/useDeleteRepository";
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { useUpdateWorktreeBaseBranch } from "../../../hooks/mutations/useUpdateWorktreeBaseBranch";
+import { refetchRepositoriesCollection, upsertRepositoryInCollection } from "../../../collections/repositories";
 import {
   isPendingWorktreeStatus,
   isRootWorktree,
@@ -30,10 +32,15 @@ export interface ScriptUpdateEvent {
 interface UseRepositoryManagerOptions {
   desiredRepoId?: string;
   desiredWorktreeId?: string;
+  preserveMissingDesiredWorktree?: boolean;
   repositoriesEnabled?: boolean;
   onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
   onScriptUpdate?: (event: ScriptUpdateEvent) => void;
   onScriptOutputChunk?: (event: { worktreeId: string; chunk: string }) => void;
+}
+
+interface SubmitWorktreeOptions {
+  select?: boolean;
 }
 
 function isSelectableWorktree(worktree: Pick<Worktree, "status"> | null | undefined): boolean {
@@ -178,6 +185,15 @@ export function useRepositoryManager(
     repoId: null,
     worktreeId: null,
   });
+  const repositorySelectionDebugSignatureRef = useRef<string | null>(null);
+  const rapidSelectionDebugSignatureRef = useRef<string | null>(null);
+  const selectionTransitionHistoryRef = useRef<Array<{
+    atMs: number;
+    repoId: string | null;
+    worktreeId: string | null;
+    desiredRepoId: string | null;
+    desiredWorktreeId: string | null;
+  }>>([]);
   const pendingCreatedWorktreesRef = useRef<Map<string, { previousSelection: { repositoryId: string | null; worktreeId: string | null } }>>(new Map());
   const pendingSetupWorktreeIdsRef = useRef<Set<string>>(new Set());
 
@@ -269,6 +285,22 @@ export function useRepositoryManager(
       const worktree = repositoryWorktreeIndex.worktreeById.get(requestedWorktreeId);
       const selectableWorktree = worktree && isSelectableWorktree(worktree) ? worktree : null;
       if (selectableWorktree) {
+        const repositoryWillChange = selectedRepositoryId !== selectableWorktree.repository.id;
+        const worktreeWillChange = selectedWorktreeId !== requestedWorktreeId;
+        if (repositoryWillChange || worktreeWillChange) {
+          debugLog("workspace.selection.repository", "requestedSelection.apply", {
+            reason: "requested-worktree",
+            requestedRepoId,
+            requestedWorktreeId,
+            previousRepositoryId: selectedRepositoryId,
+            previousWorktreeId: selectedWorktreeId,
+            nextRepositoryId: selectableWorktree.repository.id,
+            nextWorktreeId: requestedWorktreeId,
+            repositoryWillChange,
+            worktreeWillChange,
+            worktreeStatus: selectableWorktree.status,
+          }, { worktreeId: requestedWorktreeId });
+        }
         if (selectedRepositoryId !== selectableWorktree.repository.id) {
           setSelectedRepositoryId(selectableWorktree.repository.id);
         }
@@ -277,15 +309,53 @@ export function useRepositoryManager(
         }
         return true;
       }
+
+      debugLog("workspace.selection.repository", "requestedSelection.unresolved", {
+        reason: worktree ? "unselectable-worktree" : "missing-worktree",
+        requestedRepoId,
+        requestedWorktreeId,
+        previousRepositoryId: selectedRepositoryId,
+        previousWorktreeId: selectedWorktreeId,
+        worktreeStatus: worktree?.status ?? null,
+        availableWorktreeIds: requestedRepoId
+          ? repositoryWorktreeIndex.repositoryById.get(requestedRepoId)?.worktrees
+            .filter((candidate) => isSelectableWorktree(candidate))
+            .map((candidate) => candidate.id) ?? []
+          : [],
+      }, { worktreeId: requestedWorktreeId });
+      return false;
     }
 
     if (requestedRepoId) {
       const repo = repositoryWorktreeIndex.repositoryById.get(requestedRepoId);
       if (!repo) {
+        debugLog("workspace.selection.repository", "requestedSelection.unresolved", {
+          reason: "missing-repository",
+          requestedRepoId,
+          requestedWorktreeId,
+          previousRepositoryId: selectedRepositoryId,
+          previousWorktreeId: selectedWorktreeId,
+        });
         return false;
       }
 
       const fallbackWorktreeId = resolveAvailableWorktreeId(repo);
+      const repositoryWillChange = selectedRepositoryId !== repo.id;
+      const worktreeWillChange = selectedWorktreeId !== fallbackWorktreeId;
+      if (repositoryWillChange || worktreeWillChange) {
+        debugLog("workspace.selection.repository", "requestedSelection.apply", {
+          reason: "requested-repository-fallback-worktree",
+          requestedRepoId,
+          requestedWorktreeId,
+          previousRepositoryId: selectedRepositoryId,
+          previousWorktreeId: selectedWorktreeId,
+          nextRepositoryId: repo.id,
+          nextWorktreeId: fallbackWorktreeId,
+          repositoryWillChange,
+          worktreeWillChange,
+          availableWorktreeIds: repo.worktrees.filter((worktree) => isSelectableWorktree(worktree)).map((worktree) => worktree.id),
+        }, { worktreeId: fallbackWorktreeId });
+      }
       if (selectedRepositoryId !== repo.id) {
         setSelectedRepositoryId(repo.id);
       }
@@ -325,21 +395,46 @@ export function useRepositoryManager(
         onError(null);
       }
 
-      const keepRequestedSelection = !hadRepositories && (requestedRepoId != null || requestedWorktreeId != null);
-      if (keepRequestedSelection) {
-        if (selectedRepositoryId !== requestedRepoId) {
-          setSelectedRepositoryId(requestedRepoId);
+      const shouldPreserveRequestedSelection = requestedRepoId != null || requestedWorktreeId != null;
+      if (shouldPreserveRequestedSelection) {
+        const nextRepositoryId = requestedRepoId ?? selectedRepositoryId;
+        const nextWorktreeId = requestedWorktreeId ?? selectedWorktreeId;
+        debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-repositories.preserve-requested", {
+          hadRepositories,
+          selectedRepositoryId,
+          selectedWorktreeId,
+          requestedRepoId,
+          requestedWorktreeId,
+          nextRepositoryId,
+          nextWorktreeId,
+        }, { worktreeId: nextWorktreeId, force: true });
+        if (selectedRepositoryId !== nextRepositoryId) {
+          setSelectedRepositoryId(nextRepositoryId);
         }
-        if (selectedWorktreeId !== requestedWorktreeId) {
-          setSelectedWorktreeId(requestedWorktreeId);
+        if (selectedWorktreeId !== nextWorktreeId) {
+          setSelectedWorktreeId(nextWorktreeId);
         }
         return;
       }
 
       if (selectedRepositoryId !== null) {
+        debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-repositories.clear-repository", {
+          hadRepositories,
+          selectedRepositoryId,
+          selectedWorktreeId,
+          requestedRepoId,
+          requestedWorktreeId,
+        }, { worktreeId: selectedWorktreeId, force: true });
         setSelectedRepositoryId(null);
       }
       if (selectedWorktreeId !== null) {
+        debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-repositories.clear-worktree", {
+          hadRepositories,
+          selectedRepositoryId,
+          selectedWorktreeId,
+          requestedRepoId,
+          requestedWorktreeId,
+        }, { worktreeId: selectedWorktreeId, force: true });
         setSelectedWorktreeId(null);
       }
       return;
@@ -349,9 +444,10 @@ export function useRepositoryManager(
     previousRepositoryCountRef.current = repositories.length;
     previousRepositoriesRef.current = repositories;
 
+    const previousRequestedSelection = prevRequestedSelectionRef.current;
     const requestedSelectionChanged =
-      prevRequestedSelectionRef.current.repoId !== requestedRepoId
-      || prevRequestedSelectionRef.current.worktreeId !== requestedWorktreeId;
+      previousRequestedSelection.repoId !== requestedRepoId
+      || previousRequestedSelection.worktreeId !== requestedWorktreeId;
 
     if (requestedSelectionChanged) {
       prevRequestedSelectionRef.current = {
@@ -362,11 +458,36 @@ export function useRepositoryManager(
 
     const shouldApplyRequestedSelection =
       requestedSelectionChanged
-      || (requestedRepoId != null && selectedRepositoryId === requestedRepoId)
-      || (requestedWorktreeId != null && selectedWorktreeId === requestedWorktreeId);
+      || (
+        requestedWorktreeId != null
+          ? selectedWorktreeId === requestedWorktreeId
+          : requestedRepoId != null && selectedRepositoryId === requestedRepoId
+      );
     const requestedSelectionApplied = shouldApplyRequestedSelection
       ? applyRequestedSelection(requestedRepoId, requestedWorktreeId)
       : false;
+    const repositorySelectionDebugState = {
+      requestedRepoId,
+      requestedWorktreeId,
+      selectedRepositoryId,
+      selectedWorktreeId,
+      previousRequestedRepoId: previousRequestedSelection.repoId,
+      previousRequestedWorktreeId: previousRequestedSelection.worktreeId,
+      requestedSelectionChanged,
+      shouldApplyRequestedSelection,
+      requestedSelectionApplied,
+      repositoryCount: repositories.length,
+      selectedWorktreeKnown: selectedWorktreeId == null || repositoryWorktreeIndex.worktreeById.has(selectedWorktreeId),
+      requestedWorktreeKnown: requestedWorktreeId == null || repositoryWorktreeIndex.worktreeById.has(requestedWorktreeId),
+    };
+    const repositorySelectionDebugSignature = JSON.stringify(repositorySelectionDebugState);
+    if (repositorySelectionDebugSignatureRef.current !== repositorySelectionDebugSignature) {
+      repositorySelectionDebugSignatureRef.current = repositorySelectionDebugSignature;
+      debugLog("workspace.selection.repository", "requestedSelection.evaluated", repositorySelectionDebugState, {
+        worktreeId: selectedWorktreeId ?? requestedWorktreeId,
+        force: requestedSelectionChanged || requestedSelectionApplied,
+      });
+    }
     if (requestedSelectionChanged && requestedSelectionApplied) {
       return;
     }
@@ -374,13 +495,44 @@ export function useRepositoryManager(
     const requestedWorktreeRecord = requestedWorktreeId != null
       ? repositoryWorktreeIndex.worktreeById.get(requestedWorktreeId) ?? null
       : null;
+    const requestedWorktreeExistedPreviously = requestedWorktreeId != null
+      && previousRepositories.some((repository) =>
+        repository.worktrees.some((worktree) => worktree.id === requestedWorktreeId)
+      );
     const requestedSelectionUnresolved =
       (requestedWorktreeId != null && requestedWorktreeRecord == null)
       || (requestedWorktreeId == null && requestedRepoId != null && !repositoryWorktreeIndex.repositoryById.has(requestedRepoId));
+    const preserveMissingDesiredWorktree = options?.preserveMissingDesiredWorktree ?? true;
     const requestedSelectionPending = !requestedSelectionApplied
       && requestedSelectionUnresolved
+      && preserveMissingDesiredWorktree
+      && !requestedWorktreeExistedPreviously
       && keepRequestedSelection(requestedRepoId, requestedWorktreeId);
+    const shouldFallbackFromMissingDesiredWorktree = requestedWorktreeId != null
+      && selectedWorktreeId === requestedWorktreeId
+      && requestedSelectionUnresolved
+      && !preserveMissingDesiredWorktree;
+
     if (requestedSelectionPending) {
+      return;
+    }
+
+    if (shouldFallbackFromMissingDesiredWorktree) {
+      const fallbackRepository = requestedRepoId != null
+        ? repositoryWorktreeIndex.repositoryById.get(requestedRepoId) ?? null
+        : selectedRepositoryId != null
+          ? repositoryWorktreeIndex.repositoryById.get(selectedRepositoryId) ?? null
+          : repositories[0] ?? null;
+      const fallbackWorktreeId = fallbackRepository
+        ? resolveAvailableWorktreeId(fallbackRepository, requestedWorktreeId)
+        : null;
+
+      if (selectedRepositoryId !== (fallbackRepository?.id ?? null)) {
+        setSelectedRepositoryId(fallbackRepository?.id ?? null);
+      }
+      if (selectedWorktreeId !== fallbackWorktreeId) {
+        setSelectedWorktreeId(fallbackWorktreeId);
+      }
       return;
     }
 
@@ -403,10 +555,24 @@ export function useRepositoryManager(
       selectedWorktreeId != null && previousRepositories.some((repository) => repository.worktrees.some((worktree) => worktree.id === selectedWorktreeId));
 
     if (!selectedRepositoryStillExists && selectedRepositoryExistedPreviously) {
+      debugLog("diagnose.selection", "[DEBUG-worktree-glitch] selected-repository-missing.clear", {
+        selectedRepositoryId,
+        selectedWorktreeId,
+        requestedRepoId,
+        requestedWorktreeId,
+        repositoryIds: repositories.map((repository) => repository.id),
+      }, { worktreeId: selectedWorktreeId, force: true });
       setSelectedRepositoryId(null);
       return;
     }
     if (!selectedWorktreeStillExists && selectedWorktreeExistedPreviously) {
+      debugLog("diagnose.selection", "[DEBUG-worktree-glitch] selected-worktree-missing.clear", {
+        selectedRepositoryId,
+        selectedWorktreeId,
+        requestedRepoId,
+        requestedWorktreeId,
+        knownWorktreeIds: repositories.flatMap((repository) => repository.worktrees.map((worktree) => worktree.id)),
+      }, { worktreeId: selectedWorktreeId, force: true });
       setSelectedWorktreeId(null);
       return;
     }
@@ -415,6 +581,15 @@ export function useRepositoryManager(
         unavailableSelectedWorktree.repository,
         unavailableSelectedWorktree.id,
       );
+      debugLog("diagnose.selection", "[DEBUG-worktree-glitch] unavailable-worktree.fallback", {
+        selectedRepositoryId,
+        selectedWorktreeId,
+        requestedRepoId,
+        requestedWorktreeId,
+        unavailableWorktreeStatus: unavailableSelectedWorktree.status,
+        nextRepositoryId: unavailableSelectedWorktree.repository.id,
+        nextWorktreeId: fallbackWorktreeId,
+      }, { worktreeId: selectedWorktreeId, force: true });
       if (selectedRepositoryId !== unavailableSelectedWorktree.repository.id) {
         setSelectedRepositoryId(unavailableSelectedWorktree.repository.id);
       }
@@ -425,6 +600,12 @@ export function useRepositoryManager(
     }
 
     if (!selectedRepositoryId && repositories[0]) {
+      debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-repository.default", {
+        requestedRepoId,
+        requestedWorktreeId,
+        nextRepositoryId: repositories[0].id,
+        repositoryCount: repositories.length,
+      }, { force: true });
       setSelectedRepositoryId(repositories[0].id);
     }
     if (!selectedWorktreeId) {
@@ -432,6 +613,13 @@ export function useRepositoryManager(
       if (firstRepo) {
         const fallbackWorktreeId = resolveAvailableWorktreeId(firstRepo);
         if (fallbackWorktreeId) {
+          debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-worktree.default", {
+            requestedRepoId,
+            requestedWorktreeId,
+            selectedRepositoryId,
+            nextWorktreeId: fallbackWorktreeId,
+            availableWorktreeIds: firstRepo.worktrees.filter((worktree) => isSelectableWorktree(worktree)).map((worktree) => worktree.id),
+          }, { worktreeId: fallbackWorktreeId, force: true });
           setSelectedWorktreeId(fallbackWorktreeId);
         }
       }
@@ -440,6 +628,7 @@ export function useRepositoryManager(
     onError,
     options?.desiredRepoId,
     options?.desiredWorktreeId,
+    options?.preserveMissingDesiredWorktree,
     queryClient,
     repositoryWorktreeIndex,
     repositories,
@@ -453,9 +642,50 @@ export function useRepositoryManager(
     const willFire = prev.repoId !== selectedRepositoryId || prev.worktreeId !== selectedWorktreeId;
     if (willFire) {
       prevSelectionRef.current = { repoId: selectedRepositoryId, worktreeId: selectedWorktreeId };
+      debugLog("workspace.selection.repository", "selectionChange.notify", {
+        previousRepositoryId: prev.repoId,
+        previousWorktreeId: prev.worktreeId,
+        selectedRepositoryId,
+        selectedWorktreeId,
+        desiredRepoId: options?.desiredRepoId ?? null,
+        desiredWorktreeId: options?.desiredWorktreeId ?? null,
+      }, { worktreeId: selectedWorktreeId, force: true });
+
+      const atMs = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? Math.round(performance.now() * 10) / 10
+        : Date.now();
+      const history = selectionTransitionHistoryRef.current;
+      history.push({
+        atMs,
+        repoId: selectedRepositoryId,
+        worktreeId: selectedWorktreeId,
+        desiredRepoId: options?.desiredRepoId ?? null,
+        desiredWorktreeId: options?.desiredWorktreeId ?? null,
+      });
+      selectionTransitionHistoryRef.current = history
+        .filter((entry) => atMs - entry.atMs <= 3_000)
+        .slice(-10);
+
+      const recent = selectionTransitionHistoryRef.current;
+      const uniqueWorktreeIds = new Set(recent.map((entry) => entry.worktreeId ?? "null"));
+      if (recent.length >= 4 && uniqueWorktreeIds.size >= 2) {
+        const signature = recent.map((entry) => `${entry.repoId ?? "null"}:${entry.worktreeId ?? "null"}`).join("|");
+        if (rapidSelectionDebugSignatureRef.current !== signature) {
+          rapidSelectionDebugSignatureRef.current = signature;
+          debugLog("diagnose.selection", "[DEBUG-worktree-glitch] rapid-selection-transitions", {
+            history: recent,
+            selectedRepositoryId,
+            selectedWorktreeId,
+            desiredRepoId: options?.desiredRepoId ?? null,
+            desiredWorktreeId: options?.desiredWorktreeId ?? null,
+            loadingRepos,
+            repositoryCount: repositories.length,
+          }, { worktreeId: selectedWorktreeId, force: true });
+        }
+      }
       options?.onSelectionChange?.({ repoId: selectedRepositoryId, worktreeId: selectedWorktreeId });
     }
-  }, [selectedRepositoryId, selectedWorktreeId]);
+  }, [loadingRepos, options?.desiredRepoId, options?.desiredWorktreeId, repositories.length, selectedRepositoryId, selectedWorktreeId]);
 
   useEffect(() => {
     if (
@@ -514,7 +744,7 @@ export function useRepositoryManager(
     }
   }
 
-  async function submitWorktree(repositoryId: string) {
+  async function submitWorktree(repositoryId: string, options?: SubmitWorktreeOptions): Promise<Worktree | null> {
     onError(null);
     try {
       const previousSelection = {
@@ -522,14 +752,26 @@ export function useRepositoryManager(
         worktreeId: selectedWorktreeId,
       };
       const { worktree } = await createWorktreeMutation.mutateAsync({ repositoryId });
-      queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, (current) =>
-        upsertPendingWorktree(current ?? repositories, repositoryId, worktree),
+      const nextRepositories = upsertPendingWorktree(
+        queryClient.getQueryData<Repository[]>(queryKeys.repositories.all) ?? repositories,
+        repositoryId,
+        worktree,
       );
+      const nextRepository = nextRepositories.find((repository) => repository.id === repositoryId) ?? null;
+      if (nextRepository) {
+        upsertRepositoryInCollection(queryClient, nextRepository);
+      } else {
+        queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, nextRepositories);
+      }
       pendingCreatedWorktreesRef.current.set(worktree.id, { previousSelection });
-      setSelectedWorktreeId(worktree.id);
-      setSelectedRepositoryId(repositoryId);
+      if (options?.select !== false) {
+        setSelectedWorktreeId(worktree.id);
+        setSelectedRepositoryId(repositoryId);
+      }
+      return worktree;
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create worktree");
+      return null;
     }
   }
 
@@ -547,9 +789,15 @@ export function useRepositoryManager(
         ? resolveAvailableWorktreeId(targetRepository, worktreeId)
         : selectedWorktreeId;
 
-    queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, (old) =>
-      markWorktreeDeletionRequested(old ?? repositoriesSnapshot, worktreeId),
-    );
+    const deletingRepositories = markWorktreeDeletionRequested(repositoriesSnapshot, worktreeId);
+    const deletingRepository = targetRepository
+      ? deletingRepositories.find((repository) => repository.id === targetRepository.id) ?? null
+      : null;
+    if (deletingRepository) {
+      upsertRepositoryInCollection(queryClient, deletingRepository);
+    } else {
+      queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, deletingRepositories);
+    }
 
     if (selectedWorktreeId === worktreeId) {
       setSelectedRepositoryId(targetRepository?.id ?? previousSelection.repositoryId);
@@ -561,8 +809,13 @@ export function useRepositoryManager(
         worktreeId,
         options: { force: options?.force },
       });
+      void refetchRepositoriesCollection(queryClient);
     } catch (e) {
-      queryClient.setQueryData(queryKeys.repositories.all, repositoriesSnapshot);
+      if (targetRepository) {
+        upsertRepositoryInCollection(queryClient, targetRepository);
+      } else {
+        queryClient.setQueryData(queryKeys.repositories.all, repositoriesSnapshot);
+      }
       if (selectedWorktreeId === worktreeId) {
         setSelectedRepositoryId(previousSelection.repositoryId);
         setSelectedWorktreeId(previousSelection.worktreeId);

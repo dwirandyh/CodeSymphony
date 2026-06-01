@@ -338,10 +338,16 @@ export function resolveStartupWorkspaceSelection(params: {
   threadId?: string;
   snapshot: StartupShellSnapshot | null;
 }) {
+  const repoId = params.repoId ?? params.snapshot?.repoId ?? undefined;
+  const snapshotWorktreeMatchesRepo = params.snapshot?.repoId == null || repoId === params.snapshot.repoId;
+  const worktreeId = params.worktreeId ?? (snapshotWorktreeMatchesRepo ? params.snapshot?.worktreeId : undefined) ?? undefined;
+  const snapshotThreadMatchesWorktree = params.snapshot?.worktreeId == null || worktreeId === params.snapshot.worktreeId;
+  const threadId = params.threadId ?? (snapshotThreadMatchesWorktree ? params.snapshot?.threadId : undefined) ?? undefined;
+
   return {
-    repoId: params.repoId ?? params.snapshot?.repoId ?? undefined,
-    worktreeId: params.worktreeId ?? params.snapshot?.worktreeId ?? undefined,
-    threadId: params.threadId ?? params.snapshot?.threadId ?? undefined,
+    repoId,
+    worktreeId,
+    threadId,
   };
 }
 

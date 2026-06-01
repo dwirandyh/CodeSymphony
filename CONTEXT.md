@@ -91,12 +91,17 @@ _Avoid_: git owner, transport state machine
 An activity on one Worktree that may change file-derived or git-derived state and therefore requires the right live projections to refresh.
 _Avoid_: raw watcher event, ad-hoc invalidation
 
+**External file reference**:
+An absolute filesystem file path outside the selected Worktree that CodeSymphony can open in the internal editor.
+_Avoid_: worktree file, repository file
+
 ## Worktree Live State Relationships
 
 - A **Worktree git status** belongs to exactly one Worktree
 - **Worktree git freshness** keeps one **Worktree git status** current
 - A **Source Control projection** is derived from one **Worktree git status**
 - A **Worktree activity** may require **Worktree git freshness** to refresh its **Worktree git status**
+- An **External file reference** is not part of any **Worktree git status**
 
 ## Flagged ambiguities
 

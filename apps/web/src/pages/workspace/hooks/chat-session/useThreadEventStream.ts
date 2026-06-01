@@ -176,6 +176,23 @@ function syncThreadStreamCursorFromStatus(threadId: string, snapshot: ChatThread
   }
 }
 
+function summarizeLocalThreadCollections(threadId: string) {
+  const { eventsCollection, messagesCollection } = getThreadCollections(threadId);
+  const events = eventsCollection.toArray as ChatEvent[];
+  const messages = messagesCollection.toArray as ChatMessage[];
+
+  return {
+    messagesCount: messages.length,
+    eventsCount: events.length,
+    firstMessageSeq: messages[0]?.seq ?? null,
+    lastMessageSeq: messages[messages.length - 1]?.seq ?? null,
+    firstEventIdx: events[0]?.idx ?? null,
+    lastEventIdx: events[events.length - 1]?.idx ?? null,
+    cursorEventIdx: getThreadLastEventIdx(threadId),
+    cursorMessageSeq: getThreadLastMessageSeq(threadId),
+  };
+}
+
 function flushPendingEventsToCollection(threadId: string, pendingEvents: ChatEvent[]) {
   if (pendingEvents.length === 0) {
     return;
@@ -888,6 +905,19 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
       const streamUrl = new URL(`${api.runtimeBaseUrl}/api/threads/${selectedThreadId}/events/stream`);
       const lastEventIdx = getThreadLastEventIdx(selectedThreadId);
+      const localSummary = summarizeLocalThreadCollections(selectedThreadId);
+      if (localSummary.eventsCount === 0 && typeof lastEventIdx === "number") {
+        debugLog("diagnose.thread-history", "[DEBUG-history-gap] stream.afterIdx.with-empty-local-events", {
+          threadId: selectedThreadId,
+          worktreeId: selectedWorktreeId,
+          afterIdx: lastEventIdx,
+          cachedSnapshotPresent: cachedSnapshot != null,
+          cachedSnapshotCollectionsIncluded: cachedSnapshot?.collectionsIncluded ?? null,
+          cachedSnapshotEventCount: cachedSnapshot?.events.length ?? null,
+          cachedSnapshotMessageCount: cachedSnapshot?.messages.length ?? null,
+          local: localSummary,
+        }, { threadId: selectedThreadId, worktreeId: selectedWorktreeId, force: true });
+      }
       if (typeof lastEventIdx === "number") {
         streamUrl.searchParams.set("afterIdx", String(lastEventIdx));
       }
@@ -975,6 +1005,17 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           );
 
           if (cachedStatusSnapshot) {
+            const localBeforeStatusCursor = summarizeLocalThreadCollections(bootstrapThreadId);
+            if (localBeforeStatusCursor.eventsCount === 0 && cachedStatusSnapshot.newestIdx != null) {
+              debugLog("diagnose.thread-history", "[DEBUG-history-gap] status-cursor-before-history.cached", {
+                threadId: bootstrapThreadId,
+                worktreeId: selectedWorktreeId,
+                statusNewestIdx: cachedStatusSnapshot.newestIdx,
+                status: cachedStatusSnapshot.status,
+                cachedSnapshotPresent: cachedSnapshot != null,
+                local: localBeforeStatusCursor,
+              }, { threadId: bootstrapThreadId, worktreeId: selectedWorktreeId, force: true });
+            }
             syncThreadStreamCursorFromStatus(bootstrapThreadId, cachedStatusSnapshot);
           } else {
             const statusSnapshot = await queryClient.fetchQuery({
@@ -989,6 +1030,17 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
               return;
             }
 
+            const localBeforeStatusCursor = summarizeLocalThreadCollections(bootstrapThreadId);
+            if (localBeforeStatusCursor.eventsCount === 0 && statusSnapshot.newestIdx != null) {
+              debugLog("diagnose.thread-history", "[DEBUG-history-gap] status-cursor-before-history.fetched", {
+                threadId: bootstrapThreadId,
+                worktreeId: selectedWorktreeId,
+                statusNewestIdx: statusSnapshot.newestIdx,
+                status: statusSnapshot.status,
+                cachedSnapshotPresent: cachedSnapshot != null,
+                local: localBeforeStatusCursor,
+              }, { threadId: bootstrapThreadId, worktreeId: selectedWorktreeId, force: true });
+            }
             syncThreadStreamCursorFromStatus(bootstrapThreadId, statusSnapshot);
           }
         }

@@ -197,6 +197,7 @@ import {
   promoteSessionShortcutTarget,
   type SessionShortcutTarget,
 } from "./workspace/sessionShortcutTargets";
+import { shouldSuppressStartupFallbackSearchUpdate } from "./workspace/startupSelectionNavigation";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
@@ -210,6 +211,7 @@ import { useInstalledApps } from "../hooks/queries/useInstalledApps";
 import { THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS } from "../hooks/queries/useThreadSnapshot";
 import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../hooks/queries/useThreads";
 import { queryKeys } from "../lib/queryKeys";
+import { startWorkspaceStartupBootstrap } from "../lib/workspaceStartupBootstrap";
 import { refetchGitStatusCollection } from "../collections/gitStatus";
 import { getThreadsCollection, replaceThreadsCollection } from "../collections/threads";
 import { writeWorkspaceShellStateSnapshot } from "../collections/workspaceShellState";
@@ -854,12 +856,50 @@ export function WorkspacePage() {
   const repos = useRepositoryManager(setError, {
     desiredRepoId: restoredRepoId,
     desiredWorktreeId: restoredWorktreeId,
+    preserveMissingDesiredWorktree: search.worktreeId === restoredWorktreeId,
     repositoriesEnabled: enableCriticalWorkspaceData,
     onScriptUpdate: handleScriptUpdate,
     onScriptOutputChunk: handleScriptOutputChunk,
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
         const pendingSelection = pendingWorktreeSearchSelectionRef.current;
+        debugLog("workspace.selection.navigation", "repository.onSelectionChange", {
+          nextRepoId: selection.repoId,
+          nextWorktreeId: selection.worktreeId,
+          previousWorktreeId: prevWorktreeIdRef.current ?? null,
+          routeRepoId: search.repoId ?? null,
+          routeWorktreeId: search.worktreeId ?? null,
+          routeThreadId: search.threadId ?? null,
+          pendingRepoId: pendingSelection?.repoId ?? null,
+          pendingWorktreeId: pendingSelection?.worktreeId ?? null,
+          pendingThreadId: pendingSelection?.threadId ?? null,
+          pendingSelectionMatches: pendingSelection?.repoId === selection.repoId
+            && pendingSelection?.worktreeId === selection.worktreeId,
+        }, { worktreeId: selection.worktreeId, force: true });
+
+        const intendedRepoId = pendingSelection?.repoId ?? search.repoId ?? restoredRepoId ?? null;
+        const intendedWorktreeId = pendingSelection?.worktreeId ?? search.worktreeId ?? restoredWorktreeId ?? null;
+        const selectionLostIntendedWorkspace =
+          (selection.repoId == null && intendedRepoId != null)
+          || (selection.worktreeId == null && intendedWorktreeId != null);
+        if (selectionLostIntendedWorkspace) {
+          debugLog("diagnose.selection", "[DEBUG-worktree-glitch] transient-null-url-update.suppressed", {
+            nextRepoId: selection.repoId,
+            nextWorktreeId: selection.worktreeId,
+            intendedRepoId,
+            intendedWorktreeId,
+            routeRepoId: search.repoId ?? null,
+            routeWorktreeId: search.worktreeId ?? null,
+            routeThreadId: search.threadId ?? null,
+            restoredRepoId: restoredRepoId ?? null,
+            restoredWorktreeId: restoredWorktreeId ?? null,
+            pendingRepoId: pendingSelection?.repoId ?? null,
+            pendingWorktreeId: pendingSelection?.worktreeId ?? null,
+            pendingThreadId: pendingSelection?.threadId ?? null,
+          }, { worktreeId: intendedWorktreeId, force: true });
+          return;
+        }
+
         if (
           pendingSelection?.repoId === selection.repoId
           && pendingSelection?.worktreeId === selection.worktreeId
@@ -873,7 +913,21 @@ export function WorkspacePage() {
         const shouldReusePendingThreadId =
           pendingSelection?.worktreeId === selection.worktreeId;
 
-        updateSearch({
+        if (shouldSuppressStartupFallbackSearchUpdate({
+          startupSelectionFallbackActive,
+          routeRepoId: search.repoId ?? null,
+          routeWorktreeId: search.worktreeId ?? null,
+          pendingRepoId: pendingSelection?.repoId ?? null,
+          pendingWorktreeId: pendingSelection?.worktreeId ?? null,
+          restoredRepoId: restoredRepoId ?? null,
+          restoredWorktreeId: restoredWorktreeId ?? null,
+          nextRepoId: selection.repoId,
+          nextWorktreeId: selection.worktreeId,
+        })) {
+          return;
+        }
+
+        const nextSearchPatch = {
           repoId: selection.repoId ?? undefined,
           worktreeId: selection.worktreeId ?? undefined,
           ...(shouldReusePendingThreadId
@@ -881,9 +935,10 @@ export function WorkspacePage() {
             : worktreeChanged
               ? { threadId: undefined }
               : {}),
-        });
+        };
+        updateSearch(nextSearchPatch);
       },
-      [updateSearch],
+      [restoredRepoId, restoredWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
     ),
   });
   const repositoriesLoadError = repos.repositoriesError instanceof Error
@@ -1087,6 +1142,28 @@ export function WorkspacePage() {
   const openInAppShortcutBusyRef = useRef(false);
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
+  const startupBootstrapSelectionKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!desktopApp || !(restoredRepoId || restoredWorktreeId || restoredThreadId)) {
+      return;
+    }
+
+    const selectionKey = `${restoredRepoId ?? ""}:${restoredWorktreeId ?? ""}:${restoredThreadId ?? ""}`;
+    if (startupBootstrapSelectionKeyRef.current === selectionKey) {
+      return;
+    }
+    startupBootstrapSelectionKeyRef.current = selectionKey;
+
+    void startWorkspaceStartupBootstrap(queryClient, {
+      selection: {
+        repositoryId: restoredRepoId,
+        worktreeId: restoredWorktreeId,
+        threadId: restoredThreadId,
+      },
+    }).catch(() => {});
+  }, [desktopApp, queryClient, restoredRepoId, restoredThreadId, restoredWorktreeId]);
+
   const installedAppsQuery = useInstalledApps({
     enabled: enableNonCriticalWorkspaceData,
   });
@@ -1191,14 +1268,118 @@ export function WorkspacePage() {
     timelineEnabled: !reviewTabOpen,
     onThreadChange: useCallback(
       (threadId: string | null) => {
+        debugLog("workspace.selection.navigation", "chat.onThreadChange", {
+          nextThreadId: threadId,
+          routeRepoId: search.repoId ?? null,
+          routeWorktreeId: search.worktreeId ?? null,
+          routeThreadId: search.threadId ?? null,
+          selectedRepositoryId: repos.selectedRepositoryId,
+          selectedWorktreeId: repos.selectedWorktreeId,
+          pendingRepoId: pendingWorktreeSearchSelectionRef.current?.repoId ?? null,
+          pendingWorktreeId: pendingWorktreeSearchSelectionRef.current?.worktreeId ?? null,
+          pendingThreadId: pendingWorktreeSearchSelectionRef.current?.threadId ?? null,
+          startupSelectionFallbackActive,
+        }, {
+          threadId,
+          worktreeId: repos.selectedWorktreeId,
+          force: true,
+        });
         if (startupSelectionFallbackActive) {
           setStartupSelectionFallbackActive(false);
         }
         updateSearch({ threadId: threadId ?? undefined });
       },
-      [startupSelectionFallbackActive, updateSearch],
+      [repos.selectedRepositoryId, repos.selectedWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
     ),
   });
+  const selectionOscillationHistoryRef = useRef<Array<{
+    atMs: number;
+    scopeKey: string;
+    repositoryId: string | null;
+    worktreeId: string | null;
+    threadId: string | null;
+    routeRepoId: string | null;
+    routeWorktreeId: string | null;
+    routeThreadId: string | null;
+    pendingRepoId: string | null;
+    pendingWorktreeId: string | null;
+    pendingThreadId: string | null;
+  }>>([]);
+  const selectionOscillationSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    const pendingSelection = pendingWorktreeSearchSelectionRef.current;
+    const atMs = typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now()
+      : Date.now();
+    const snapshot = {
+      atMs: Math.round(atMs * 10) / 10,
+      scopeKey: `${repos.selectedRepositoryId ?? "null"}:${repos.selectedWorktreeId ?? "null"}:${chat.selectedThreadId ?? "null"}`,
+      repositoryId: repos.selectedRepositoryId,
+      worktreeId: repos.selectedWorktreeId,
+      threadId: chat.selectedThreadId,
+      routeRepoId: search.repoId ?? null,
+      routeWorktreeId: search.worktreeId ?? null,
+      routeThreadId: search.threadId ?? null,
+      pendingRepoId: pendingSelection?.repoId ?? null,
+      pendingWorktreeId: pendingSelection?.worktreeId ?? null,
+      pendingThreadId: pendingSelection?.threadId ?? null,
+    };
+
+    const history = selectionOscillationHistoryRef.current;
+    if (history.at(-1)?.scopeKey === snapshot.scopeKey) {
+      return;
+    }
+
+    history.push(snapshot);
+    selectionOscillationHistoryRef.current = history
+      .filter((entry) => snapshot.atMs - entry.atMs <= 3_000)
+      .slice(-8);
+
+    const recent = selectionOscillationHistoryRef.current;
+    if (recent.length < 4) {
+      return;
+    }
+
+    const lastFour = recent.slice(-4);
+    const oscillating =
+      lastFour[0]?.scopeKey === lastFour[2]?.scopeKey
+      && lastFour[1]?.scopeKey === lastFour[3]?.scopeKey
+      && lastFour[0]?.scopeKey !== lastFour[1]?.scopeKey;
+    if (!oscillating) {
+      return;
+    }
+
+    const signature = lastFour.map((entry) => entry.scopeKey).join("|");
+    if (selectionOscillationSignatureRef.current === signature) {
+      return;
+    }
+    selectionOscillationSignatureRef.current = signature;
+
+    debugLog("workspace.selection.oscillation", "detected", {
+      history: recent,
+      selectedRepositoryName: repos.selectedRepository?.name ?? null,
+      selectedWorktreeBranch: repos.selectedWorktree?.branch ?? null,
+      selectedThreadTitle: chat.threads.find((thread) => thread.id === chat.selectedThreadId)?.title ?? null,
+      messageListEmptyState: chat.messageListEmptyState,
+      selectedThreadUiStatus: chat.selectedThreadUiStatus,
+    }, {
+      threadId: chat.selectedThreadId,
+      worktreeId: repos.selectedWorktreeId,
+      force: true,
+    });
+  }, [
+    chat.messageListEmptyState,
+    chat.selectedThreadId,
+    chat.selectedThreadUiStatus,
+    chat.threads,
+    repos.selectedRepository?.name,
+    repos.selectedRepositoryId,
+    repos.selectedWorktree?.branch,
+    repos.selectedWorktreeId,
+    search.repoId,
+    search.threadId,
+    search.worktreeId,
+  ]);
 
   const [loadAllModelCatalogs, setLoadAllModelCatalogs] = useState(false);
   const claudeModelCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
@@ -2441,6 +2622,7 @@ export function WorkspacePage() {
   const {
     activeEditorFileState,
     activeEditorGitBaselineState,
+    activeFileExternal,
     activeFileDirty,
     canDiscardDirtyWorktreeFiles,
     canSaveActiveFile,
@@ -2721,6 +2903,18 @@ export function WorkspacePage() {
       worktreeId,
       threadId: restoredThreadId,
     };
+    debugLog("workspace.selection.navigation", "worktree.select", {
+      repositoryId,
+      worktreeId,
+      preferredThreadId: preferredThreadId ?? null,
+      restoredThreadId: restoredThreadId ?? null,
+      previousRepositoryId: repos.selectedRepositoryId,
+      previousWorktreeId: repos.selectedWorktreeId,
+      previousRouteRepoId: search.repoId ?? null,
+      previousRouteWorktreeId: search.worktreeId ?? null,
+      previousRouteThreadId: search.threadId ?? null,
+      mobilePanelOpen,
+    }, { threadId: restoredThreadId ?? null, worktreeId, force: true });
     void prefetchWorktreeNavigationTarget(worktreeId, restoredThreadId);
 
     repos.setSelectedRepositoryId(repositoryId);
@@ -2737,7 +2931,50 @@ export function WorkspacePage() {
       setMobilePanelOpen(nextMobilePanel);
       setMobileReposOrigin(null);
     }
-  }, [canDiscardDirtyWorktreeFiles, handleCloseMobileRepositories, mobilePanelOpen, mobileReposOrigin, prefetchWorktreeNavigationTarget, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
+  }, [canDiscardDirtyWorktreeFiles, handleCloseMobileRepositories, mobilePanelOpen, mobileReposOrigin, prefetchWorktreeNavigationTarget, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, search.repoId, search.threadId, search.worktreeId, updateSearch]);
+
+  const handleCreateWorktree = useCallback(async (repositoryId: string) => {
+    const worktree = await repos.submitWorktree(repositoryId, { select: false });
+    if (!worktree) {
+      return;
+    }
+
+    pendingWorktreeSearchSelectionRef.current = {
+      repoId: repositoryId,
+      worktreeId: worktree.id,
+    };
+    debugLog("workspace.selection.navigation", "worktree.create.select", {
+      repositoryId,
+      worktreeId: worktree.id,
+      previousRepositoryId: repos.selectedRepositoryId,
+      previousWorktreeId: repos.selectedWorktreeId,
+      previousRouteRepoId: search.repoId ?? null,
+      previousRouteWorktreeId: search.worktreeId ?? null,
+      previousRouteThreadId: search.threadId ?? null,
+    }, { worktreeId: worktree.id, force: true });
+    void prefetchWorktreeNavigationTarget(worktree.id);
+
+    repos.setSelectedRepositoryId(repositoryId);
+    repos.setSelectedWorktreeId(worktree.id);
+    updateSearch({
+      repoId: repositoryId,
+      worktreeId: worktree.id,
+      threadId: undefined,
+      view: undefined,
+      file: undefined,
+    });
+  }, [
+    prefetchWorktreeNavigationTarget,
+    repos.selectedRepositoryId,
+    repos.selectedWorktreeId,
+    repos.setSelectedRepositoryId,
+    repos.setSelectedWorktreeId,
+    repos.submitWorktree,
+    search.repoId,
+    search.threadId,
+    search.worktreeId,
+    updateSearch,
+  ]);
 
   const handleResourceMonitorSelectWorktree = useCallback((repositoryId: string, worktreeId: string) => {
     handleSelectWorktree(repositoryId, worktreeId);
@@ -3544,10 +3781,18 @@ export function WorkspacePage() {
       if (threadId != null) {
         setWorkspaceLandingHold(repos.selectedWorktreeId, false);
       }
+      debugLog("workspace.selection.navigation", "thread.select", {
+        nextThreadId: threadId,
+        previousThreadId: chat.selectedThreadId,
+        selectedWorktreeId: repos.selectedWorktreeId,
+        routeRepoId: search.repoId ?? null,
+        routeWorktreeId: search.worktreeId ?? null,
+        routeThreadId: search.threadId ?? null,
+      }, { threadId, worktreeId: repos.selectedWorktreeId, force: true });
       chat.setSelectedThreadId(threadId);
       updateSearch({ view: undefined, file: undefined, threadId: threadId ?? undefined });
     },
-    [chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, setWorkspaceLandingHold, updateSearch],
+    [chat.selectedThreadId, chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, search.repoId, search.threadId, search.worktreeId, setWorkspaceLandingHold, updateSearch],
   );
 
   const handleSelectSessionShortcutTarget = useCallback((target: SessionShortcutTarget) => {
@@ -4051,7 +4296,7 @@ export function WorkspacePage() {
               onSetRepositoryVisibility={handleSetRepositoryVisibility}
               onShowAllRepositories={handleShowAllRepositories}
               onReorderRepositories={handleReorderRepositories}
-              onCreateWorktree={repos.submitWorktree}
+              onCreateWorktree={handleCreateWorktree}
               onSelectWorktree={handleSelectWorktree}
               onDeleteWorktree={repos.removeWorktree}
               onRenameWorktreeBranch={repos.renameWorktreeBranch}
@@ -4371,6 +4616,7 @@ export function WorkspacePage() {
                   <CodeEditorPanel
                     key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
                     filePath={activeFilePath}
+                    externalFile={activeFileExternal}
                     targetLine={activeFileLine ?? undefined}
                     targetColumn={activeFileColumn ?? undefined}
                     fileEntries={fileIndex.entries}
@@ -4832,7 +5078,7 @@ export function WorkspacePage() {
                   onSetRepositoryVisibility={handleSetRepositoryVisibility}
                   onShowAllRepositories={handleShowAllRepositories}
                   onReorderRepositories={handleReorderRepositories}
-                  onCreateWorktree={repos.submitWorktree}
+                  onCreateWorktree={handleCreateWorktree}
                   onSelectWorktree={handleSelectWorktree}
                   onDeleteWorktree={repos.removeWorktree}
                   onRenameWorktreeBranch={repos.renameWorktreeBranch}
