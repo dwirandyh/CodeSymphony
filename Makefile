@@ -4,8 +4,10 @@ MACOS_APP_PATH ?= apps/desktop/src-tauri/target/release/bundle/macos/CodeSymphon
 MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT ?= apps/desktop/scripts/resolve-signing-identity.sh
 MACOS_VERIFY_SIGNING_SCRIPT ?= apps/desktop/scripts/verify-macos-signing.sh
 MACOS_BUILD_ENV_FILE ?= .env
+TAILSCALE ?= $(shell if [ -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]; then printf '%s' "/Applications/Tailscale.app/Contents/MacOS/Tailscale"; elif command -v tailscale >/dev/null 2>&1; then command -v tailscale; else printf '%s' tailscale; fi)
+TAILSCALE_APP_PORT ?= 4322
 
-.PHONY: help install stop-dev dev dev-runtime dev-web dev-desktop setup-android-streaming start-android-streaming db-generate db-migrate db-seed db-init build test lint build-macos-prod build-macos-prod-app macos-signing-identity verify-macos-signing setup-worktree setup-worktree-up stop-worktree-up
+.PHONY: help install stop-dev dev dev-runtime dev-web dev-desktop setup-android-streaming start-android-streaming db-generate db-migrate db-seed db-init build test lint build-macos-prod build-macos-prod-app macos-signing-identity verify-macos-signing serve-macos-app serve-macos-app-status stop-serve-macos-app setup-worktree setup-worktree-up stop-worktree-up
 
 help:
 	@echo "Available targets:"
@@ -31,6 +33,9 @@ help:
 	@echo "  make build-macos-prod-app - Build a signed production macOS .app bundle"
 	@echo "  make build-macos-prod - Build a signed production macOS .app bundle and DMG"
 	@echo "  make verify-macos-signing - Verify the built macOS app and nested binaries are not ad-hoc signed"
+	@echo "  make serve-macos-app - Expose macOS app runtime via Tailscale Serve"
+	@echo "  make serve-macos-app-status - Show Tailscale Serve status"
+	@echo "  make stop-serve-macos-app - Stop Tailscale Serve for this app"
 	@echo "  make setup-worktree PORT=N - Configure ports for this worktree (runtime=N, web=N+1000)"
 	@echo "  make setup-worktree-up PORT=N - Configure ports, start dev detached, and wait until runtime+web are ready"
 	@echo "  make stop-worktree-up PORT=N - Stop detached dev started for this worktree port"
@@ -134,6 +139,17 @@ verify-macos-signing:
 	SIGNING_IDENTITY="$${CODESYMPHONY_MACOS_SIGN_IDENTITY:-$${APPLE_SIGNING_IDENTITY:-$$(bash "$(MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT)")}}"; \
 	echo "Verifying $(MACOS_APP_PATH)"; \
 	CODESYMPHONY_MACOS_SIGN_IDENTITY="$$SIGNING_IDENTITY" bash "$(MACOS_VERIFY_SIGNING_SCRIPT)" "$(MACOS_APP_PATH)" "$$SIGNING_IDENTITY"
+
+serve-macos-app:
+	@set -e; \
+	"$(TAILSCALE)" serve --bg $(TAILSCALE_APP_PORT); \
+	"$(TAILSCALE)" serve status
+
+serve-macos-app-status:
+	@"$(TAILSCALE)" serve status
+
+stop-serve-macos-app:
+	@"$(TAILSCALE)" serve --https=443 off
 
 setup-worktree:
 ifndef PORT
