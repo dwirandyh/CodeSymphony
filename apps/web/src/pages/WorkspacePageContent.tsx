@@ -883,20 +883,6 @@ export function WorkspacePage() {
           (selection.repoId == null && intendedRepoId != null)
           || (selection.worktreeId == null && intendedWorktreeId != null);
         if (selectionLostIntendedWorkspace) {
-          debugLog("diagnose.selection", "[DEBUG-worktree-glitch] transient-null-url-update.suppressed", {
-            nextRepoId: selection.repoId,
-            nextWorktreeId: selection.worktreeId,
-            intendedRepoId,
-            intendedWorktreeId,
-            routeRepoId: search.repoId ?? null,
-            routeWorktreeId: search.worktreeId ?? null,
-            routeThreadId: search.threadId ?? null,
-            restoredRepoId: restoredRepoId ?? null,
-            restoredWorktreeId: restoredWorktreeId ?? null,
-            pendingRepoId: pendingSelection?.repoId ?? null,
-            pendingWorktreeId: pendingSelection?.worktreeId ?? null,
-            pendingThreadId: pendingSelection?.threadId ?? null,
-          }, { worktreeId: intendedWorktreeId, force: true });
           return;
         }
 
@@ -3316,55 +3302,6 @@ export function WorkspacePage() {
     threadlessFallbackSurface,
     updateSearch,
     updateTerminalTabsState,
-  ]);
-
-  useEffect(() => {
-    const lastTimelineItem = chat.timelineItems[chat.timelineItems.length - 1] ?? null;
-    const lastMessage = chat.messages[chat.messages.length - 1] ?? null;
-
-    debugLog("thread.workspace.ui", "[DEBUG-new-thread-send] workspace.renderState", {
-      threadId: chat.selectedThreadId,
-      worktreeId: repos.selectedWorktreeId,
-      selectedThreadUiStatus: chat.selectedThreadUiStatus,
-      sendingMessage: chat.sendingMessage,
-      showStopAction: chat.showStopAction,
-      waitingAssistantThreadId,
-      messageListEmptyState: chat.messageListEmptyState,
-      hasOpenContentTabs,
-      threadlessFallbackSurface,
-      timelineItemsCount: chat.timelineItems.length,
-      messagesCount: chat.messages.length,
-      eventsCount: chat.events.length,
-      showThinkingPlaceholder,
-      showWorkspaceEmptyState,
-      workingStatus,
-      isWaitingForUserGate: gates.isWaitingForUserGate,
-      composerDisabled: chat.composerDisabled,
-      lastTimelineItemKind: lastTimelineItem?.kind ?? null,
-      lastMessageRole: lastMessage?.role ?? null,
-      lastMessageId: lastMessage?.id ?? null,
-    }, {
-      threadId: chat.selectedThreadId,
-      worktreeId: repos.selectedWorktreeId,
-    });
-  }, [
-    chat.composerDisabled,
-    chat.events.length,
-    chat.messageListEmptyState,
-    chat.messages,
-    chat.selectedThreadId,
-    chat.selectedThreadUiStatus,
-    chat.sendingMessage,
-    chat.showStopAction,
-    chat.timelineItems,
-    gates.isWaitingForUserGate,
-    hasOpenContentTabs,
-    repos.selectedWorktreeId,
-    showWorkspaceEmptyState,
-    showThinkingPlaceholder,
-    threadlessFallbackSurface,
-    workingStatus,
-    waitingAssistantThreadId,
   ]);
 
   const handleCreateTerminalTab = useCallback(() => {

@@ -22,6 +22,7 @@ const {
   getThreadStatusSnapshotMock,
   startWorkspaceStartupBootstrapMock,
   refetchRepositoriesCollectionMock,
+  refreshRepositoriesCollectionFromServerMock,
   refetchAllThreadsCollectionsMock,
   refetchThreadsCollectionMock,
   removeThreadFromCollectionMock,
@@ -38,6 +39,7 @@ const {
   getThreadStatusSnapshotMock: vi.fn(),
   startWorkspaceStartupBootstrapMock: vi.fn(),
   refetchRepositoriesCollectionMock: vi.fn(),
+  refreshRepositoriesCollectionFromServerMock: vi.fn(),
   refetchAllThreadsCollectionsMock: vi.fn(),
   refetchThreadsCollectionMock: vi.fn(),
   removeThreadFromCollectionMock: vi.fn(),
@@ -66,6 +68,7 @@ vi.mock("../../../lib/workspaceStartupBootstrap", () => ({
 
 vi.mock("../../../collections/repositories", () => ({
   refetchRepositoriesCollection: refetchRepositoriesCollectionMock,
+  refreshRepositoriesCollectionFromServer: refreshRepositoriesCollectionFromServerMock,
 }));
 
 vi.mock("../../../collections/threads", () => ({
@@ -219,6 +222,8 @@ beforeEach(() => {
   startWorkspaceStartupBootstrapMock.mockResolvedValue(null);
   refetchRepositoriesCollectionMock.mockReset();
   refetchRepositoriesCollectionMock.mockResolvedValue(undefined);
+  refreshRepositoriesCollectionFromServerMock.mockReset();
+  refreshRepositoriesCollectionFromServerMock.mockResolvedValue([]);
   refetchAllThreadsCollectionsMock.mockReset();
   refetchAllThreadsCollectionsMock.mockResolvedValue([]);
   refetchThreadsCollectionMock.mockReset();
@@ -538,8 +543,33 @@ describe("useWorkspaceSyncStream", () => {
       });
     });
 
-    expect(refetchRepositoriesCollectionMock).toHaveBeenCalledWith(queryClient);
+    expect(refreshRepositoriesCollectionFromServerMock).toHaveBeenCalledWith(queryClient);
     expect(requestRepositoryBranchesLiveRefreshMock).not.toHaveBeenCalled();
     expect(requestRepositoryReviewsLiveRefreshMock).not.toHaveBeenCalled();
+  });
+
+  it("refreshes repository state directly from the server when worktree lifecycle events arrive", async () => {
+    renderHook();
+
+    act(() => {
+      MockWebSocket.instances[0]!.open();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.emit({
+        id: "ws-worktree-update",
+        type: "worktree.updated",
+        repositoryId: "repo-1",
+        worktreeId: "wt-1",
+        threadId: null,
+        createdAt: "2026-01-01T00:00:03Z",
+      });
+    });
+
+    expect(refreshRepositoriesCollectionFromServerMock).toHaveBeenCalledWith(queryClient);
   });
 });

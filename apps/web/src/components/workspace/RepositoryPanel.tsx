@@ -169,6 +169,10 @@ function hasNonIdleWorktreeStatus(status: WorktreeStatusSummary | undefined): bo
   return status != null && status.kind !== "idle";
 }
 
+function shouldShowWorktreeDiffSummary(review: ReviewRef | null): boolean {
+  return review?.state == null || review.state === "open";
+}
+
 const WORKTREE_STATUS_PRIORITY: WorktreeThreadUiStatus[] = [
   "waiting_approval",
   "review_plan",
@@ -1306,6 +1310,10 @@ export const RepositoryPanel = memo(function RepositoryPanel({
               reviewsByRepositoryId[repository.id] ?? {};
             const repositoryReviewKind =
               reviewKindsByRepositoryId[repository.id] ?? null;
+            const rootReview = rootWorkspace
+              ? repositoryReviews[rootWorkspace.branch] ?? null
+              : null;
+            const showRootDiffSummary = shouldShowWorktreeDiffSummary(rootReview);
 
             return (
               <article
@@ -1440,15 +1448,13 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                               status={displayWorktreeStatuses[rootWorkspace.id]?.kind}
                               shortcutLabel={rootShortcutLabel}
                               showShortcutHint={showWorktreeShortcutHints}
-                              review={
-                                repositoryReviews[rootWorkspace.branch] ?? null
-                              }
+                              review={rootReview}
                               reviewKind={repositoryReviewKind}
                               insertions={
-                                worktreeStats[rootWorkspace.id]?.insertions ?? 0
+                                showRootDiffSummary ? worktreeStats[rootWorkspace.id]?.insertions ?? 0 : 0
                               }
                               deletions={
-                                worktreeStats[rootWorkspace.id]?.deletions ?? 0
+                                showRootDiffSummary ? worktreeStats[rootWorkspace.id]?.deletions ?? 0 : 0
                               }
                               testId={`worktree-${rootWorkspace.id}`}
                             />
@@ -1469,6 +1475,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                           );
                           const review =
                             repositoryReviews[worktree.branch] ?? null;
+                          const showDiffSummary = shouldShowWorktreeDiffSummary(review);
                           const shortcutLabel = worktreeShortcutLabels.get(worktree.id);
 
                           return (
@@ -1618,8 +1625,8 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                   detailBadge={renderWorktreeLifecycleBadge(worktree)}
                                   review={review}
                                   reviewKind={repositoryReviewKind}
-                                  insertions={stats?.insertions ?? 0}
-                                  deletions={stats?.deletions ?? 0}
+                                  insertions={showDiffSummary ? stats?.insertions ?? 0 : 0}
+                                  deletions={showDiffSummary ? stats?.deletions ?? 0 : 0}
                                   testId={`worktree-${worktree.id}`}
                                   hideStatusOnHover={true}
                                 />

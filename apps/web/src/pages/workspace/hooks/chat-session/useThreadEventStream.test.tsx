@@ -1052,7 +1052,7 @@ describe("useThreadEventStream", () => {
     expect(cancelQueriesMock).not.toHaveBeenCalled();
   });
 
-  it("waits for the bootstrap status snapshot before opening the first SSE stream", async () => {
+  it("does not use a status-only bootstrap snapshot as the first SSE cursor", async () => {
     const threadId = "selected-thread";
     let resolveStatus: ((snapshot: { status: string; newestIdx: number | null }) => void) | null = null;
     const pendingStatus = new Promise<{ status: string; newestIdx: number | null }>((resolve) => {
@@ -1074,7 +1074,7 @@ describe("useThreadEventStream", () => {
     });
 
     expect(MockEventSource.instances).toHaveLength(1);
-    expect(MockEventSource.instances[0]?.url).toContain("afterIdx=41");
+    expect(MockEventSource.instances[0]?.url).not.toContain("afterIdx=41");
 
     const stream = MockEventSource.instances[0]!;
     act(() => {

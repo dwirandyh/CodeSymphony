@@ -8,7 +8,7 @@ import { isOptimisticThreadId } from "../../../lib/threadIds";
 import { measureStartupMetricSinceBoot } from "../../../lib/startupPerf";
 import { startWorkspaceStartupBootstrap } from "../../../lib/workspaceStartupBootstrap";
 import { subscribeToWorkspaceSyncSocket } from "../../../lib/workspaceLiveSocket";
-import { refetchRepositoriesCollection } from "../../../collections/repositories";
+import { refetchRepositoriesCollection, refreshRepositoriesCollectionFromServer } from "../../../collections/repositories";
 import {
   disposeThreadCollections,
   getThreadCollectionCounts,
@@ -152,7 +152,9 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
   }
 
   if (event.type === "repository.created" || event.type === "repository.updated" || event.type === "repository.deleted") {
-    void refetchRepositoriesCollection(queryClient);
+    void refreshRepositoriesCollectionFromServer(queryClient).catch(() => {
+      void refetchRepositoriesCollection(queryClient);
+    });
   }
 
   if (
@@ -162,7 +164,9 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
     || event.type === "worktree.deletion_failed"
     || event.type === "worktree.deleted"
   ) {
-    void refetchRepositoriesCollection(queryClient);
+    void refreshRepositoriesCollectionFromServer(queryClient).catch(() => {
+      void refetchRepositoriesCollection(queryClient);
+    });
   }
 
   if (event.worktreeId && (event.type === "thread.created" || event.type === "thread.updated")) {

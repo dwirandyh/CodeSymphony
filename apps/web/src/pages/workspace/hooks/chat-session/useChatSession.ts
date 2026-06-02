@@ -1013,6 +1013,12 @@ export function useChatSession(
     () => (cachedThreadsQueryData ?? []).map((thread) => toPlainChatThread(thread)),
     [cachedThreadsQueryData],
   );
+  const queriedThreadsForSelectedWorktree = useMemo(
+    () => selectedWorktreeId && queriedThreads
+      ? queriedThreads.filter((thread) => thread.worktreeId === selectedWorktreeId)
+      : queriedThreads,
+    [queriedThreads, selectedWorktreeId],
+  );
   const requestedThreadId =
     rawRequestedThreadId != null
     && locallyDeletedThreadIdsRef.current.has(rawRequestedThreadId)
@@ -1069,6 +1075,12 @@ export function useChatSession(
     shouldUseProvisioningPlaceholder,
   ]);
   const threads = renderWorktreeSwitchSeed?.threads ?? trackedThreads;
+  const threadsForSelectedWorktree = useMemo(
+    () => selectedWorktreeId
+      ? threads.filter((thread) => thread.worktreeId === selectedWorktreeId)
+      : EMPTY_THREADS,
+    [selectedWorktreeId, threads],
+  );
   const selectedThreadIdOverride = renderWorktreeChanged ? null : selectedThreadIdOverrideRef.current;
   const selectedThreadIdStateForRender = renderWorktreeChanged ? null : selectedThreadIdState;
   const selectedThreadId =
@@ -1087,18 +1099,18 @@ export function useChatSession(
     }
   }
   const queriedThreadsForSelection = useMemo(() => {
-    if (queriedThreads != null && queriedThreads.length > 0) {
-      return queriedThreads;
+    if (queriedThreadsForSelectedWorktree != null && queriedThreadsForSelectedWorktree.length > 0) {
+      return queriedThreadsForSelectedWorktree;
     }
 
-    if (queriedThreadsFetching && queriedThreads?.length === 0 && threads.length > 0) {
-      return threads;
+    if (queriedThreadsFetching && queriedThreadsForSelectedWorktree?.length === 0 && threadsForSelectedWorktree.length > 0) {
+      return threadsForSelectedWorktree;
     }
 
     const shouldPreserveTransientEmptyThreads =
-      queriedThreads != null
-      && queriedThreads.length === 0
-      && threads.length > 0
+      queriedThreadsForSelectedWorktree != null
+      && queriedThreadsForSelectedWorktree.length === 0
+      && threadsForSelectedWorktree.length > 0
       && closingThreadId == null
       && (
         queriedThreadsFetching
@@ -1107,7 +1119,7 @@ export function useChatSession(
         || requestedThreadId != null
       );
     if (shouldPreserveTransientEmptyThreads) {
-      return threads;
+      return threadsForSelectedWorktree;
     }
 
     const bootstrapTargetThreadId = selectedThreadId ?? requestedThreadId;
@@ -1118,17 +1130,17 @@ export function useChatSession(
       return cachedThreadsQuery;
     }
 
-    return queriedThreads ?? EMPTY_THREADS;
+    return queriedThreadsForSelectedWorktree ?? EMPTY_THREADS;
   }, [
     allowUnselectedThread,
     autoCreateInitialThread,
     cachedThreadsQuery,
     closingThreadId,
-    queriedThreads,
+    queriedThreadsForSelectedWorktree,
     queriedThreadsFetching,
     rawRequestedThreadId,
     selectedThreadId,
-    threads,
+    threadsForSelectedWorktree,
     waitingAssistant?.threadId,
   ]);
 
@@ -1320,7 +1332,7 @@ export function useChatSession(
       }
     }
 
-    if (!queriedThreads) return;
+    if (!queriedThreadsForSelectedWorktree) return;
 
     const reconciledOptimisticThreadIds: string[] = [];
     const queriedThreadIds = new Set(queriedThreadsForSelection.map((thread) => thread.id));
@@ -1406,14 +1418,14 @@ export function useChatSession(
 
     const waitingForInitialThreads =
       queriedThreadsLoading
-      && queriedThreads.length === 0
+      && queriedThreadsForSelectedWorktree.length === 0
       && trackedThreads.length === 0;
 
     if (waitingForInitialThreads) {
       return;
     }
 
-    if (awaitingProvisionedThreadByWorktreeRef.current.has(selectedWorktreeId) && queriedThreads.length === 0) {
+    if (awaitingProvisionedThreadByWorktreeRef.current.has(selectedWorktreeId) && queriedThreadsForSelectedWorktree.length === 0) {
       return;
     }
 
@@ -1421,7 +1433,7 @@ export function useChatSession(
       autoCreateInitialThread
       && selectedWorktreeOperational
       && !queriedThreadsLoading
-      && queriedThreads != null
+      && queriedThreadsForSelectedWorktree != null
       && queriedThreadsForSelection.length === 0
       && trackedThreads.length === 0
       && closingThreadId == null
@@ -1525,7 +1537,7 @@ export function useChatSession(
     allowUnselectedThread,
     closingThreadId,
     pendingComposerPermissionMode,
-    queriedThreads,
+    queriedThreadsForSelectedWorktree,
     queriedThreadsForSelection,
     queriedThreadsLoading,
     requestedThreadId,
@@ -1641,9 +1653,11 @@ export function useChatSession(
     messages,
     selectedThreadId,
   ]);
-  const selectedThread = selectedThreadId
-    ? selectedThreadForData ?? null
-    : null;
+  const selectedThread =
+    selectedThreadId != null
+    && selectedThreadForData?.worktreeId === selectedWorktreeId
+      ? selectedThreadForData
+      : null;
 
   function resolveThreadForSend(threadId: string | null): {
     thread: ChatThread | null;
@@ -1718,7 +1732,7 @@ export function useChatSession(
       ?? selectedThreadId
       ?? null;
 
-    debugLog("thread.submit", `[DEBUG-new-thread-send] ${message}`, {
+    debugLog("thread.submit", `new-thread-send.${message}`, {
       selectedWorktreeId,
       selectedThreadId,
       activeThreadId: activeThreadIdRef.current,
@@ -2295,7 +2309,7 @@ export function useChatSession(
     const seedDebugSignature = JSON.stringify(seedDebugState);
     if (historyGapSeedDebugSignatureRef.current !== seedDebugSignature) {
       historyGapSeedDebugSignatureRef.current = seedDebugSignature;
-      debugLog("diagnose.thread-history", "[DEBUG-history-gap] snapshot-seed.decision", seedDebugState, {
+      debugLog("thread.history", "snapshot-seed.decision", seedDebugState, {
         threadId: selectedThreadId,
         worktreeId: selectedWorktreeId,
         force: true,
@@ -2441,7 +2455,7 @@ export function useChatSession(
             ? "reconcile-inactive"
             : "skip-local-already-inactive";
 
-    debugLog("thread.submit", "[DEBUG-stop-button] reconcile.guard", {
+    debugLog("thread.submit", "stop-button.reconcile.guard", {
       threadId: selectedThreadId,
       selectedThreadActive: selectedThread?.active ?? null,
       waitingAssistantMatchesSelectedThread,
@@ -4100,7 +4114,7 @@ export function useChatSession(
       return;
     }
     timelineSourceDebugSignatureRef.current = timelineSourceDebugSignature;
-    debugLog("diagnose.thread-history", "[DEBUG-history-gap] timeline-source.decision", timelineSourceDebugState, {
+    debugLog("thread.history", "timeline-source.decision", timelineSourceDebugState, {
       threadId: selectedThreadId,
       worktreeId: selectedWorktreeId,
       force: true,

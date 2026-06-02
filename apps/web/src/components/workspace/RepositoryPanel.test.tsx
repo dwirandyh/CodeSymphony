@@ -1303,7 +1303,7 @@ describe("RepositoryPanel", () => {
       if (worktreeId === "r1-wt-feat") {
         return { branch: "feature-x", baseBranch: "main", insertions: 24, deletions: 3, filesChanged: 1, available: true };
       }
-      return { branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true };
+      return { branch: "main", baseBranch: "main", insertions: 4, deletions: 2, filesChanged: 1, available: true };
     });
 
     renderPanel({
@@ -1322,6 +1322,8 @@ describe("RepositoryPanel", () => {
     expect(container.querySelector('[data-testid="worktree-r1-wt-root-review"]')?.textContent).not.toContain("PR");
     expect(container.querySelector('[data-testid="worktree-r1-wt-root-review"]')?.getAttribute("title")).toContain("Closed");
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.getAttribute("title")).toContain("Merged");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-diff"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')).toBeNull();
   });
 
   it("keeps review and diff metadata visible on hover-capable worktree rows", async () => {

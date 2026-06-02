@@ -142,6 +142,8 @@ let renderSnapshots: Array<{
   selectedThreadId: string | null;
   threadIds: string[];
   messageListEmptyState: ReturnType<typeof useChatSession>["messageListEmptyState"];
+  selectedThreadUiStatus: ReturnType<typeof useChatSession>["selectedThreadUiStatus"];
+  composerDisabled: boolean;
 }>;
 
 function HookHarness({ selectedWorktreeId }: { selectedWorktreeId: string | null }) {
@@ -153,6 +155,8 @@ function HookHarness({ selectedWorktreeId }: { selectedWorktreeId: string | null
     selectedThreadId: hookResult.selectedThreadId,
     threadIds: hookResult.threads.map((thread) => thread.id),
     messageListEmptyState: hookResult.messageListEmptyState,
+    selectedThreadUiStatus: hookResult.selectedThreadUiStatus,
+    composerDisabled: hookResult.composerDisabled,
   });
   return null;
 }
@@ -222,5 +226,37 @@ describe("useChatSession worktree switch", () => {
       selectedWorktreeId: "wt-2",
       threadIds: expect.arrayContaining(["thread-b"]),
     }));
+  });
+
+  it("ignores stale active thread rows from the previous worktree after switching worktrees", () => {
+    threadsState.data = [{ ...makeThread("thread-old", "wt-1"), active: true }];
+
+    renderHook("wt-1");
+
+    act(() => {
+      hookResult.setSelectedThreadId("thread-old");
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-old");
+    expect(hookResult.selectedThreadUiStatus).toBe("running");
+
+    renderSnapshots = [];
+    renderHook("wt-2");
+
+    expect(renderSnapshots).not.toContainEqual(expect.objectContaining({
+      selectedWorktreeId: "wt-2",
+      selectedThreadId: "thread-old",
+    }));
+    expect(renderSnapshots).not.toContainEqual(expect.objectContaining({
+      selectedWorktreeId: "wt-2",
+      threadIds: expect.arrayContaining(["thread-old"]),
+    }));
+    expect(renderSnapshots).not.toContainEqual(expect.objectContaining({
+      selectedWorktreeId: "wt-2",
+      selectedThreadUiStatus: "running",
+    }));
+    expect(hookResult.selectedThreadId).toBeNull();
+    expect(hookResult.selectedThreadUiStatus).toBe("idle");
+    expect(hookResult.composerDisabled).toBe(true);
   });
 });

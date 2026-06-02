@@ -138,14 +138,14 @@ function readInternalCreateWorktreeOptions(rawInput: unknown): {
 } {
   if (!rawInput || typeof rawInput !== "object") {
     return {
-      ensureInitialThread: true,
+      ensureInitialThread: false,
       isAutomation: false,
     };
   }
 
   const record = rawInput as Record<string, unknown>;
   return {
-    ensureInitialThread: record.ensureInitialThread === false ? false : true,
+    ensureInitialThread: record.ensureInitialThread === true,
     isAutomation: record.isAutomation === true,
   };
 }

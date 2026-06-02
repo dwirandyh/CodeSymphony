@@ -598,6 +598,74 @@ describe("useRepositoryManager", () => {
       );
     });
 
+    it("polls pending created worktrees until repository state leaves creating", async () => {
+      vi.useFakeTimers();
+
+      try {
+        render();
+        await act(async () => {
+          await hookResult.submitWorktree("r1");
+        });
+
+        expect(repositoriesCollectionState.refetchRepositoriesCollection).not.toHaveBeenCalled();
+
+        await act(async () => {
+          vi.advanceTimersByTime(1_000);
+          await Promise.resolve();
+        });
+
+        expect(repositoriesCollectionState.refetchRepositoriesCollection).toHaveBeenCalledWith(queryClient);
+
+        repositoriesCollectionState.refetchRepositoriesCollection.mockClear();
+        repositoriesState.data = [{
+          ...makeRepositories()[0],
+          worktrees: [
+            ...makeRepositories()[0].worktrees,
+            {
+              id: "wt-new",
+              repositoryId: "r1",
+              branch: "new-feature",
+              path: "/home/user/.codesymphony/worktrees/test-repo/new-feature",
+              baseBranch: "main",
+              status: "active",
+              lastCreateError: null,
+              branchRenamed: false,
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+            },
+          ],
+        }];
+        render();
+
+        await act(async () => {
+          vi.advanceTimersByTime(1_500);
+          await Promise.resolve();
+        });
+
+        expect(repositoriesCollectionState.refetchRepositoriesCollection).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not fail creation when the repositories collection is not ready for manual writes", async () => {
+      repositoriesCollectionState.upsertRepositoryInCollection.mockImplementationOnce((targetQueryClient: QueryClient, repository: Repository) => {
+        targetQueryClient.setQueryData<Repository[] | undefined>(queryKeys.repositories.all, [repository]);
+        throw new Error("Collection must be in 'ready' state for manual sync operations. Sync not initialized yet.");
+      });
+
+      render();
+      let createdWorktreeId: string | null = null;
+      await act(async () => {
+        const worktree = await hookResult.submitWorktree("r1");
+        createdWorktreeId = worktree?.id ?? null;
+      });
+
+      expect(createdWorktreeId).toBe("wt-new");
+      expect(hookResult.selectedWorktreeId).toBe("wt-new");
+      expect(mockOnError).not.toHaveBeenCalledWith("Collection must be in 'ready' state for manual sync operations. Sync not initialized yet.");
+    });
+
     it("starts setup streaming after the pending worktree becomes active", async () => {
       repositoriesState.data = [
         {

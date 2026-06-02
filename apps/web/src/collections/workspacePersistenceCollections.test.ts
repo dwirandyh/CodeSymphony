@@ -111,6 +111,31 @@ describe("workspace-persisted collections", () => {
     await resetRepositoriesCollectionRegistryForTest();
   });
 
+  it("keeps repository cache updates when manual collection writes race initialization", async () => {
+    const collection = createMockCollection();
+    collection.utils.writeUpsert.mockImplementationOnce(() => {
+      throw new Error("Collection must be in 'ready' state for manual sync operations. Sync not initialized yet.");
+    });
+    const createCollection = vi.fn(() => collection);
+    const queryCollectionOptions = vi.fn((options) => options);
+    const withWorkspaceCollectionPersistence = vi.fn((options) => options);
+    const queryClient = {
+      setQueryData: vi.fn((_queryKey, updater: (current: typeof repoFixture | undefined) => typeof repoFixture) => updater(undefined)),
+    };
+
+    vi.doMock("@tanstack/db", () => ({ createCollection }));
+    vi.doMock("@tanstack/query-db-collection", () => ({ queryCollectionOptions }));
+    vi.doMock("../lib/workspacePersistence", () => ({ withWorkspaceCollectionPersistence }));
+
+    const { upsertRepositoryInCollection, resetRepositoriesCollectionRegistryForTest } = await import("./repositories");
+
+    expect(() => upsertRepositoryInCollection(queryClient as never, repoFixture[0] as never)).not.toThrow();
+    expect(queryClient.setQueryData).toHaveBeenCalledTimes(1);
+    expect(collection.utils.writeUpsert).toHaveBeenCalledTimes(1);
+
+    await resetRepositoriesCollectionRegistryForTest();
+  });
+
   it("wraps threads collection options with workspace persistence", async () => {
     const createCollection = vi.fn(() => createMockCollection());
     const queryCollectionOptions = vi.fn((options) => options);

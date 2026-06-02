@@ -97,6 +97,11 @@ function upsertPendingWorktree(
   });
 }
 
+function isCollectionSyncNotInitializedError(error: unknown) {
+  return error instanceof Error
+    && error.message === "Collection must be in 'ready' state for manual sync operations. Sync not initialized yet.";
+}
+
 export function useRepositoryManager(
   onError: (msg: string | null) => void,
   options?: UseRepositoryManagerOptions,
@@ -196,6 +201,7 @@ export function useRepositoryManager(
   }>>([]);
   const pendingCreatedWorktreesRef = useRef<Map<string, { previousSelection: { repositoryId: string | null; worktreeId: string | null } }>>(new Map());
   const pendingSetupWorktreeIdsRef = useRef<Set<string>>(new Set());
+  const pendingWorktreeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedRepository = useMemo(() => {
     if (selectedRepositoryId) {
@@ -217,8 +223,18 @@ export function useRepositoryManager(
   }
 
   useEffect(() => {
+    return () => {
+      if (pendingWorktreeRefreshTimerRef.current) {
+        clearTimeout(pendingWorktreeRefreshTimerRef.current);
+        pendingWorktreeRefreshTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const pendingCreatedWorktrees = pendingCreatedWorktreesRef.current;
     const pendingSetupWorktreeIds = pendingSetupWorktreeIdsRef.current;
+    let hasPendingCreatedWorktree = false;
 
     for (const [worktreeId, pendingState] of pendingCreatedWorktrees) {
       const worktree = repositoryWorktreeIndex.worktreeById.get(worktreeId) ?? null;
@@ -229,6 +245,7 @@ export function useRepositoryManager(
       }
 
       if (isPendingWorktreeStatus(worktree.status)) {
+        hasPendingCreatedWorktree = true;
         continue;
       }
 
@@ -256,6 +273,18 @@ export function useRepositoryManager(
       }
     }
 
+    if (hasPendingCreatedWorktree) {
+      if (!pendingWorktreeRefreshTimerRef.current) {
+        pendingWorktreeRefreshTimerRef.current = setTimeout(() => {
+          pendingWorktreeRefreshTimerRef.current = null;
+          void refetchRepositoriesCollection(queryClient);
+        }, 1_000);
+      }
+    } else if (pendingWorktreeRefreshTimerRef.current) {
+      clearTimeout(pendingWorktreeRefreshTimerRef.current);
+      pendingWorktreeRefreshTimerRef.current = null;
+    }
+
     if (activeStreamRef.current || pendingSetupWorktreeIds.size === 0) {
       return;
     }
@@ -278,7 +307,7 @@ export function useRepositoryManager(
 
     pendingSetupWorktreeIds.delete(nextSetupWorktreeId);
     runSetupStreaming(nextSetupWorktreeId, nextSetupWorktree.branch);
-  }, [onError, repositories, repositoryWorktreeIndex, selectedWorktreeId, setupRunning]);
+  }, [onError, queryClient, repositories, repositoryWorktreeIndex, selectedWorktreeId, setupRunning]);
 
   function applyRequestedSelection(requestedRepoId: string | null, requestedWorktreeId: string | null): boolean {
     if (requestedWorktreeId) {
@@ -399,7 +428,7 @@ export function useRepositoryManager(
       if (shouldPreserveRequestedSelection) {
         const nextRepositoryId = requestedRepoId ?? selectedRepositoryId;
         const nextWorktreeId = requestedWorktreeId ?? selectedWorktreeId;
-        debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-repositories.preserve-requested", {
+        debugLog("workspace.selection.repository", "empty-repositories.preserve-requested", {
           hadRepositories,
           selectedRepositoryId,
           selectedWorktreeId,
@@ -418,7 +447,7 @@ export function useRepositoryManager(
       }
 
       if (selectedRepositoryId !== null) {
-        debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-repositories.clear-repository", {
+        debugLog("workspace.selection.repository", "empty-repositories.clear-repository", {
           hadRepositories,
           selectedRepositoryId,
           selectedWorktreeId,
@@ -428,7 +457,7 @@ export function useRepositoryManager(
         setSelectedRepositoryId(null);
       }
       if (selectedWorktreeId !== null) {
-        debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-repositories.clear-worktree", {
+        debugLog("workspace.selection.repository", "empty-repositories.clear-worktree", {
           hadRepositories,
           selectedRepositoryId,
           selectedWorktreeId,
@@ -555,7 +584,7 @@ export function useRepositoryManager(
       selectedWorktreeId != null && previousRepositories.some((repository) => repository.worktrees.some((worktree) => worktree.id === selectedWorktreeId));
 
     if (!selectedRepositoryStillExists && selectedRepositoryExistedPreviously) {
-      debugLog("diagnose.selection", "[DEBUG-worktree-glitch] selected-repository-missing.clear", {
+      debugLog("workspace.selection.repository", "selected-repository-missing.clear", {
         selectedRepositoryId,
         selectedWorktreeId,
         requestedRepoId,
@@ -566,7 +595,7 @@ export function useRepositoryManager(
       return;
     }
     if (!selectedWorktreeStillExists && selectedWorktreeExistedPreviously) {
-      debugLog("diagnose.selection", "[DEBUG-worktree-glitch] selected-worktree-missing.clear", {
+      debugLog("workspace.selection.repository", "selected-worktree-missing.clear", {
         selectedRepositoryId,
         selectedWorktreeId,
         requestedRepoId,
@@ -581,7 +610,7 @@ export function useRepositoryManager(
         unavailableSelectedWorktree.repository,
         unavailableSelectedWorktree.id,
       );
-      debugLog("diagnose.selection", "[DEBUG-worktree-glitch] unavailable-worktree.fallback", {
+      debugLog("workspace.selection.repository", "unavailable-worktree.fallback", {
         selectedRepositoryId,
         selectedWorktreeId,
         requestedRepoId,
@@ -600,7 +629,7 @@ export function useRepositoryManager(
     }
 
     if (!selectedRepositoryId && repositories[0]) {
-      debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-repository.default", {
+      debugLog("workspace.selection.repository", "empty-repository.default", {
         requestedRepoId,
         requestedWorktreeId,
         nextRepositoryId: repositories[0].id,
@@ -613,7 +642,7 @@ export function useRepositoryManager(
       if (firstRepo) {
         const fallbackWorktreeId = resolveAvailableWorktreeId(firstRepo);
         if (fallbackWorktreeId) {
-          debugLog("diagnose.selection", "[DEBUG-worktree-glitch] empty-worktree.default", {
+          debugLog("workspace.selection.repository", "empty-worktree.default", {
             requestedRepoId,
             requestedWorktreeId,
             selectedRepositoryId,
@@ -672,7 +701,7 @@ export function useRepositoryManager(
         const signature = recent.map((entry) => `${entry.repoId ?? "null"}:${entry.worktreeId ?? "null"}`).join("|");
         if (rapidSelectionDebugSignatureRef.current !== signature) {
           rapidSelectionDebugSignatureRef.current = signature;
-          debugLog("diagnose.selection", "[DEBUG-worktree-glitch] rapid-selection-transitions", {
+          debugLog("workspace.selection.repository", "rapid-selection-transitions", {
             history: recent,
             selectedRepositoryId,
             selectedWorktreeId,
@@ -759,7 +788,15 @@ export function useRepositoryManager(
       );
       const nextRepository = nextRepositories.find((repository) => repository.id === repositoryId) ?? null;
       if (nextRepository) {
-        upsertRepositoryInCollection(queryClient, nextRepository);
+        try {
+          upsertRepositoryInCollection(queryClient, nextRepository);
+        } catch (error) {
+          if (!isCollectionSyncNotInitializedError(error)) {
+            throw error;
+          }
+
+          queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, nextRepositories);
+        }
       } else {
         queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, nextRepositories);
       }

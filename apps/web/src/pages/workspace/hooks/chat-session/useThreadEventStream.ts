@@ -163,9 +163,12 @@ function syncThreadStreamCursorFromStatus(threadId: string, snapshot: ChatThread
   const snapshotNewestIdx = snapshot.newestIdx ?? null;
   const localNewestIdx = getThreadLastEventIdx(threadId);
 
+  if (localNewestIdx == null) {
+    return;
+  }
+
   if (
-    localNewestIdx != null
-    && snapshotNewestIdx != null
+    snapshotNewestIdx != null
     && snapshotNewestIdx < localNewestIdx
   ) {
     return;
@@ -907,7 +910,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       const lastEventIdx = getThreadLastEventIdx(selectedThreadId);
       const localSummary = summarizeLocalThreadCollections(selectedThreadId);
       if (localSummary.eventsCount === 0 && typeof lastEventIdx === "number") {
-        debugLog("diagnose.thread-history", "[DEBUG-history-gap] stream.afterIdx.with-empty-local-events", {
+        debugLog("thread.history", "stream.afterIdx.with-empty-local-events", {
           threadId: selectedThreadId,
           worktreeId: selectedWorktreeId,
           afterIdx: lastEventIdx,
@@ -1007,7 +1010,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           if (cachedStatusSnapshot) {
             const localBeforeStatusCursor = summarizeLocalThreadCollections(bootstrapThreadId);
             if (localBeforeStatusCursor.eventsCount === 0 && cachedStatusSnapshot.newestIdx != null) {
-              debugLog("diagnose.thread-history", "[DEBUG-history-gap] status-cursor-before-history.cached", {
+              debugLog("thread.history", "status-cursor-before-history.cached", {
                 threadId: bootstrapThreadId,
                 worktreeId: selectedWorktreeId,
                 statusNewestIdx: cachedStatusSnapshot.newestIdx,
@@ -1032,7 +1035,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
             const localBeforeStatusCursor = summarizeLocalThreadCollections(bootstrapThreadId);
             if (localBeforeStatusCursor.eventsCount === 0 && statusSnapshot.newestIdx != null) {
-              debugLog("diagnose.thread-history", "[DEBUG-history-gap] status-cursor-before-history.fetched", {
+              debugLog("thread.history", "status-cursor-before-history.fetched", {
                 threadId: bootstrapThreadId,
                 worktreeId: selectedWorktreeId,
                 statusNewestIdx: statusSnapshot.newestIdx,
