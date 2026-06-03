@@ -7,10 +7,7 @@ import {
   validateAttachmentSize,
 } from "../../../lib/attachments";
 import { api } from "../../../lib/api";
-import { isTauriDesktop } from "../../../lib/openExternalUrl";
-
-const DESKTOP_DOM_DROP_FALLBACK_DELAY_MS = 150;
-const DESKTOP_NATIVE_DROP_SUPPRESSION_MS = 500;
+import { getElectronFilePaths, isDesktopShell, isElectronDesktop } from "../../../lib/desktopBridge";
 
 export function useComposerAttachments({
   editorRef,
@@ -188,23 +185,20 @@ export function useComposerAttachments({
       const files = extractDraggedFiles(event.dataTransfer);
       if (files.length === 0) return;
 
-      if (isTauriDesktop() && nativeDesktopDropListenerReadyRef.current) {
-        window.setTimeout(() => {
-          const lastNativeDropAt = lastNativeDesktopDropAtRef.current;
-          if (lastNativeDropAt !== null && Date.now() - lastNativeDropAt < DESKTOP_NATIVE_DROP_SUPPRESSION_MS) {
-            return;
-          }
-
+      if (isElectronDesktop() && nativeDesktopDropListenerReadyRef.current) {
+        const paths = getElectronFilePaths(files);
+        if (paths.length > 0) {
+          lastNativeDesktopDropAtRef.current = Date.now();
           startAttachmentRead();
           void (async () => {
             try {
-              await appendBrowserFiles(files, "drag_drop");
+              await appendLocalFiles(paths);
             } finally {
               finishAttachmentRead();
             }
           })();
-        }, DESKTOP_DOM_DROP_FALLBACK_DELAY_MS);
-        return;
+          return;
+        }
       }
 
       startAttachmentRead();
@@ -252,63 +246,19 @@ export function useComposerAttachments({
   );
 
   useEffect(() => {
-    if (!isTauriDesktop()) {
+    if (!isDesktopShell()) {
       return;
     }
 
-    let active = true;
-    let unlisten: null | (() => void) = null;
-
-    void (async () => {
-      try {
-        const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-        if (!active) {
-          return;
-        }
-
-        nativeDesktopDropListenerReadyRef.current = true;
-        unlisten = await getCurrentWebviewWindow().onDragDropEvent((event) => {
-          const payload = event.payload as { type: string; paths?: string[] };
-
-          if (payload.type === "over") {
-            setIsDragOver(true);
-            return;
-          }
-
-          dragDepthRef.current = 0;
-          setIsDragOver(false);
-
-          if (payload.type !== "drop") {
-            return;
-          }
-
-          const paths = Array.isArray(payload.paths) ? payload.paths : [];
-          if (paths.length === 0) {
-            return;
-          }
-
-          lastNativeDesktopDropAtRef.current = Date.now();
-          startAttachmentRead();
-          void (async () => {
-            try {
-              await appendLocalFiles(paths);
-            } finally {
-              finishAttachmentRead();
-            }
-          })();
-        });
-      } catch {
+    if (isElectronDesktop()) {
+      nativeDesktopDropListenerReadyRef.current = true;
+      return () => {
         nativeDesktopDropListenerReadyRef.current = false;
-        // Ignore native desktop drag/drop wiring failures and fall back to the DOM path.
-      }
-    })();
+        lastNativeDesktopDropAtRef.current = null;
+      };
+    }
 
-    return () => {
-      active = false;
-      nativeDesktopDropListenerReadyRef.current = false;
-      lastNativeDesktopDropAtRef.current = null;
-      unlisten?.();
-    };
+    return undefined;
   }, [appendLocalFiles, finishAttachmentRead, startAttachmentRead]);
 
   const barAttachments = attachments.filter((a) => !a.isInline);

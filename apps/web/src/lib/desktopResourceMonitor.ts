@@ -1,4 +1,4 @@
-import { isTauriDesktop } from "./openExternalUrl";
+import { getElectronBridge, isDesktopShell } from "./desktopBridge";
 
 export interface DesktopResourceUsage {
   cpu: number;
@@ -30,16 +30,14 @@ function normalizeUsage(value: unknown): DesktopResourceUsage {
 export async function getDesktopResourceMonitorSnapshot(
   runtimePid: number | null | undefined,
 ): Promise<DesktopResourceMonitorSnapshot | null> {
-  if (!isTauriDesktop()) {
+  if (!isDesktopShell()) {
     return null;
   }
 
-  const { invoke } = await import("@tauri-apps/api/core");
-  const raw = await invoke<unknown>("collect_resource_monitor_desktop_metrics", {
-    runtimePid: typeof runtimePid === "number" && Number.isInteger(runtimePid) && runtimePid > 0
-      ? runtimePid
-      : null,
-  });
+  const normalizedRuntimePid = typeof runtimePid === "number" && Number.isInteger(runtimePid) && runtimePid > 0
+    ? runtimePid
+    : null;
+  const raw = await getElectronBridge()?.collectResourceMonitorDesktopMetrics?.(normalizedRuntimePid);
   const snapshot = raw && typeof raw === "object"
     ? raw as Record<string, unknown>
     : {};

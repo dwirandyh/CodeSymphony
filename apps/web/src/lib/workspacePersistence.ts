@@ -5,7 +5,6 @@ import {
   type UtilsRecord,
 } from "@tanstack/db";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
-import { isTauriDesktop } from "./openExternalUrl";
 
 const WORKSPACE_PERSISTENCE_DATABASE_NAME = "codesymphony-workspace.sqlite";
 const WORKSPACE_PERSISTENCE_COORDINATOR_NAME = "codesymphony-workspace";
@@ -25,7 +24,7 @@ type WorkspaceLocalOnlyCollectionOptions<
   TKey extends string | number = string | number,
 > = LocalOnlyCollectionConfig<TItem, TSchema, TKey>;
 
-type WorkspacePersistenceMode = "browser" | "desktop" | "disabled";
+type WorkspacePersistenceMode = "browser" | "disabled";
 
 type WorkspacePersistenceState = {
   mode: WorkspacePersistenceMode;
@@ -94,23 +93,6 @@ export async function initializeWorkspacePersistence(options?: InitializeWorkspa
 
     const initialize = async () => {
       try {
-        if (isTauriDesktop()) {
-          const [{ createTauriSQLitePersistence, persistedCollectionOptions }, sqlModule] = await Promise.all([
-            import("@tanstack/tauri-db-sqlite-persistence"),
-            import("@tauri-apps/plugin-sql"),
-          ]);
-          const database = await sqlModule.default.load(`sqlite:${WORKSPACE_PERSISTENCE_DATABASE_NAME}`);
-          const persistence = createTauriSQLitePersistence({ database });
-          resolveState({
-            mode: "desktop",
-            wrap: createWorkspaceCollectionOptionsWrapper({
-              persistedCollectionOptions,
-              persistence,
-            }),
-          });
-          return;
-        }
-
         const {
           BrowserCollectionCoordinator,
           createBrowserWASQLitePersistence,

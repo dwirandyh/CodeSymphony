@@ -9,7 +9,7 @@ import { MobileActionBar } from "../components/workspace/MobileActionBar";
 import { WorkspaceEmptyState } from "../components/workspace/WorkspaceEmptyState";
 import { WorkspaceHeader, type WorkspaceFileTab } from "../components/workspace/WorkspaceHeader";
 import type { StartupShellSnapshot } from "../lib/startupShellSnapshot";
-import { isTauriDesktop } from "../lib/openExternalUrl";
+import { isDesktopShell } from "../lib/openExternalUrl";
 import { getWorkspaceHeaderContainerClassName, getWorkspaceMainClassName } from "./workspace/workspaceMainClass";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
@@ -447,7 +447,7 @@ export function WorkspacePageShellFallback({
     );
   }
 
-  const desktopApp = isTauriDesktop();
+  const desktopApp = isDesktopShell();
   const repositories = buildFallbackRepositories(snapshot);
   const threads = buildFallbackThreads(snapshot);
   const fileTabs = buildFallbackFileTabs(filePath);

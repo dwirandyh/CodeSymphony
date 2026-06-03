@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET_PATH="${1:-}"
 SIGNING_IDENTITY="${CODESYMPHONY_MACOS_SIGN_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
 ALLOW_ADHOC_SIGNING="${CODESYMPHONY_ALLOW_ADHOC_SIGNING:-0}"
-JS_RUNTIME_ENTITLEMENTS="${SCRIPT_DIR}/../src-tauri/entitlements/node.plist"
-SIMULATOR_BRIDGE_ENTITLEMENTS="${SCRIPT_DIR}/../src-tauri/entitlements/simulator-bridge.plist"
+JS_RUNTIME_ENTITLEMENTS="${SCRIPT_DIR}/../electron/entitlements/node.plist"
+SIMULATOR_BRIDGE_ENTITLEMENTS="${SCRIPT_DIR}/../electron/entitlements/simulator-bridge.plist"
 
 if [[ -z "${TARGET_PATH}" ]]; then
   echo "Usage: $0 <target-path>" >&2

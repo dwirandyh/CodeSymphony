@@ -12,6 +12,7 @@ const measureStartupMetricSinceBootMock = vi.fn();
 const setStartupBlankScreenVisibleMock = vi.fn();
 
 vi.mock("../../lib/openExternalUrl", () => ({
+  isDesktopShell: () => isTauriDesktopMock(),
   isTauriDesktop: () => isTauriDesktopMock(),
 }));
 

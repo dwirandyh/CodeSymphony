@@ -25,6 +25,7 @@ vi.mock("../../lib/api", () => ({
 }));
 
 vi.mock("../../lib/openExternalUrl", () => ({
+  isDesktopShell: () => true,
   isTauriDesktop: () => true,
   openExternalUrl: openExternalUrlMock,
 }));

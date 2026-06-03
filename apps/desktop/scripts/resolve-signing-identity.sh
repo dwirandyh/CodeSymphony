@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEFAULT_APP_PATH="${SCRIPT_DIR}/../src-tauri/target/release/bundle/macos/CodeSymphony.app"
+DEFAULT_APP_PATH="${SCRIPT_DIR}/../dist-electron/mac-arm64/CodeSymphony.app"
 explicit_identity="${CODESYMPHONY_MACOS_SIGN_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
 
 if [[ -n "${explicit_identity}" ]]; then

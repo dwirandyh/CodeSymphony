@@ -148,7 +148,7 @@ import {
   type WorkspaceLiveScopeSelection,
   type WorkspaceLiveScopeSwitch,
 } from "../lib/workspaceLiveBadgeState";
-import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
+import { isDesktopShell, isElectronDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import {
   emitStartupSnapshotReadMetric,
   finalizeStartupBootstrapPayloadMetric,
@@ -376,7 +376,15 @@ function formatRuntimeTitle(runtimeInfo: RuntimeInfo | null | undefined): string
 }
 
 function isMacDesktopShell(): boolean {
-  if (!isTauriDesktop() || typeof navigator === "undefined") {
+  if (!isDesktopShell()) {
+    return false;
+  }
+
+  if (isElectronDesktop()) {
+    return true;
+  }
+
+  if (typeof navigator === "undefined") {
     return false;
   }
 
@@ -643,7 +651,7 @@ export function WorkspacePage() {
   const startupState = useWorkspaceStartupState();
   const [startupSelectionFallbackActive, setStartupSelectionFallbackActive] = useState(() => startupState.snapshot != null);
   const { search, updateSearch } = useWorkspaceSearchParams();
-  const desktopApp = isTauriDesktop();
+  const desktopApp = isDesktopShell();
   const restoredSelection = resolveStartupWorkspaceSelection({
     repoId: search.repoId,
     worktreeId: search.worktreeId,

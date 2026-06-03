@@ -61,10 +61,10 @@ describe("resolveRuntimeApiBase", () => {
     expect(mod.resolveRuntimeApiBases()).toEqual(["http://127.0.0.1:4999/api"]);
   });
 
-  it("uses the injected desktop runtime port inside a tauri window", async () => {
+  it("uses the injected desktop runtime port inside an Electron window", async () => {
     vi.stubGlobal("window", {
       __CS_RUNTIME_PORT: 4327,
-      __TAURI_INTERNALS__: {},
+      __CS_ELECTRON__: true,
       location: {
         protocol: "http:",
         hostname: "127.0.0.1",
@@ -82,7 +82,7 @@ describe("resolveRuntimeApiBase", () => {
     vi.stubEnv("VITE_RUNTIME_PORT", "4331");
     vi.stubGlobal("window", {
       __CS_RUNTIME_API_BASE: "http://127.0.0.1:4322/api",
-      __TAURI_INTERNALS__: {},
+      __CS_ELECTRON__: true,
       location: {
         protocol: "http:",
         hostname: "127.0.0.1",

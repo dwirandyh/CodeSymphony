@@ -29,6 +29,7 @@ vi.mock("../../lib/openExternalUrl", async () => {
 
   return {
     ...actual,
+    isDesktopShell: isTauriDesktopMock,
     isTauriDesktop: isTauriDesktopMock,
   };
 });

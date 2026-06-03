@@ -1,6 +1,6 @@
 BUN ?= $(shell if command -v bun >/dev/null 2>&1; then printf '%s' bun; elif [ -x "$$HOME/.bun/bin/bun" ]; then printf '%s' "$$HOME/.bun/bin/bun"; else printf '%s' bun; fi)
 WORKTREE_DEV_STATE_DIR ?= .codesymphony/dev
-MACOS_APP_PATH ?= apps/desktop/src-tauri/target/release/bundle/macos/CodeSymphony.app
+MACOS_APP_PATH ?= apps/desktop/dist-electron/mac-arm64/CodeSymphony.app
 MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT ?= apps/desktop/scripts/resolve-signing-identity.sh
 MACOS_VERIFY_SIGNING_SCRIPT ?= apps/desktop/scripts/verify-macos-signing.sh
 MACOS_BUILD_ENV_FILE ?= .env
@@ -56,8 +56,9 @@ stop-dev:
 	-@pkill -f "bun run --filter @codesymphony/runtime start"
 	-@pkill -f "bun run --filter @codesymphony/web dev"
 	-@pkill -f "bun run --filter @codesymphony/desktop dev"
+	-@pkill -f "electron ."
+	-@pkill -f "Electron"
 	-@pkill -f "vite"
-	-@pkill -f "tauri dev"
 
 dev:
 	$(BUN) run dev

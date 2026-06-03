@@ -1,6 +1,6 @@
 # CodeSymphony
 
-Local-first, conductor.build-style workspace: onboard Git repositories, manage worktrees, and run threaded AI coding sessions through **several local CLI coding agents** (not only Claude), with live SSE tool and message events. Ships as a **web app** (React + Vite) and an optional **desktop shell** (Tauri).
+Local-first, conductor.build-style workspace: onboard Git repositories, manage worktrees, and run threaded AI coding sessions through **several local CLI coding agents** (not only Claude), with live SSE tool and message events. Ships as a **web app** (React + Vite) and an optional **desktop shell** (Electron).
 
 ## Features
 
@@ -30,7 +30,7 @@ Thread model selection and **Model providers** in the app call `GET/POST /api/mo
 |------|------|
 | `apps/runtime` | Fastify API, Prisma + SQLite, chat runners (`claude` / `codex` / `cursor` / `opencode`), device/git/filesystem routes |
 | `apps/web` | React 19 + Vite + Tailwind workspace UI |
-| `apps/desktop` | Tauri shell wrapping the web app |
+| `apps/desktop` | Electron shell wrapping the web app |
 | `packages/shared-types` | Zod schemas and shared API types |
 | `packages/chat-timeline-core` | Timeline assembly from chat events (used by the web app; built in parallel during `bun run dev`) |
 | `packages/orchestrator-core` | Standalone run state machine (not required by the runtime) |
@@ -43,7 +43,7 @@ Implementations live under `apps/runtime/src/routes/` (grouped by domain: `chats
 |---------|----------------|
 | Runtime (dev) | `4331` |
 | Web (Vite dev) | `5173` |
-| Desktop dev (Tauri webview) | `5174` (see Tauri / Vite config) |
+| Desktop dev (Electron shell) | `5174` (started automatically by `bun run dev:desktop`) |
 | Desktop dev sidecar runtime | `4321` |
 | Packaged desktop app runtime | `4322` |
 
@@ -57,7 +57,7 @@ Running **multiple git worktrees** of this repo: use `make setup-worktree PORT=<
 
 Optional (install as needed):
 
-- Rust + Cargo + Tauri prerequisites (desktop)
+- macOS signing identity for distributed desktop builds
 - **Android streaming**: `ws-scrcpy` sidecar — `make setup-android-streaming` then `make start-android-streaming`. If `ANDROID_WS_SCRCPY_COMMAND` is unset, the runtime can fall back to `scripts/start-ws-scrcpy.sh` when present.
 - **iOS simulator bridge**: optional `IOS_SIMULATOR_BRIDGE_COMMAND` in `apps/runtime/.env` (see `.env.example`).
 
@@ -144,12 +144,12 @@ Release macOS app (signing identity required for distribution):
 APPLE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" bun run --filter @codesymphony/desktop build:app
 ```
 
-Use `CODESYMPHONY_MACOS_SIGN_IDENTITY` as an alias for the signing identity. Use `bun run --filter @codesymphony/desktop build:app:adhoc` only for local ad-hoc builds; TCC-sensitive features (e.g. screen recording) may not behave like a properly signed app.
+Use `CODESYMPHONY_MACOS_SIGN_IDENTITY` as an alias for the signing identity. Use `bun run --filter @codesymphony/desktop build:app:adhoc` only for local unsigned builds; TCC-sensitive features (e.g. screen recording) may not behave like a properly signed app.
 
 Build outputs:
 
-- `.app`: `apps/desktop/src-tauri/target/release/bundle/macos/CodeSymphony.app`
-- `.dmg`: `apps/desktop/src-tauri/target/release/bundle/dmg/` when you run `bun run --filter @codesymphony/desktop build`
+- `.app`: `apps/desktop/dist-electron/mac-*/CodeSymphony.app`
+- `.dmg`: `apps/desktop/dist-electron/*.dmg` when you run `bun run --filter @codesymphony/desktop build`
 
 ## Desktop app troubleshooting
 

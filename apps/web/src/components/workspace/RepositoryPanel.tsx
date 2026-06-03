@@ -42,7 +42,7 @@ import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBran
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
 import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
-import { isTauriDesktop } from "../../lib/openExternalUrl";
+import { isDesktopShell } from "../../lib/openExternalUrl";
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
 import { resolveWorkspaceShortcutPlatform } from "./keyboardShortcuts";
 import type {
@@ -523,8 +523,8 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   onDeleteWorktree,
   onRenameWorktreeBranch,
 }: RepositoryPanelProps) {
-  const enableNativeReorderPreview = !isTauriDesktop();
-  const enableDesktopPointerReorder = isTauriDesktop();
+  const enableNativeReorderPreview = !isDesktopShell();
+  const enableDesktopPointerReorder = isDesktopShell();
   const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(
     null,
   );
