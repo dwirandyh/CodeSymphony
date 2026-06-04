@@ -486,7 +486,7 @@ describe("useWorkspaceSyncStream", () => {
 
     expect(requestGitStatusLiveRefreshMock).not.toHaveBeenCalled();
     expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitStatus("wt-1") });
-    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitDiffScope("wt-1") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitDiffScope("wt-1") });
     expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: ["worktrees", "wt-1", "gitBranchDiffSummary"] });
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.fileIndex("wt-1") });
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.fileTreeScope("wt-1") });
@@ -508,7 +508,7 @@ describe("useWorkspaceSyncStream", () => {
     });
 
     expect(requestGitStatusLiveRefreshMock).not.toHaveBeenCalled();
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitDiffScope("wt-1") });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.worktrees.gitDiffScope("wt-1") });
     expect(invalidateQueriesMock).toHaveBeenCalledWith({
       queryKey: queryKeys.worktrees.gitBranchDiffSummary("wt-1", "__all__"),
       exact: false,

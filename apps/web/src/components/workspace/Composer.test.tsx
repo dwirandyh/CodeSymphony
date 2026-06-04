@@ -1834,6 +1834,48 @@ describe("Composer", () => {
     }
   });
 
+  it("clears the file drop overlay when the drag leaves the window without a drop", async () => {
+    renderComposer();
+    const dropTarget = getDragDropTarget();
+    const file = new File(["lost drag"], "lost-drag.txt", { type: "text/plain" });
+    const dragData = buildFileDragData(file);
+
+    const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    await reactAct(async () => {
+      dropTarget.dispatchEvent(dragEnterEvent);
+    });
+
+    expect(container.textContent).toContain("Drop files here");
+
+    await reactAct(async () => {
+      window.dispatchEvent(new Event("blur"));
+    });
+
+    expect(container.textContent).not.toContain("Drop files here");
+  });
+
+  it("clears the path drop overlay when the drag ends outside the composer", async () => {
+    renderComposer();
+    const dropTarget = getDragDropTarget();
+    const dragData = buildExplorerEntryDragData({ path: "src/index.ts", type: "file" });
+    const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    await reactAct(async () => {
+      dropTarget.dispatchEvent(dragEnterEvent);
+    });
+
+    expect(container.textContent).toContain("Drop to mention this path");
+
+    await reactAct(async () => {
+      document.dispatchEvent(new Event("dragend", { bubbles: true }));
+    });
+
+    expect(container.textContent).not.toContain("Drop to mention this path");
+  });
+
   it("drops explorer entries into the composer as file mentions", async () => {
     const onSubmitMessage = vi.fn().mockResolvedValue(true);
     renderComposer({ onSubmitMessage });

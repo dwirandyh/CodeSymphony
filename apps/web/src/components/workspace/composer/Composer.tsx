@@ -523,6 +523,7 @@ function ComposerContent({
     handleDragOver,
     handleDragLeave,
     handleDrop,
+    resetDragState,
     removeAttachment,
     handlePasteImages,
     barAttachments,
@@ -530,6 +531,38 @@ function ComposerContent({
     editorRef,
   });
   const [isPathDragOver, setIsPathDragOver] = useState(false);
+
+  const resetPathDragState = useCallback(() => {
+    pathDragDepthRef.current = 0;
+    setIsPathDragOver(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isDragOver && !isPathDragOver) {
+      return;
+    }
+
+    const resetComposerDragState = () => {
+      resetDragState();
+      resetPathDragState();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        resetComposerDragState();
+      }
+    };
+
+    window.addEventListener("blur", resetComposerDragState);
+    document.addEventListener("drop", resetComposerDragState, true);
+    document.addEventListener("dragend", resetComposerDragState, true);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("blur", resetComposerDragState);
+      document.removeEventListener("drop", resetComposerDragState, true);
+      document.removeEventListener("dragend", resetComposerDragState, true);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [isDragOver, isPathDragOver, resetDragState, resetPathDragState]);
 
   const {
     slashCommand,

@@ -1210,6 +1210,9 @@ export function WorkspacePage() {
   const nonCriticalRepositoryId = enableNonCriticalWorkspaceData && !selectedWorktreeUnavailable
     ? repos.selectedRepositoryId
     : null;
+  const targetBranchRepositoryId = selectedWorktreeOperational && !selectedWorktreeUnavailable
+    ? repos.selectedRepositoryId
+    : null;
   const repositoryReviews = useRepositoryReviews(
     repositoryLiveDataEnabled
       ? repos.selectedRepositoryId
@@ -2157,8 +2160,8 @@ export function WorkspacePage() {
     navigationPrefetchRef.current.set(worktreeId, prefetchTask);
     return prefetchTask;
   }, [prefetchDisplayThreadSnapshot, queryClient]);
-  const repositoryBranches = useRepositoryBranches(nonCriticalRepositoryId, {
-    enabled: repositoryLiveDataEnabled,
+  const repositoryBranches = useRepositoryBranches(targetBranchRepositoryId, {
+    enabled: !!targetBranchRepositoryId,
   });
 
   useEffect(() => {
@@ -4328,15 +4331,12 @@ export function WorkspacePage() {
                     targetBranch={selectedTargetBranch}
                     targetBranchOptions={repositoryBranches.data ?? []}
                     targetBranchLoading={
-                      enableNonCriticalWorkspaceData && (
-                        repositoryBranches.isLoading
-                        || repositoryBranches.isFetching
-                        || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
-                      )
+                      repositoryBranches.isLoading
+                      || repositoryBranches.isFetching
+                      || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
                     }
                     targetBranchDisabled={
-                      !enableNonCriticalWorkspaceData
-                      || !repos.selectedWorktreeId
+                      !repos.selectedWorktreeId
                       || !selectedWorktreeOperational
                       || !repos.selectedRepositoryId
                       || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId

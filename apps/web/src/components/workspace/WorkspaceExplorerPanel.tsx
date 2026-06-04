@@ -322,7 +322,7 @@ function WorkspaceExplorerShell({
 }) {
   return (
     <section className={cn(
-      "flex h-full flex-col overflow-hidden bg-background",
+      "flex h-full flex-col overflow-hidden bg-transparent",
       showHeader && "border-l border-border/40",
     )}>
       {showHeader ? (

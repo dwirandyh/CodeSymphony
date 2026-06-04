@@ -52,6 +52,11 @@ export function useComposerAttachments({
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
 
+  const resetDragState = useCallback(() => {
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
+  }, []);
+
   const hasDraggedFiles = useCallback((dataTransfer: DataTransfer | null): boolean => {
     if (!dataTransfer) {
       return false;
@@ -179,8 +184,7 @@ export function useComposerAttachments({
 
       event.preventDefault();
       event.stopPropagation();
-      dragDepthRef.current = 0;
-      setIsDragOver(false);
+      resetDragState();
 
       const files = extractDraggedFiles(event.dataTransfer);
       if (files.length === 0) return;
@@ -210,7 +214,7 @@ export function useComposerAttachments({
         }
       })();
     },
-    [appendBrowserFiles, extractDraggedFiles, finishAttachmentRead, hasDraggedFiles, startAttachmentRead],
+    [appendBrowserFiles, extractDraggedFiles, finishAttachmentRead, hasDraggedFiles, resetDragState, startAttachmentRead],
   );
 
   const removeAttachment = useCallback(
@@ -276,6 +280,7 @@ export function useComposerAttachments({
     handleDragOver,
     handleDragLeave,
     handleDrop,
+    resetDragState,
     removeAttachment,
     handlePasteImages,
     barAttachments,
