@@ -100,6 +100,42 @@ async function writeHostClipboard(text: string): Promise<void> {
   throw new Error(`Writing the host clipboard is not supported on platform: ${process.platform}`);
 }
 
+async function readHostClipboardFilePaths(): Promise<string[]> {
+  if (process.platform !== "darwin") {
+    throw new Error(`Reading clipboard file paths is not supported on platform: ${process.platform}`);
+  }
+
+  try {
+    const { stdout } = await execFile("osascript", [
+      "-l",
+      "JavaScript",
+      "-e",
+      [
+        "ObjC.import('AppKit')",
+        "ObjC.import('Foundation')",
+        "const pb = $.NSPasteboard.generalPasteboard",
+        "const classes = $.NSArray.arrayWithObject($.NSURL)",
+        "const options = $.NSDictionary.dictionaryWithObjectForKey($.NSNumber.numberWithBool(true), $.NSPasteboardURLReadingFileURLsOnlyKey)",
+        "const urls = pb.readObjectsForClassesOptions(classes, options)",
+        "const paths = []",
+        "for (let i = 0; i < urls.count; i++) paths.push(ObjC.unwrap(urls.objectAtIndex(i).path))",
+        "paths.join('\\n')",
+      ].join("\n"),
+    ], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to read clipboard file paths";
+    throw new Error(`Unable to read clipboard file paths: ${message}`);
+  }
+}
+
 function normalizeSelectedPath(output: string): string {
   return output.trim().replace(/\/$/, "");
 }
@@ -328,5 +364,6 @@ export function createSystemService() {
     openInApp,
     readClipboard: readHostClipboard,
     writeClipboard: writeHostClipboard,
+    readClipboardFilePaths: readHostClipboardFilePaths,
   };
 }

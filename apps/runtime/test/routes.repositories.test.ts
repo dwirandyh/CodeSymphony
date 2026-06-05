@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -38,11 +38,13 @@ const mockFileService = {
   searchFiles: vi.fn(),
   listFileIndex: vi.fn(),
   listDirectory: vi.fn(),
+  invalidateCache: vi.fn(),
 };
 
 const mockSystemService = {
   pickDirectory: vi.fn(),
   openFileDefaultApp: vi.fn(),
+  readClipboardFilePaths: vi.fn(),
 };
 
 const mockChatService = {
@@ -421,7 +423,7 @@ describe("repository routes", () => {
       mockFileService.listDirectory.mockResolvedValue([{ path: "ignored/cache.json", type: "file" }]);
       try {
         const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/files/tree?path=ignored" });
-        expect(res.statusCode).toBe(200);
+        expect(res.statusCode, res.body).toBe(200);
         expect(res.json().data).toEqual([{ path: "ignored/cache.json", type: "file" }]);
       } finally {
         await rm(worktreePath, { recursive: true, force: true });
@@ -438,6 +440,34 @@ describe("repository routes", () => {
       mockWorktreeService.getById.mockResolvedValue(null);
       const res = await app.inject({ method: "GET", url: "/api/worktrees/xxx/files/tree" });
       expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("POST /api/worktrees/:id/files/paste-from-host-clipboard", () => {
+    it("copies host clipboard files into the selected worktree directory", async () => {
+      const sourceRoot = await mkdtemp(join(tmpdir(), "codesymphony-route-paste-source-"));
+      const worktreePath = await mkdtemp(join(tmpdir(), "codesymphony-route-paste-worktree-"));
+      const sourcePath = join(sourceRoot, "from-finder.txt");
+      await writeFile(sourcePath, "finder-content");
+      await mkdir(join(worktreePath, "src"), { recursive: true });
+
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree({ path: worktreePath }));
+      mockSystemService.readClipboardFilePaths.mockResolvedValue([sourcePath]);
+
+      try {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/worktrees/w1/files/paste-from-host-clipboard",
+          payload: { destinationDirectoryPath: "src" },
+        });
+
+        expect(res.statusCode, res.body).toBe(200);
+        expect(res.json().data).toEqual([{ path: "src/from-finder.txt", type: "file" }]);
+        await expect(readFile(join(worktreePath, "src/from-finder.txt"), "utf8")).resolves.toBe("finder-content");
+      } finally {
+        await rm(sourceRoot, { recursive: true, force: true });
+        await rm(worktreePath, { recursive: true, force: true });
+      }
     });
   });
 

@@ -1038,6 +1038,13 @@ export function WorkspacePage() {
       return;
     }
 
+    if (
+      nextSelection.repositoryId === repos.selectedRepositoryId
+      && nextSelection.worktreeId === repos.selectedWorktreeId
+    ) {
+      return;
+    }
+
     repos.setSelectedRepositoryId(nextSelection.repositoryId);
     repos.setSelectedWorktreeId(nextSelection.worktreeId);
   }, [

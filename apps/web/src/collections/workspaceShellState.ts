@@ -51,6 +51,31 @@ function getWorkspaceShellStateRows(collection: WorkspaceShellStateCollection): 
   return collection.toArray as unknown as WorkspaceShellStateRow[];
 }
 
+function snapshotWithoutVolatileFields(snapshot: StartupShellSnapshot | WorkspaceShellStateRow): Omit<StartupShellSnapshot, "capturedAt"> {
+  return {
+    version: snapshot.version,
+    repoId: snapshot.repoId,
+    repoName: snapshot.repoName,
+    worktreeId: snapshot.worktreeId,
+    worktreeBranch: snapshot.worktreeBranch,
+    worktreePath: snapshot.worktreePath,
+    worktreeStatus: snapshot.worktreeStatus,
+    threadId: snapshot.threadId,
+    threadTitle: snapshot.threadTitle,
+    threadStatus: snapshot.threadStatus,
+    ...(snapshot.repositories ? { repositories: snapshot.repositories } : {}),
+    ...(snapshot.hiddenRepositoryIds ? { hiddenRepositoryIds: snapshot.hiddenRepositoryIds } : {}),
+    ...(snapshot.expandedRepositoryIds ? { expandedRepositoryIds: snapshot.expandedRepositoryIds } : {}),
+  };
+}
+
+function workspaceShellSnapshotsMatch(
+  existing: WorkspaceShellStateRow,
+  next: StartupShellSnapshot,
+): boolean {
+  return JSON.stringify(snapshotWithoutVolatileFields(existing)) === JSON.stringify(snapshotWithoutVolatileFields(next));
+}
+
 export function readWorkspaceShellStateSnapshot(): StartupShellSnapshot | null {
   return readPersistedStartupShellSnapshot();
 }
@@ -72,6 +97,10 @@ export function writeWorkspaceShellStateSnapshot(snapshot: StartupShellSnapshot 
   if (!existing) {
     collection.insert(nextRow);
     saveStartupShellSnapshot(snapshot);
+    return;
+  }
+
+  if (workspaceShellSnapshotsMatch(existing, snapshot)) {
     return;
   }
 

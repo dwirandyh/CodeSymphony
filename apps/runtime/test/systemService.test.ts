@@ -137,5 +137,20 @@ describe("systemService", () => {
         expect.any(Object),
       );
     });
+
+    it("reads copied Finder file paths on darwin", async () => {
+      Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+      mockExecFile.mockResolvedValueOnce({ stdout: "/Users/test/a.txt\n/Users/test/Folder\n", stderr: "" } as never);
+
+      await expect(service.readClipboardFilePaths()).resolves.toEqual([
+        "/Users/test/a.txt",
+        "/Users/test/Folder",
+      ]);
+      expect(mockExecFile).toHaveBeenCalledWith(
+        "osascript",
+        expect.arrayContaining(["-l", "JavaScript"]),
+        expect.any(Object),
+      );
+    });
   });
 });

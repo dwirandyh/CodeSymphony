@@ -10,6 +10,9 @@ import { WorkspaceExplorerPanel } from "./WorkspaceExplorerPanel";
 vi.mock("../../lib/api", () => ({
   api: {
     getWorktreeDirectoryEntries: vi.fn(),
+    copyWorktreePath: vi.fn(),
+    moveWorktreePath: vi.fn(),
+    pasteHostClipboardPaths: vi.fn(),
   },
 }));
 
@@ -49,6 +52,12 @@ beforeEach(() => {
   scrollIntoViewMock = vi.fn();
   HTMLElement.prototype.scrollIntoView = scrollIntoViewMock;
   vi.mocked(api.getWorktreeDirectoryEntries).mockReset();
+  vi.mocked(api.copyWorktreePath).mockReset();
+  vi.mocked(api.moveWorktreePath).mockReset();
+  vi.mocked(api.pasteHostClipboardPaths).mockReset();
+  vi.mocked(api.copyWorktreePath).mockResolvedValue({ path: "src/README.md", type: "file" });
+  vi.mocked(api.moveWorktreePath).mockResolvedValue({ path: "src/README.md", type: "file" });
+  vi.mocked(api.pasteHostClipboardPaths).mockResolvedValue([{ path: "src/from-finder.txt", type: "file" }]);
   resetMaterialIconThemeManifestCacheForTest();
 });
 
@@ -200,5 +209,127 @@ describe("WorkspaceExplorerPanel", () => {
 
     expect(notesButton?.className ?? "").toContain("text-muted-foreground/55");
     expect(secretButton?.className ?? "").toContain("text-muted-foreground/55");
+  });
+
+  it("copies an explorer entry and pastes it into a folder from the context menu", async () => {
+    const entries: FileEntry[] = [
+      { path: "README.md", type: "file" },
+      { path: "src", type: "directory" },
+    ];
+
+    act(() => {
+      root.render(
+        <WorkspaceExplorerPanel
+          worktreeId="wt-1"
+          entries={entries}
+          gitEntries={[]}
+          loading={false}
+          activeFilePath={null}
+          onOpenFile={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      );
+    });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("README.md");
+    });
+
+    function openContextMenu(label: string) {
+      const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((candidate) => candidate.textContent?.trim() === label);
+      expect(button).toBeTruthy();
+      act(() => {
+        button!.dispatchEvent(new MouseEvent("contextmenu", {
+          bubbles: true,
+          clientX: 10,
+          clientY: 10,
+        }));
+      });
+    }
+
+    function selectMenuItem(label: string) {
+      const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((candidate) => candidate.textContent?.trim() === label);
+      expect(button).toBeTruthy();
+      act(() => {
+        button!.dispatchEvent(new MouseEvent("mousedown", {
+          bubbles: true,
+        }));
+      });
+    }
+
+    openContextMenu("README.md");
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Rename");
+    });
+    selectMenuItem("Copy");
+
+    openContextMenu("src");
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Paste README.md");
+    });
+    selectMenuItem("Paste README.md");
+
+    await vi.waitFor(() => {
+      expect(api.copyWorktreePath).toHaveBeenCalledWith("wt-1", {
+        sourcePath: "README.md",
+        destinationDirectoryPath: "src",
+      });
+    });
+  });
+
+  it("pastes host clipboard files into a folder when no explorer clipboard entry exists", async () => {
+    const entries: FileEntry[] = [
+      { path: "src", type: "directory" },
+    ];
+
+    act(() => {
+      root.render(
+        <WorkspaceExplorerPanel
+          worktreeId="wt-1"
+          entries={entries}
+          gitEntries={[]}
+          loading={false}
+          activeFilePath={null}
+          onOpenFile={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      );
+    });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("src");
+    });
+
+    const srcButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((candidate) => candidate.textContent?.trim() === "src");
+    expect(srcButton).toBeTruthy();
+    act(() => {
+      srcButton!.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true,
+        clientX: 10,
+        clientY: 10,
+      }));
+    });
+
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Paste from Clipboard");
+    });
+
+    const pasteButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((candidate) => candidate.textContent?.trim() === "Paste from Clipboard");
+    expect(pasteButton).toBeTruthy();
+    act(() => {
+      pasteButton!.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true,
+      }));
+    });
+
+    await vi.waitFor(() => {
+      expect(api.pasteHostClipboardPaths).toHaveBeenCalledWith("wt-1", {
+        destinationDirectoryPath: "src",
+      });
+    });
   });
 });
