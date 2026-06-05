@@ -45,7 +45,7 @@ function findWorkspaceBundleAsset(distAssetsDir: string) {
 function measureWorkspaceBundleMetric(): StartupMetricEntry | null {
   const candidateAssetDirs = [
     path.resolve(process.cwd(), "../web/dist/assets"),
-    path.resolve(process.cwd(), "../desktop/src-tauri/runtime-bundle/dist/assets"),
+    path.resolve(process.cwd(), "../desktop/electron/runtime-bundle/dist/assets"),
   ];
 
   for (const distAssetsDir of candidateAssetDirs) {

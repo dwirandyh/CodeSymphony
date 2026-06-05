@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bundle the runtime for Tauri packaging.
+# Bundle the runtime for Electron packaging.
 # Produces a self-contained runtime-bundle/ directory with:
 #   - dist/          (compiled JS)
 #   - prisma/        (schema + migrations)
@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DESKTOP_DIR="${SCRIPT_DIR}/.."
 WORKSPACE_ROOT="${DESKTOP_DIR}/../.."
-BUNDLE_DIR="$(cd "${DESKTOP_DIR}/src-tauri" && pwd)/runtime-bundle"
+BUNDLE_DIR="$(cd "${DESKTOP_DIR}/electron" && pwd)/runtime-bundle"
 SIGN_MACOS_BINARIES_SCRIPT="${SCRIPT_DIR}/sign-macos-binaries.sh"
 WRITE_RUNTIME_BUNDLE_MANIFEST_SCRIPT="${SCRIPT_DIR}/write-runtime-bundle-manifest.mjs"
 CURRENT_ARCH="$(uname -m)"

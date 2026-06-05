@@ -183,7 +183,7 @@ export function WorkspaceHeader({
       ? `Current branch: ${selectedWorktreeBranch}`
       : "Worktree";
   const targetBranchLabel = targetBranch ? `origin/${targetBranch}` : "Select target branch";
-  const canChooseTargetBranch = !!onSelectTargetBranch && (targetBranchOptions.length > 0 || targetBranchLoading);
+  const canChooseTargetBranch = !!onSelectTargetBranch;
   const normalizedTargetBranchFilter = targetBranchFilter.trim().toLowerCase();
   const filteredTargetBranchOptions = normalizedTargetBranchFilter
     ? targetBranchOptions.filter((branchOption) => branchOption.toLowerCase().includes(normalizedTargetBranchFilter))

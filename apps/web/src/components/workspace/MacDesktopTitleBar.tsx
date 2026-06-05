@@ -1,8 +1,8 @@
-import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { Button } from "../ui/button";
+import { getElectronBridge, isDesktopShell, isElectronDesktop } from "../../lib/desktopBridge";
 import { debugLog } from "../../lib/debugLog";
-import { isTauriDesktop } from "../../lib/openExternalUrl";
 import { cn } from "../../lib/utils";
 
 type MacDesktopTitleBarProps = {
@@ -47,20 +47,22 @@ function describeTitlebarTarget(target: EventTarget | null) {
 }
 
 async function runTitlebarWindowAction(action: "startDragging" | "toggleMaximize", target: EventTarget | null) {
-  if (!isTauriDesktop()) {
+  if (!isDesktopShell()) {
     return;
   }
 
   try {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    const currentWindow = getCurrentWindow();
+    if (isElectronDesktop()) {
+      const bridge = getElectronBridge();
+      if (action === "startDragging") {
+        await bridge?.startDragging?.();
+        return;
+      }
 
-    if (action === "startDragging") {
-      await currentWindow.startDragging();
+      await bridge?.toggleMaximize?.();
       return;
     }
 
-    await currentWindow.toggleMaximize();
   } catch (error) {
     debugLog("desktop.titlebar", `${action}.failed`, {
       target: describeTitlebarTarget(target),
@@ -76,7 +78,7 @@ function useMacDesktopFullscreenState() {
   const lastLoggedFullscreenRef = useRef<boolean | null>(null);
 
   useEffect(() => {
-    if (!isTauriDesktop()) {
+    if (!isDesktopShell()) {
       return;
     }
 
@@ -144,39 +146,30 @@ function useMacDesktopFullscreenState() {
     }
 
     async function registerListeners() {
-      const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      if (disposed) {
+      if (isElectronDesktop()) {
+        const bridge = getElectronBridge();
+        if (!bridge?.isFullscreen || !bridge.onWindowStateChanged) {
+          return;
+        }
+
+        currentWindow = {
+          isFullscreen: bridge.isFullscreen,
+          onResized: async (handler) => bridge.onWindowStateChanged?.(() => handler()) ?? (() => {}),
+          onMoved: async (handler) => bridge.onWindowStateChanged?.(() => handler()) ?? (() => {}),
+          onScaleChanged: async (handler) => bridge.onWindowStateChanged?.(() => handler()) ?? (() => {}),
+          onFocusChanged: async (handler) => bridge.onWindowStateChanged?.(() => handler({ payload: true })) ?? (() => {}),
+        };
+        scheduleFullscreenSync("mount");
+        const unlisten = bridge.onWindowStateChanged((state) => {
+          setFullscreen((previousFullscreen) => previousFullscreen === Boolean(state.fullscreen)
+            ? previousFullscreen
+            : Boolean(state.fullscreen));
+          scheduleFullscreenSync("window.state_changed");
+        });
+        unlistenFns.push(unlisten);
         return;
       }
 
-      currentWindow = getCurrentWindow();
-      scheduleFullscreenSync("mount");
-
-      const register = async (subscribe: Promise<() => void>) => {
-        const unlisten = await subscribe;
-        if (disposed) {
-          unlisten();
-          return;
-        }
-        unlistenFns.push(unlisten);
-      };
-
-      await Promise.all([
-        register(currentWindow.onResized(() => {
-          scheduleFullscreenSync("window.resized");
-        })),
-        register(currentWindow.onMoved(() => {
-          scheduleFullscreenSync("window.moved");
-        })),
-        register(currentWindow.onScaleChanged(() => {
-          scheduleFullscreenSync("window.scale_changed");
-        })),
-        register(currentWindow.onFocusChanged(({ payload: focused }) => {
-          if (focused) {
-            scheduleFullscreenSync("window.focused");
-          }
-        })),
-      ]);
     }
 
     void registerListeners().catch((error) => {
@@ -211,6 +204,7 @@ export function MacDesktopTitleBar({
   className,
 }: MacDesktopTitleBarProps) {
   const fullscreen = useMacDesktopFullscreenState();
+  const electronDesktop = isElectronDesktop();
 
   function handleTitlebarMouseDown(event: ReactMouseEvent<HTMLElement>) {
     if (event.button !== 0 || event.detail !== 1 || event.defaultPrevented || isInteractiveTitlebarTarget(event.target)) {
@@ -255,6 +249,7 @@ export function MacDesktopTitleBar({
       onDoubleClickCapture={handleTitlebarDoubleClick}
       data-testid="mac-titlebar-drag-surface"
       data-titlebar-layout={fullscreen ? "fullscreen" : "windowed"}
+      style={electronDesktop ? { WebkitAppRegion: "drag" } as CSSProperties : undefined}
     >
       <div
         className={cn(
@@ -263,7 +258,7 @@ export function MacDesktopTitleBar({
         )}
         data-testid="mac-titlebar-controls"
       >
-        <div className="z-10 flex items-center gap-1">
+        <div className="z-10 flex items-center gap-1" style={electronDesktop ? { WebkitAppRegion: "no-drag" } as CSSProperties : undefined}>
           <Button
             type="button"
             variant="ghost"

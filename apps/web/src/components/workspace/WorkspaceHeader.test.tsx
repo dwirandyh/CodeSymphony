@@ -566,6 +566,29 @@ describe("WorkspaceHeader", () => {
     expect(onSelectTargetBranch).toHaveBeenCalledWith("release/2026.04");
   });
 
+  it("keeps the target branch selector available while branches are still loading", async () => {
+    renderHeader({
+      selectedWorktreeBranch: "feature/root-sync",
+      targetBranch: "main",
+      targetBranchOptions: [],
+      targetBranchLoading: true,
+      onSelectTargetBranch: vi.fn(),
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>('[data-testid="workspace-target-branch-trigger"]');
+
+    expect(trigger).not.toBeNull();
+    expect(trigger?.textContent).toContain("origin/main");
+
+    await act(async () => {
+      trigger?.click();
+      await Promise.resolve();
+    });
+
+    expect(document.body.querySelector('[data-testid="workspace-target-branch-filter"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-testid="workspace-target-branch-empty"]')?.textContent).toContain("No branches found");
+  });
+
   it("keeps unselected close buttons non-interactive until hovered", () => {
     renderHeader({ selectedThreadId: "thread-1" });
 

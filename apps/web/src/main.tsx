@@ -5,7 +5,7 @@ import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 import { ensureBrowserCryptoRandomUUID } from "./lib/browserCrypto";
 import { createQueryClient } from "./lib/queryClient";
-import { isTauriDesktop } from "./lib/openExternalUrl";
+import { isDesktopShell } from "./lib/openExternalUrl";
 import { bootstrapWorkspaceStartup } from "./lib/startupBoot";
 import { initializeStartupPerfSession } from "./lib/startupPerf";
 import { installDesktopShellVitePreloadGuard } from "./lib/vitePreloadGuard";
@@ -15,7 +15,7 @@ import "./styles.css";
 ensureBrowserCryptoRandomUUID();
 installDesktopShellVitePreloadGuard();
 initializeStartupPerfSession({
-  target: isTauriDesktop() ? "desktop" : "web",
+  target: isDesktopShell() ? "desktop" : "web",
 });
 
 const queryClient = createQueryClient();

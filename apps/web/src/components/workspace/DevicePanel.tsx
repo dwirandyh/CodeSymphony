@@ -17,7 +17,7 @@ import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api";
-import { isTauriDesktop, openExternalUrl } from "../../lib/openExternalUrl";
+import { isDesktopShell, openExternalUrl } from "../../lib/openExternalUrl";
 import { useRuntimeInfo } from "../../hooks/queries/useRuntimeInfo";
 import { useDevices } from "../../pages/workspace/hooks/useDevices";
 import { AndroidDeviceViewer } from "./AndroidDeviceViewer";
@@ -221,7 +221,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
     return snapshot.issues.filter((issue) => !issue.platform || issue.platform === activeDevice.platform);
   }, [activeDevice, snapshot.issues]);
   const viewerSrc = activeSession ? `${api.runtimeBaseUrl}${activeSession.viewerUrl}` : null;
-  const desktopApp = isTauriDesktop();
+  const desktopApp = isDesktopShell();
   const runtimePort = runtimeInfo.data?.listenAddress?.kind === "tcp"
     ? runtimeInfo.data.listenAddress.port
     : runtimeInfo.data?.runtimePort ?? null;

@@ -1,8 +1,5 @@
 import { logService } from "./logService";
-
-type TauriWindow = Window & {
-  __TAURI_INTERNALS__?: unknown;
-};
+import { getElectronBridge, isDesktopShell, isElectronDesktop } from "./desktopBridge";
 
 const DEFAULT_BROWSER_FEATURES = "noopener,noreferrer";
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
@@ -16,13 +13,7 @@ function parseUrl(href: string): URL | null {
   }
 }
 
-export function isTauriDesktop(): boolean {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  return typeof (window as TauriWindow).__TAURI_INTERNALS__ !== "undefined";
-}
+export { isDesktopShell, isElectronDesktop };
 
 export function shouldOpenInExternalApp(href: string): boolean {
   const url = parseUrl(href);
@@ -46,13 +37,13 @@ export function shouldOpenInExternalApp(href: string): boolean {
 }
 
 export async function openExternalUrl(href: string): Promise<void> {
-  const environment = isTauriDesktop() ? "tauri" : "browser";
+  const environment = isElectronDesktop() ? "electron" : "browser";
   logService.log("info", "external-link", "Opening external URL", { href, environment });
 
   try {
-    if (environment === "tauri") {
-      const { openUrl } = await import("@tauri-apps/plugin-opener");
-      await openUrl(href);
+    if (isDesktopShell()) {
+      const opened = await getElectronBridge()?.openExternalUrl?.(href);
+      if (typeof opened === "undefined" && !isElectronDesktop()) window.open(href, "_blank", DEFAULT_BROWSER_FEATURES);
     } else {
       window.open(href, "_blank", DEFAULT_BROWSER_FEATURES);
     }

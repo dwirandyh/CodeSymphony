@@ -15,6 +15,15 @@ type CacheEntry = {
 };
 
 const CACHE_TTL_MS = 30_000;
+const FALLBACK_SCAN_ENTRY_LIMIT = 10_000;
+const FALLBACK_SCAN_IGNORED_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".next",
+  "dist",
+  "build",
+  "coverage",
+]);
 
 export function createFileService() {
   const cache = new Map<string, CacheEntry>();
@@ -45,10 +54,18 @@ export function createFileService() {
         );
       });
 
-    const [allFiles, deletedFiles] = await Promise.all([
-      execGit(["ls-files", "--cached", "--others", "--exclude-standard"]),
-      execGit(["ls-files", "--deleted"]),
-    ]);
+    let allFiles: string[];
+    let deletedFiles: string[];
+    try {
+      [allFiles, deletedFiles] = await Promise.all([
+        execGit(["ls-files", "--cached", "--others", "--exclude-standard"]),
+        execGit(["ls-files", "--deleted"]),
+      ]);
+    } catch {
+      const fallbackEntry = await listFromFilesystem(worktreePath);
+      cache.set(worktreePath, fallbackEntry);
+      return fallbackEntry;
+    }
 
     const deletedSet = new Set(deletedFiles);
     const files = allFiles.filter((f) => !deletedSet.has(f));
@@ -67,6 +84,59 @@ export function createFileService() {
     const entry: CacheEntry = { files, directories, timestamp: Date.now() };
     cache.set(worktreePath, entry);
     return entry;
+  }
+
+  async function listFromFilesystem(worktreePath: string): Promise<CacheEntry> {
+    const files: string[] = [];
+    const directories: string[] = [];
+
+    async function visit(relativeDirectoryPath: string): Promise<void> {
+      if (files.length + directories.length >= FALLBACK_SCAN_ENTRY_LIMIT) {
+        return;
+      }
+
+      const absoluteDirectoryPath = path.join(worktreePath, relativeDirectoryPath);
+      const dirents = await readdir(absoluteDirectoryPath, { withFileTypes: true }).catch(() => []);
+
+      for (const dirent of dirents) {
+        if (files.length + directories.length >= FALLBACK_SCAN_ENTRY_LIMIT) {
+          return;
+        }
+
+        if (FALLBACK_SCAN_IGNORED_DIRS.has(dirent.name)) {
+          continue;
+        }
+
+        const relativePath = relativeDirectoryPath ? `${relativeDirectoryPath}/${dirent.name}` : dirent.name;
+        if (dirent.isDirectory()) {
+          directories.push(relativePath);
+          await visit(relativePath);
+          continue;
+        }
+
+        if (dirent.isFile()) {
+          files.push(relativePath);
+          continue;
+        }
+
+        if (dirent.isSymbolicLink()) {
+          const targetStat = await stat(path.join(worktreePath, relativePath)).catch(() => null);
+          if (targetStat?.isDirectory()) {
+            directories.push(relativePath);
+            await visit(relativePath);
+          } else if (targetStat?.isFile()) {
+            files.push(relativePath);
+          }
+        }
+      }
+    }
+
+    await visit("");
+    return {
+      files: files.sort(),
+      directories: directories.sort(),
+      timestamp: Date.now(),
+    };
   }
 
   function gitPathspec(entry: FileEntry): string {
@@ -174,8 +244,9 @@ export function createFileService() {
         : path.resolve(worktreePath);
 
       const dirents = await readdir(targetPath, { withFileTypes: true });
+      const visibleDirents = dirents.filter((dirent) => !FALLBACK_SCAN_IGNORED_DIRS.has(dirent.name));
       const entries = await Promise.all(
-        dirents.map(async (dirent) => {
+        visibleDirents.map(async (dirent) => {
           let type: FileEntry["type"] | null = null;
 
           if (dirent.isDirectory()) {

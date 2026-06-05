@@ -148,7 +148,7 @@ import {
   type WorkspaceLiveScopeSelection,
   type WorkspaceLiveScopeSwitch,
 } from "../lib/workspaceLiveBadgeState";
-import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
+import { isDesktopShell, isElectronDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import {
   emitStartupSnapshotReadMetric,
   finalizeStartupBootstrapPayloadMetric,
@@ -376,7 +376,15 @@ function formatRuntimeTitle(runtimeInfo: RuntimeInfo | null | undefined): string
 }
 
 function isMacDesktopShell(): boolean {
-  if (!isTauriDesktop() || typeof navigator === "undefined") {
+  if (!isDesktopShell()) {
+    return false;
+  }
+
+  if (isElectronDesktop()) {
+    return true;
+  }
+
+  if (typeof navigator === "undefined") {
     return false;
   }
 
@@ -643,7 +651,7 @@ export function WorkspacePage() {
   const startupState = useWorkspaceStartupState();
   const [startupSelectionFallbackActive, setStartupSelectionFallbackActive] = useState(() => startupState.snapshot != null);
   const { search, updateSearch } = useWorkspaceSearchParams();
-  const desktopApp = isTauriDesktop();
+  const desktopApp = isDesktopShell();
   const restoredSelection = resolveStartupWorkspaceSelection({
     repoId: search.repoId,
     worktreeId: search.worktreeId,
@@ -1030,6 +1038,13 @@ export function WorkspacePage() {
       return;
     }
 
+    if (
+      nextSelection.repositoryId === repos.selectedRepositoryId
+      && nextSelection.worktreeId === repos.selectedWorktreeId
+    ) {
+      return;
+    }
+
     repos.setSelectedRepositoryId(nextSelection.repositoryId);
     repos.setSelectedWorktreeId(nextSelection.worktreeId);
   }, [
@@ -1200,6 +1215,9 @@ export function WorkspacePage() {
   const repositoryLiveDataEnabled = (enableNonCriticalWorkspaceData || prioritizeGitPanelData)
     && !selectedWorktreeUnavailable;
   const nonCriticalRepositoryId = enableNonCriticalWorkspaceData && !selectedWorktreeUnavailable
+    ? repos.selectedRepositoryId
+    : null;
+  const targetBranchRepositoryId = selectedWorktreeOperational && !selectedWorktreeUnavailable
     ? repos.selectedRepositoryId
     : null;
   const repositoryReviews = useRepositoryReviews(
@@ -2149,8 +2167,8 @@ export function WorkspacePage() {
     navigationPrefetchRef.current.set(worktreeId, prefetchTask);
     return prefetchTask;
   }, [prefetchDisplayThreadSnapshot, queryClient]);
-  const repositoryBranches = useRepositoryBranches(nonCriticalRepositoryId, {
-    enabled: repositoryLiveDataEnabled,
+  const repositoryBranches = useRepositoryBranches(targetBranchRepositoryId, {
+    enabled: !!targetBranchRepositoryId,
   });
 
   useEffect(() => {
@@ -4320,15 +4338,12 @@ export function WorkspacePage() {
                     targetBranch={selectedTargetBranch}
                     targetBranchOptions={repositoryBranches.data ?? []}
                     targetBranchLoading={
-                      enableNonCriticalWorkspaceData && (
-                        repositoryBranches.isLoading
-                        || repositoryBranches.isFetching
-                        || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
-                      )
+                      repositoryBranches.isLoading
+                      || repositoryBranches.isFetching
+                      || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
                     }
                     targetBranchDisabled={
-                      !enableNonCriticalWorkspaceData
-                      || !repos.selectedWorktreeId
+                      !repos.selectedWorktreeId
                       || !selectedWorktreeOperational
                       || !repos.selectedRepositoryId
                       || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId

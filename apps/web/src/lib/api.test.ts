@@ -939,7 +939,7 @@ describe("api", () => {
     it("resolves the runtime base lazily after the module loads", async () => {
       vi.stubGlobal("window", {
         __CS_RUNTIME_PORT: 4322,
-        __TAURI_INTERNALS__: {},
+        __CS_ELECTRON__: true,
         location: {
           protocol: "http:",
           hostname: "127.0.0.1",

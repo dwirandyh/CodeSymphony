@@ -169,7 +169,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   window.localStorage.removeItem(AGENT_DEFAULTS_STORAGE_KEY);
-  Object.defineProperty(window, "__TAURI_INTERNALS__", {
+  Object.defineProperty(window, "__CS_ELECTRON__", {
     value: undefined,
     configurable: true,
   });
@@ -601,8 +601,8 @@ describe("SettingsDialog", () => {
 
   it("enables desktop notifications directly in the desktop shell", async () => {
     const onGeneralSettingsChange = vi.fn();
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      value: {},
+    Object.defineProperty(window, "__CS_ELECTRON__", {
+      value: true,
       configurable: true,
     });
     Object.defineProperty(window.navigator, "userAgentData", {
@@ -787,8 +787,8 @@ describe("SettingsDialog", () => {
   });
 
   it("reserves the macOS title bar area when running inside the desktop shell", async () => {
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      value: {},
+    Object.defineProperty(window, "__CS_ELECTRON__", {
+      value: true,
       configurable: true,
     });
     Object.defineProperty(window.navigator, "userAgentData", {
@@ -805,8 +805,8 @@ describe("SettingsDialog", () => {
   });
 
   it("renders a desktop top spacer in the settings content when running inside the desktop shell", async () => {
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      value: {},
+    Object.defineProperty(window, "__CS_ELECTRON__", {
+      value: true,
       configurable: true,
     });
     Object.defineProperty(window.navigator, "userAgentData", {

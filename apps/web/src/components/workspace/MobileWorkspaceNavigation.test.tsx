@@ -8,6 +8,10 @@ vi.mock("./TerminalTab", () => ({
   TerminalTab: () => <div>Terminal</div>,
 }));
 
+vi.mock("./GitChangesPanel", () => ({
+  GitChangesPanel: () => <div data-testid="mock-git-changes-panel" />,
+}));
+
 let container: HTMLDivElement;
 let root: Root;
 

@@ -25,20 +25,12 @@ function act(callback: () => void | Promise<void>): void | Promise<void> {
   return undefined;
 }
 
-const tauriDragDropState = vi.hoisted(() => ({
-  handler: null as null | ((event: { payload: { type: string; paths?: string[] } }) => void | Promise<void>),
-}));
-
-vi.mock("@tauri-apps/api/webviewWindow", () => ({
-  getCurrentWebviewWindow: () => ({
-    onDragDropEvent: vi.fn(async (handler: (event: { payload: { type: string; paths?: string[] } }) => void | Promise<void>) => {
-      tauriDragDropState.handler = handler;
-      return () => {
-        tauriDragDropState.handler = null;
-      };
-    }),
-  }),
-}));
+type DesktopTestWindow = Window & {
+  __CS_ELECTRON__?: boolean;
+  __CS_ELECTRON_BRIDGE__?: {
+    getFilePaths?: (files: File[]) => string[];
+  };
+};
 
 const sampleFileIndex: FileEntry[] = [
   { path: "src/index.ts", type: "file" },
@@ -187,15 +179,17 @@ describe("Composer", () => {
     // jsdom does not implement scrollIntoView
     Element.prototype.scrollIntoView = vi.fn();
     setMobileViewport(false);
-    tauriDragDropState.handler = null;
     window.localStorage.clear();
-    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     window.localStorage.clear();
+    delete (window as DesktopTestWindow).__CS_ELECTRON__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
     act(() => root.unmount());
     document.body.removeChild(container);
   });
@@ -222,6 +216,11 @@ describe("Composer", () => {
       throw new Error("Composer drag/drop target not found");
     }
     return target;
+  }
+
+  function installElectronBridge(getFilePaths: (files: File[]) => string[] = () => []) {
+    (window as DesktopTestWindow).__CS_ELECTRON__ = true;
+    (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__ = { getFilePaths };
   }
 
   function getModelSelectorButton(): HTMLButtonElement {
@@ -1698,7 +1697,7 @@ describe("Composer", () => {
     expect(payload.content).toContain("alpha");
   });
 
-  it("handles native Tauri drag/drop attachments in desktop mode", async () => {
+  it("handles Electron drag/drop attachments through bridged file paths", async () => {
     vi.spyOn(api, "readLocalAttachments").mockResolvedValue([{
       path: "/tmp/dropped.txt",
       filename: "dropped.txt",
@@ -1706,35 +1705,30 @@ describe("Composer", () => {
       sizeBytes: 11,
       content: "hello world",
     }]);
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const getFilePaths = vi.fn(() => ["/tmp/dropped.txt"]);
+    installElectronBridge(getFilePaths);
 
     renderComposer();
-    await vi.dynamicImportSettled();
-    await flushMicrotasks();
+    const dropTarget = getDragDropTarget();
+    const file = new File(["hello world"], "dropped.txt", { type: "text/plain" });
+    const dragData = buildFileDragData(file);
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
 
-    expect(tauriDragDropState.handler).toBeTypeOf("function");
-
-    await act(async () => {
-      await tauriDragDropState.handler?.({
-        payload: {
-          type: "drop",
-          paths: ["/tmp/dropped.txt"],
-        },
-      });
+    act(() => {
+      dropTarget.dispatchEvent(dropEvent);
     });
     await flushMicrotasks();
 
+    expect(getFilePaths).toHaveBeenCalledWith([file]);
     expect(api.readLocalAttachments).toHaveBeenCalledWith(["/tmp/dropped.txt"]);
     expect(container.textContent).toContain("dropped.txt");
   });
 
-  it("falls back to DOM drag/drop attachments in desktop mode when native drop handling does not arrive", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  it("falls back to DOM drag/drop attachments in Electron when bridged paths are unavailable", async () => {
+    installElectronBridge(() => []);
 
     renderComposer();
-    await vi.dynamicImportSettled();
-    await flushMicrotasks();
-
     const dropTarget = getDragDropTarget();
     const file = new File(["desktop fallback"], "desktop-fallback.txt", { type: "text/plain" });
     const dragData = buildFileDragData(file);
@@ -1753,8 +1747,7 @@ describe("Composer", () => {
     expect(container.textContent).toContain("desktop-fallback.txt");
   });
 
-  it("does not duplicate desktop drag/drop attachments when native Tauri handling succeeds", async () => {
-    vi.useFakeTimers();
+  it("does not duplicate desktop drag/drop attachments when Electron file path bridging succeeds", async () => {
     const onSubmitMessage = vi.fn().mockResolvedValue(true);
     vi.spyOn(api, "readLocalAttachments").mockResolvedValue([{
       path: "/tmp/desktop-native.txt",
@@ -1763,12 +1756,10 @@ describe("Composer", () => {
       sizeBytes: 14,
       content: "desktop native",
     }]);
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const getFilePaths = vi.fn(() => ["/tmp/desktop-native.txt"]);
+    installElectronBridge(getFilePaths);
 
     renderComposer({ onSubmitMessage });
-    await vi.dynamicImportSettled();
-    await flushMicrotasks();
-
     const dropTarget = getDragDropTarget();
     const editor = getEditor();
     const file = new File(["desktop native"], "desktop-native.txt", { type: "text/plain" });
@@ -1780,18 +1771,6 @@ describe("Composer", () => {
       dropTarget.dispatchEvent(dropEvent);
     });
 
-    await act(async () => {
-      await tauriDragDropState.handler?.({
-        payload: {
-          type: "drop",
-          paths: ["/tmp/desktop-native.txt"],
-        },
-      });
-    });
-
-    await act(async () => {
-      vi.advanceTimersByTime(151);
-    });
     await flushMicrotasks();
 
     await act(async () => {
@@ -1799,6 +1778,8 @@ describe("Composer", () => {
     });
 
     expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(getFilePaths).toHaveBeenCalledTimes(1);
+    expect(api.readLocalAttachments).toHaveBeenCalledTimes(1);
     const [payload] = onSubmitMessage.mock.calls[0] as [{
       attachments: Array<{ filename: string }>;
     }];
@@ -1851,6 +1832,48 @@ describe("Composer", () => {
     } finally {
       URL.createObjectURL = originalCreateObjectURL;
     }
+  });
+
+  it("clears the file drop overlay when the drag leaves the window without a drop", async () => {
+    renderComposer();
+    const dropTarget = getDragDropTarget();
+    const file = new File(["lost drag"], "lost-drag.txt", { type: "text/plain" });
+    const dragData = buildFileDragData(file);
+
+    const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    await reactAct(async () => {
+      dropTarget.dispatchEvent(dragEnterEvent);
+    });
+
+    expect(container.textContent).toContain("Drop files here");
+
+    await reactAct(async () => {
+      window.dispatchEvent(new Event("blur"));
+    });
+
+    expect(container.textContent).not.toContain("Drop files here");
+  });
+
+  it("clears the path drop overlay when the drag ends outside the composer", async () => {
+    renderComposer();
+    const dropTarget = getDragDropTarget();
+    const dragData = buildExplorerEntryDragData({ path: "src/index.ts", type: "file" });
+    const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    await reactAct(async () => {
+      dropTarget.dispatchEvent(dragEnterEvent);
+    });
+
+    expect(container.textContent).toContain("Drop to mention this path");
+
+    await reactAct(async () => {
+      document.dispatchEvent(new Event("dragend", { bubbles: true }));
+    });
+
+    expect(container.textContent).not.toContain("Drop to mention this path");
   });
 
   it("drops explorer entries into the composer as file mentions", async () => {

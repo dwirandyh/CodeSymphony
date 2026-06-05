@@ -140,4 +140,66 @@ describe("AgentModelSelector", () => {
 
     expect(container.textContent).toContain("Loading models...");
   });
+
+  it("selects an OpenAI-compatible custom provider for a new Codex thread", () => {
+    const onSelectionChange = vi.fn();
+
+    act(() => {
+      root.render(
+        createElement(AgentModelSelector, {
+          selection: {
+            agent: "codex",
+            model: "gpt-5.4",
+            modelProviderId: null,
+          },
+          providers: [{
+            id: "provider-codex",
+            compatibility: "openai",
+            name: "Team Codex",
+            modelId: "gpt-5-custom",
+            baseUrl: "https://provider.example.com/v1",
+            apiKeyMasked: "sk-test...7890",
+            isActive: false,
+            createdAt: "2026-06-03T08:00:00.000Z",
+            updatedAt: "2026-06-03T08:00:00.000Z",
+          }],
+          codexModels: [{
+            id: "gpt-5.4",
+            name: "GPT-5.4",
+            description: "Built-in Codex model.",
+            hidden: false,
+            isDefault: true,
+          }],
+          opencodeModels: [],
+          showAgentList: true,
+          onSelectionChange,
+        }),
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Select CLI agent and model"]');
+    if (!trigger) {
+      throw new Error("Model selector trigger not found");
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const providerButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("Team Codex"));
+    if (!providerButton) {
+      throw new Error("Custom provider option not found");
+    }
+
+    act(() => {
+      providerButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    expect(onSelectionChange).toHaveBeenCalledWith({
+      agent: "codex",
+      model: "gpt-5-custom",
+      modelProviderId: "provider-codex",
+    });
+  });
 });

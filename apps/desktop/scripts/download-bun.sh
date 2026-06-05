@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-BIN_DIR="${SCRIPT_DIR}/../src-tauri/binaries"
+BIN_DIR="${SCRIPT_DIR}/../electron/binaries"
 
 PACKAGE_MANAGER_VERSION="$(sed -n 's/.*"packageManager":[[:space:]]*"bun@\([^"]*\)".*/\1/p' "${WORKSPACE_ROOT}/package.json" | head -n 1)"
 BUN_VERSION="${BUN_VERSION:-${PACKAGE_MANAGER_VERSION:-1.3.14}}"

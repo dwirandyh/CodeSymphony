@@ -36,7 +36,12 @@ function dispatchPointerEvent(
     isPrimary?: boolean;
   },
 ) {
-  const event = new Event(type, { bubbles: true, cancelable: true });
+  const eventInit = { bubbles: true, cancelable: true, clientY, pointerId, button, isPrimary };
+  const hasPointerEvent = typeof PointerEvent === "function";
+  const eventType = hasPointerEvent ? type : type.replace("pointer", "mouse");
+  const event = hasPointerEvent
+    ? new PointerEvent(eventType, eventInit)
+    : new MouseEvent(eventType, eventInit);
   Object.defineProperties(event, {
     clientY: { value: clientY, configurable: true },
     pointerId: { value: pointerId, configurable: true },
@@ -261,7 +266,7 @@ describe("BottomPanel", () => {
     expect(findPanelBody()?.style.height).toBe("");
   });
 
-  it("resizes the panel body while dragging the resize handle", () => {
+  it("resizes the panel body while dragging the resize handle", async () => {
     function ControlledBottomPanel() {
       const [collapsed, setCollapsed] = useState(false);
 
@@ -289,13 +294,16 @@ describe("BottomPanel", () => {
       dispatchPointerEvent(resizeHandle, "pointerdown", { clientY: 320 });
     });
 
+    const activeResizeHandle = findResizeHandle() ?? resizeHandle;
+
     act(() => {
-      dispatchPointerEvent(resizeHandle, "pointermove", { clientY: 260 });
+      dispatchPointerEvent(activeResizeHandle, "pointermove", { clientY: 260 });
     });
 
     act(() => {
-      dispatchPointerEvent(resizeHandle, "pointerup", { clientY: 260 });
+      dispatchPointerEvent(activeResizeHandle, "pointerup", { clientY: 260 });
     });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(findPanelBody()?.style.height).toBe("310px");
   });

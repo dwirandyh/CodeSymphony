@@ -180,8 +180,11 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
       || event.type === "worktree.files.updated"
     )
   ) {
-    if (event.type === "worktree.git.updated") {
+    if (event.type === "worktree.files.updated") {
       void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitDiffScope(event.worktreeId) });
+    }
+
+    if (event.type === "worktree.git.updated") {
       void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitBranchDiffSummary(event.worktreeId, "__all__"), exact: false });
     }
   }

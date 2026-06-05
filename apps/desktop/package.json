@@ -3,15 +3,72 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.mjs",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "bash scripts/download-bun.sh && bash scripts/bundle-runtime.sh && bash scripts/build-tauri.sh",
-    "build:adhoc": "bash scripts/download-bun.sh && bash scripts/bundle-runtime.sh && CODESYMPHONY_ALLOW_ADHOC_SIGNING=1 bash scripts/build-tauri.sh",
-    "build:app": "bash scripts/download-bun.sh && bash scripts/bundle-runtime.sh && bash scripts/build-tauri.sh -b app",
-    "build:app:adhoc": "bash scripts/download-bun.sh && bash scripts/bundle-runtime.sh && CODESYMPHONY_ALLOW_ADHOC_SIGNING=1 bash scripts/build-tauri.sh -b app",
-    "resign:app": "bash scripts/resign-app.sh"
+    "dev": "electron .",
+    "build": "bash scripts/download-bun.sh && bash scripts/bundle-runtime.sh && bash scripts/build-electron.sh",
+    "build:adhoc": "bash scripts/download-bun.sh && bash scripts/bundle-runtime.sh && CODESYMPHONY_ALLOW_ADHOC_SIGNING=1 bash scripts/build-electron.sh",
+    "build:app": "bash scripts/download-bun.sh && bash scripts/bundle-runtime.sh && bash scripts/build-electron.sh --app",
+    "build:app:adhoc": "bash scripts/download-bun.sh && bash scripts/bundle-runtime.sh && CODESYMPHONY_ALLOW_ADHOC_SIGNING=1 bash scripts/build-electron.sh --app"
+  },
+  "build": {
+    "appId": "com.codesymphony.app",
+    "productName": "CodeSymphony",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/main.mjs",
+      "electron/preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "electron/runtime-bundle",
+        "to": "runtime-bundle",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "electron/runtime-bundle/node_modules",
+        "to": "runtime-bundle/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "electron/binaries",
+        "to": "binaries",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "icon": "electron/icons/icon.icns",
+      "target": [
+        "dmg"
+      ]
+    },
+    "dmg": {
+      "sign": false
+    },
+    "win": {
+      "icon": "electron/icons/icon.ico"
+    },
+    "linux": {
+      "icon": "electron/icons/icon.png",
+      "target": [
+        "AppImage"
+      ]
+    }
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.2.0"
+    "electron": "^42.3.1",
+    "electron-builder": "^26.8.1"
   }
 }

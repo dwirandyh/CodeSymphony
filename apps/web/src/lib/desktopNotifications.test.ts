@@ -9,53 +9,46 @@ import {
 } from "./desktopNotifications";
 
 const {
-  isPermissionGrantedMock,
-  invokeMock,
-  openUrlMock,
-  requestPermissionMock,
-  sendNotificationMock,
+  openNativeNotificationSettingsMock,
+  sendNativeDesktopNotificationMock,
 } = vi.hoisted(() => ({
-  isPermissionGrantedMock: vi.fn(),
-  invokeMock: vi.fn(),
-  openUrlMock: vi.fn(),
-  requestPermissionMock: vi.fn(),
-  sendNotificationMock: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: invokeMock,
-}));
-
-vi.mock("@tauri-apps/plugin-notification", () => ({
-  isPermissionGranted: isPermissionGrantedMock,
-  requestPermission: requestPermissionMock,
-  sendNotification: sendNotificationMock,
-}));
-
-vi.mock("@tauri-apps/plugin-opener", () => ({
-  openUrl: openUrlMock,
+  openNativeNotificationSettingsMock: vi.fn(),
+  sendNativeDesktopNotificationMock: vi.fn(),
 }));
 
 describe("desktopNotifications", () => {
-  const originalTauriInternals = (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  type DesktopTestWindow = Window & {
+    __CS_ELECTRON__?: boolean;
+    __CS_ELECTRON_BRIDGE__?: {
+      openNativeNotificationSettings?: () => Promise<boolean>;
+      sendNativeDesktopNotification?: (payload: { title: string; body: string }) => Promise<boolean>;
+    };
+  };
+
+  const originalElectron = (window as DesktopTestWindow).__CS_ELECTRON__;
+  const originalElectronBridge = (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
   const originalNotification = window.Notification;
 
   beforeEach(() => {
-    isPermissionGrantedMock.mockReset();
-    invokeMock.mockReset();
-    openUrlMock.mockReset();
-    requestPermissionMock.mockReset();
-    sendNotificationMock.mockReset();
-    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    openNativeNotificationSettingsMock.mockReset();
+    sendNativeDesktopNotificationMock.mockReset();
+    delete (window as DesktopTestWindow).__CS_ELECTRON__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
 
-    if (typeof originalTauriInternals === "undefined") {
-      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    if (typeof originalElectron === "undefined") {
+      delete (window as DesktopTestWindow).__CS_ELECTRON__;
     } else {
-      (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = originalTauriInternals;
+      (window as DesktopTestWindow).__CS_ELECTRON__ = originalElectron;
+    }
+
+    if (typeof originalElectronBridge === "undefined") {
+      delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
+    } else {
+      (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__ = originalElectronBridge;
     }
 
     Object.defineProperty(window, "Notification", {
@@ -78,7 +71,7 @@ describe("desktopNotifications", () => {
     expect(supportsDesktopNotifications()).toBe(true);
   });
 
-  it("requests permission through the browser Notification API outside tauri", async () => {
+  it("requests permission through the browser Notification API outside desktop", async () => {
     const requestPermission = vi.fn<() => Promise<NotificationPermission>>().mockResolvedValue("granted");
 
     Object.defineProperty(window, "Notification", {
@@ -94,91 +87,70 @@ describe("desktopNotifications", () => {
     expect(requestPermission).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the tauri notification plugin inside the desktop shell", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  function installElectronBridge() {
+    (window as DesktopTestWindow).__CS_ELECTRON__ = true;
+    (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__ = {
+      openNativeNotificationSettings: openNativeNotificationSettingsMock,
+      sendNativeDesktopNotification: sendNativeDesktopNotificationMock,
+    };
+  }
+
+  it("treats Electron desktop permissions as granted", async () => {
+    installElectronBridge();
 
     await expect(requestDesktopNotificationPermission()).resolves.toBe("granted");
-    expect(requestPermissionMock).not.toHaveBeenCalled();
   });
 
-  it("reads tauri permission state without prompting", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  it("reads Electron permission state without prompting", async () => {
+    installElectronBridge();
 
     await expect(getDesktopNotificationPermission()).resolves.toBe("granted");
-    expect(requestPermissionMock).not.toHaveBeenCalled();
   });
 
-  it("treats tauri desktop notification permissions as system-managed", () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  it("treats Electron desktop notification permissions as system-managed", () => {
+    installElectronBridge();
 
     expect(usesSystemManagedDesktopNotificationPermissions()).toBe(true);
   });
 
-  it("sends native notifications through tauri on desktop", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-    invokeMock.mockResolvedValue(undefined);
+  it("sends native notifications through Electron on desktop", async () => {
+    installElectronBridge();
+    sendNativeDesktopNotificationMock.mockResolvedValue(true);
 
     await expect(sendDesktopNotification({
       title: "AI finished working",
       body: "Background chat is ready.",
     })).resolves.toBe(true);
 
-    expect(invokeMock).toHaveBeenCalledWith("send_native_desktop_notification", {
+    expect(sendNativeDesktopNotificationMock).toHaveBeenCalledWith({
       title: "AI finished working",
       body: "Background chat is ready.",
     });
   });
 
-  it("falls back to the tauri notification plugin if the native command fails", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-    invokeMock.mockRejectedValue(new Error("invoke failed"));
-    sendNotificationMock.mockResolvedValue(undefined);
+  it("returns false when the Electron notification bridge fails", async () => {
+    installElectronBridge();
+    sendNativeDesktopNotificationMock.mockResolvedValue(false);
 
     await expect(sendDesktopNotification({
       title: "AI finished working",
       body: "Background chat is ready.",
-    })).resolves.toBe(true);
-
-    expect(sendNotificationMock).toHaveBeenCalledWith({
-      title: "AI finished working",
-      body: "Background chat is ready.",
-    });
+    })).resolves.toBe(false);
   });
 
-  it("opens macOS notification settings through the native tauri command", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-    invokeMock.mockResolvedValue(undefined);
+  it("opens macOS notification settings through the Electron bridge", async () => {
+    installElectronBridge();
+    openNativeNotificationSettingsMock.mockResolvedValue(true);
 
     await expect(openDesktopNotificationSettings()).resolves.toBe(true);
-    expect(invokeMock).toHaveBeenCalledWith("open_native_notification_settings");
-    expect(openUrlMock).not.toHaveBeenCalled();
+    expect(openNativeNotificationSettingsMock).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to the opener deep links when the native tauri command fails", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-    invokeMock.mockRejectedValue(new Error("invoke failed"));
-    openUrlMock
-      .mockRejectedValueOnce(new Error("specific failed"))
-      .mockResolvedValueOnce(undefined);
-
-    await expect(openDesktopNotificationSettings()).resolves.toBe(true);
-    expect(invokeMock).toHaveBeenCalledWith("open_native_notification_settings");
-    expect(openUrlMock).toHaveBeenNthCalledWith(
-      1,
-      "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.codesymphony.app",
-    );
-    expect(openUrlMock).toHaveBeenNthCalledWith(
-      2,
-      "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
-    );
-  });
-
-  it("returns false when both native and opener fallbacks fail", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-    invokeMock.mockRejectedValue(new Error("invoke failed"));
-    openUrlMock.mockRejectedValue(new Error("open failed"));
+  it("returns false when the Electron settings bridge fails", async () => {
+    installElectronBridge();
+    openNativeNotificationSettingsMock.mockResolvedValue(false);
 
     await expect(openDesktopNotificationSettings()).resolves.toBe(false);
-    expect(invokeMock).toHaveBeenCalledWith("open_native_notification_settings");
+    expect(openNativeNotificationSettingsMock).toHaveBeenCalledTimes(1);
   });
 });

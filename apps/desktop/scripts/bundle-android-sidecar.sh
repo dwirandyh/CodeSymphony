@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DESKTOP_DIR="${SCRIPT_DIR}/.."
 WORKSPACE_ROOT="${DESKTOP_DIR}/../.."
-TARGET_DIR="${1:-${DESKTOP_DIR}/src-tauri/runtime-bundle/android-ws-scrcpy}"
+TARGET_DIR="${1:-${DESKTOP_DIR}/electron/runtime-bundle/android-ws-scrcpy}"
 SIDECAR_ROOT="${CODESYMPHONY_SIDECAR_ROOT:-$HOME/.codesymphony/sidecars}"
 SIDECAR_DIR="${SIDECAR_ROOT}/ws-scrcpy"
 ANDROID_PORT="${ANDROID_WS_SCRCPY_PORT:-8765}"
