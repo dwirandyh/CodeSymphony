@@ -31,6 +31,11 @@ function stripPrivatePrefix(input: string): string {
   return input;
 }
 
+export function isAbsoluteFsPath(input: string): boolean {
+  const path = stripFileLocationSuffix(input).trim();
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/u.test(path);
+}
+
 export function parseFileLocation(input: string): ParsedFileLocation {
   const trimmed = input.trim();
   if (trimmed.length === 0) {

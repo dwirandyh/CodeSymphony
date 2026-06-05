@@ -5,6 +5,7 @@ import type { GitStatus } from "@codesymphony/shared-types";
 import {
   getGitStatusCollection,
   getCachedGitStatus,
+  refetchGitStatusCollectionFresh,
   replaceGitStatusCollection,
   toPlainGitStatus,
   type GitStatusRow,
@@ -46,6 +47,10 @@ function matchesQueryKey(left: readonly unknown[] | null, right: readonly unknow
 export function refreshWorktreeGitStatus(queryClient: QueryClient, worktreeId: string) {
   requestWorkspaceLiveResourceRefresh(queryClient, gitStatusLiveResourceKey(worktreeId));
   return getGitStatusCollection(queryClient, worktreeId).utils.refetch();
+}
+
+export function refreshWorktreeGitStatusFresh(queryClient: QueryClient, worktreeId: string) {
+  return refetchGitStatusCollectionFresh(queryClient, worktreeId);
 }
 
 export function markWorktreeGitStatusChanged(
@@ -164,7 +169,7 @@ export function useGitStatus(worktreeId: string | null, options?: UseGitStatusOp
       if (!worktreeId) {
         return Promise.resolve([]);
       }
-      return refreshWorktreeGitStatus(queryClient, worktreeId);
+      return refreshWorktreeGitStatusFresh(queryClient, worktreeId);
     },
   };
 }

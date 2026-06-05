@@ -14,7 +14,7 @@ bun run dev
 # Start individual apps
 bun run dev:runtime    # Fastify backend on :4331
 bun run dev:web        # Vite dev server on :5173
-bun run dev:desktop    # Tauri shell (requires Rust/Cargo)
+bun run dev:desktop    # Electron shell (starts desktop runtime + web dev server)
 
 # Database setup (required before first run)
 bun run db:generate && bun run db:migrate && bun run db:seed
@@ -34,9 +34,13 @@ bun run --filter @codesymphony/runtime test -- chatService.permissions.test.ts
 # Build a single workspace
 bun run --filter @codesymphony/web build
 bun run --filter @codesymphony/runtime build
+
+# Build the signed production macOS .app bundle
+make build-macos-prod-app
 ```
 
 Makefile shortcuts are also available (`make dev`, `make test`, `make lint`, `make build`, `make db-init`).
+Use the Makefile for macOS app packaging: `make build-macos-prod-app` builds the signed `.app` bundle, and `make build-macos-prod` builds the signed `.app` plus DMG. Do not invoke the desktop package build scripts directly for macOS release builds.
 
 ## Architecture
 
@@ -44,9 +48,9 @@ Local-first monorepo (Bun workspaces + Turbo) for a conductor.build-style AI cod
 
 ### Apps
 
-- **`apps/runtime`** — Fastify API server + Prisma (SQLite) + Claude Agent SDK. The single local backend serving both web and desktop clients. Entry point: `src/index.ts`. Defaults to port 4331 in dev; Tauri desktop dev runs a dedicated sidecar on 4321; the packaged desktop app runs its sidecar on 4322.
+- **`apps/runtime`** — Fastify API server + Prisma (SQLite) + Claude Agent SDK. The single local backend serving both web and desktop clients. Entry point: `src/index.ts`. Defaults to port 4331 in dev; Electron desktop dev runs a dedicated sidecar on 4321; the packaged desktop app runs its sidecar on 4322.
 - **`apps/web`** — React 19 + Vite + Tailwind CSS + Radix UI. Main workspace UI with chat panel, repository sidebar, and terminal. Runs on port 5173.
-- **`apps/desktop`** — Tauri shell wrapping the web app for desktop packaging.
+- **`apps/desktop`** — Electron shell wrapping the web app for desktop packaging.
 
 ### Shared Packages
 
@@ -113,7 +117,7 @@ To debug a new issue: add `debugLog("source", "message", data)` calls at relevan
 `apps/runtime/src/services/ptyBackend.ts` mirrors t3code terminal PTY selection:
 
 1. **Bun native PTY** — when running under Bun, uses `Bun.spawn` with `terminal: { cols, rows, data }` (real PTY via Bun runtime, not the `bun-pty` npm package).
-2. **node-pty** — when running under Node (e.g. Vitest). Fixes spawn-helper permissions in Tauri bundles first.
+2. **node-pty** — when running under Node (e.g. Vitest). Fixes spawn-helper permissions in desktop bundles first.
 
 ### Terminal Frontend (Web)
 

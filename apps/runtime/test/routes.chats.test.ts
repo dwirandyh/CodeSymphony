@@ -63,6 +63,8 @@ const prisma = new PrismaClient({
 });
 
 async function resetDatabase(): Promise<void> {
+  await prisma.chatQueuedAttachment.deleteMany();
+  await prisma.chatQueuedMessage.deleteMany();
   await prisma.chatEvent.deleteMany();
   await prisma.chatMessage.deleteMany();
   await prisma.chatThread.deleteMany();
@@ -95,6 +97,12 @@ describe("chat routes", () => {
     revisePlan: vi.fn(),
     stopRun: vi.fn(),
     listMessages: vi.fn(),
+    listQueuedMessages: vi.fn(),
+    queueMessage: vi.fn(),
+    deleteQueuedMessage: vi.fn(),
+    updateQueuedMessage: vi.fn(),
+    requestQueuedMessageDispatch: vi.fn(),
+    cancelQueuedMessageDispatch: vi.fn(),
     listEvents: vi.fn(),
     listThreadSnapshot: vi.fn(),
     listSlashCommands: vi.fn(),
@@ -429,6 +437,34 @@ describe("chat routes", () => {
       mockChatService.stopRun.mockResolvedValue(undefined);
       const res = await app.inject({ method: "POST", url: "/api/threads/t1/stop" });
       expect(res.statusCode).toBe(204);
+    });
+  });
+
+  describe("POST /api/threads/:id/queue/:queueMessageId/cancel-dispatch", () => {
+    it("returns the updated queued message", async () => {
+      mockChatService.cancelQueuedMessageDispatch.mockResolvedValue({
+        id: "q1",
+        threadId: "t1",
+        seq: 0,
+        content: "Keep this draft",
+        mode: "default",
+        status: "queued",
+        dispatchRequestedAt: null,
+        attachments: [],
+        createdAt: "2026-04-27T10:00:00.000Z",
+        updatedAt: "2026-04-27T10:00:01.000Z",
+      });
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/threads/t1/queue/q1/cancel-dispatch",
+        payload: {},
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.cancelQueuedMessageDispatch).toHaveBeenCalledWith("t1", "q1");
+      expect(res.json().data.status).toBe("queued");
+      expect(res.json().data.dispatchRequestedAt).toBeNull();
     });
   });
 

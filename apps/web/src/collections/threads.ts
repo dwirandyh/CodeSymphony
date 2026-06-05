@@ -123,6 +123,10 @@ export function getThreadsCollection(queryClient: QueryClient, worktreeId: strin
   return created;
 }
 
+export function getExistingThreadsCollection(queryClient: QueryClient, worktreeId: string): ThreadsCollection | null {
+  return threadsCollectionRegistry.get(queryClient)?.get(worktreeId) ?? null;
+}
+
 export function refetchThreadsCollection(queryClient: QueryClient, worktreeId: string) {
   return getThreadsCollection(queryClient, worktreeId).utils.refetch();
 }

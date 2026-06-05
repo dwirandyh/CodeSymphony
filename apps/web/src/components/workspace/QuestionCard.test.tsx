@@ -26,6 +26,7 @@ afterEach(() => {
 describe("QuestionCard", () => {
   const baseProps = {
     requestId: "q-1",
+    agentLabel: "Codex",
     busy: false,
     onAnswer: vi.fn(),
     onDismiss: vi.fn(),
@@ -48,6 +49,19 @@ describe("QuestionCard", () => {
       );
     });
     expect(container.textContent).toContain("Which framework?");
+  });
+
+  it("renders the active agent label", () => {
+    act(() => {
+      root.render(
+        <QuestionCard
+          {...baseProps}
+          agentLabel="Cursor"
+          questions={[{ question: "Which framework?" }]}
+        />
+      );
+    });
+    expect(container.textContent).toContain("Cursor is asking");
   });
 
   it("renders question with header", () => {
@@ -142,6 +156,43 @@ describe("QuestionCard", () => {
       );
     });
     expect(container.textContent).toContain("1 / 2");
+  });
+
+  it("shows request navigation for multiple question requests", () => {
+    const onPrevious = vi.fn();
+    const onNext = vi.fn();
+    act(() => {
+      root.render(
+        <QuestionCard
+          {...baseProps}
+          position={{ current: 2, total: 3 }}
+          onPrevious={onPrevious}
+          onNext={onNext}
+          questions={[{ question: "Q?" }]}
+        />
+      );
+    });
+
+    expect(container.textContent).toContain("Request 2 / 3");
+    const previousButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("aria-label") === "Previous question request",
+    );
+    const nextButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("aria-label") === "Next question request",
+    );
+
+    expect(previousButton).toBeTruthy();
+    expect(nextButton).toBeTruthy();
+
+    if (previousButton) {
+      act(() => previousButton.click());
+    }
+    if (nextButton) {
+      act(() => nextButton.click());
+    }
+
+    expect(onPrevious).toHaveBeenCalledTimes(1);
+    expect(onNext).toHaveBeenCalledTimes(1);
   });
 
   it("selects option on click", () => {

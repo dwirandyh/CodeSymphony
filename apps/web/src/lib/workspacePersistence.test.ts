@@ -9,6 +9,7 @@ describe("workspacePersistence", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.useRealTimers();
+    delete (window as Window & { __CS_ELECTRON__?: boolean }).__CS_ELECTRON__;
   });
 
   it("initializes browser sqlite persistence and wraps collection options", async () => {
@@ -20,9 +21,6 @@ describe("workspacePersistence", () => {
       persisted: "browser",
     }));
 
-    vi.doMock("./openExternalUrl", () => ({
-      isTauriDesktop: () => false,
-    }));
     vi.doMock("@tanstack/browser-db-sqlite-persistence", () => ({
       BrowserCollectionCoordinator,
       openBrowserWASQLiteOPFSDatabase,
@@ -69,22 +67,20 @@ describe("workspacePersistence", () => {
     });
   });
 
-  it("initializes tauri sqlite persistence and wraps collection options", async () => {
-    const load = vi.fn(async () => "tauri-db");
-    const createTauriSQLitePersistence = vi.fn(() => "tauri-persistence");
+  it("initializes browser sqlite persistence inside Electron desktop", async () => {
+    const openBrowserWASQLiteOPFSDatabase = vi.fn(async () => "electron-browser-db");
+    const BrowserCollectionCoordinator = vi.fn(() => "electron-browser-coordinator");
+    const createBrowserWASQLitePersistence = vi.fn(() => "electron-browser-persistence");
     const persistedCollectionOptions = vi.fn((options) => ({
       ...options,
-      persisted: "desktop",
+      persisted: "electron-browser",
     }));
 
-    vi.doMock("./openExternalUrl", () => ({
-      isTauriDesktop: () => true,
-    }));
-    vi.doMock("@tauri-apps/plugin-sql", () => ({
-      default: { load },
-    }));
-    vi.doMock("@tanstack/tauri-db-sqlite-persistence", () => ({
-      createTauriSQLitePersistence,
+    (window as Window & { __CS_ELECTRON__?: boolean }).__CS_ELECTRON__ = true;
+    vi.doMock("@tanstack/browser-db-sqlite-persistence", () => ({
+      BrowserCollectionCoordinator,
+      openBrowserWASQLiteOPFSDatabase,
+      createBrowserWASQLitePersistence,
       persistedCollectionOptions,
     }));
 
@@ -96,11 +92,17 @@ describe("workspacePersistence", () => {
 
     await initializeWorkspacePersistence();
 
-    expect(load).toHaveBeenCalledWith("sqlite:codesymphony-workspace.sqlite");
-    expect(createTauriSQLitePersistence).toHaveBeenCalledWith({
-      database: "tauri-db",
+    expect(openBrowserWASQLiteOPFSDatabase).toHaveBeenCalledWith({
+      databaseName: "codesymphony-workspace.sqlite",
     });
-    expect(getWorkspacePersistenceModeForTest()).toBe("desktop");
+    expect(createBrowserWASQLitePersistence).toHaveBeenCalledWith({
+      database: "electron-browser-db",
+      coordinator: expect.any(Object),
+    });
+    expect(BrowserCollectionCoordinator).toHaveBeenCalledWith({
+      dbName: "codesymphony-workspace",
+    });
+    expect(getWorkspacePersistenceModeForTest()).toBe("browser");
 
     const wrapped = withWorkspaceCollectionPersistence({
       id: "threads:wt-1",
@@ -112,19 +114,18 @@ describe("workspacePersistence", () => {
 
     expect(persistedCollectionOptions).toHaveBeenCalledWith(expect.objectContaining({
       id: "threads:wt-1",
-      persistence: "tauri-persistence",
+      persistence: "electron-browser-persistence",
       schemaVersion: 2,
     }));
     expect(wrapped).toMatchObject({
       id: "threads:wt-1",
-      persisted: "desktop",
+      persisted: "electron-browser",
     });
+
+    delete (window as Window & { __CS_ELECTRON__?: boolean }).__CS_ELECTRON__;
   });
 
   it("falls back to plain collection options when persistence init fails", async () => {
-    vi.doMock("./openExternalUrl", () => ({
-      isTauriDesktop: () => false,
-    }));
     vi.doMock("@tanstack/browser-db-sqlite-persistence", () => ({
       openBrowserWASQLiteOPFSDatabase: vi.fn(async () => {
         throw new Error("opfs unavailable");
@@ -154,9 +155,6 @@ describe("workspacePersistence", () => {
   it("times out browser persistence init and falls back to disabled mode", async () => {
     vi.useFakeTimers();
 
-    vi.doMock("./openExternalUrl", () => ({
-      isTauriDesktop: () => false,
-    }));
     vi.doMock("@tanstack/browser-db-sqlite-persistence", () => ({
       openBrowserWASQLiteOPFSDatabase: vi.fn(() => new Promise<never>(() => {})),
       BrowserCollectionCoordinator: vi.fn(),

@@ -22,7 +22,7 @@ export function QuickFilePicker({
   items: QuickFileItem[];
   loading: boolean;
   selectedIndex: number;
-  inputRef: RefObject<HTMLInputElement | null>;
+  inputRef: RefObject<HTMLInputElement>;
   shortcutLabel: string;
   onQueryChange: (value: string) => void;
   onSelectedIndexChange: (index: number) => void;

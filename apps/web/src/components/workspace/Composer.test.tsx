@@ -1,3 +1,4 @@
+import { act as reactAct } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -6,6 +7,7 @@ import type { ChatQueuedMessage, FileEntry, ModelProvider, SlashCommand } from "
 import { api } from "../../lib/api";
 import { Composer } from "./composer";
 import { getPlainTextFromEditor, getSerializedTextFromEditor } from "./composer/composerEditorUtils";
+import { EXPLORER_ENTRY_DRAG_MIME } from "./explorerDrag";
 
 function act(callback: () => void): void;
 function act(callback: () => Promise<void>): Promise<void>;
@@ -23,20 +25,12 @@ function act(callback: () => void | Promise<void>): void | Promise<void> {
   return undefined;
 }
 
-const tauriDragDropState = vi.hoisted(() => ({
-  handler: null as null | ((event: { payload: { type: string; paths?: string[] } }) => void | Promise<void>),
-}));
-
-vi.mock("@tauri-apps/api/webviewWindow", () => ({
-  getCurrentWebviewWindow: () => ({
-    onDragDropEvent: vi.fn(async (handler: (event: { payload: { type: string; paths?: string[] } }) => void | Promise<void>) => {
-      tauriDragDropState.handler = handler;
-      return () => {
-        tauriDragDropState.handler = null;
-      };
-    }),
-  }),
-}));
+type DesktopTestWindow = Window & {
+  __CS_ELECTRON__?: boolean;
+  __CS_ELECTRON_BRIDGE__?: {
+    getFilePaths?: (files: File[]) => string[];
+  };
+};
 
 const sampleFileIndex: FileEntry[] = [
   { path: "src/index.ts", type: "file" },
@@ -185,15 +179,17 @@ describe("Composer", () => {
     // jsdom does not implement scrollIntoView
     Element.prototype.scrollIntoView = vi.fn();
     setMobileViewport(false);
-    tauriDragDropState.handler = null;
     window.localStorage.clear();
-    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     window.localStorage.clear();
+    delete (window as DesktopTestWindow).__CS_ELECTRON__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
     act(() => root.unmount());
     document.body.removeChild(container);
   });
@@ -220,6 +216,11 @@ describe("Composer", () => {
       throw new Error("Composer drag/drop target not found");
     }
     return target;
+  }
+
+  function installElectronBridge(getFilePaths: (files: File[]) => string[] = () => []) {
+    (window as DesktopTestWindow).__CS_ELECTRON__ = true;
+    (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__ = { getFilePaths };
   }
 
   function getModelSelectorButton(): HTMLButtonElement {
@@ -312,6 +313,22 @@ describe("Composer", () => {
     };
   }
 
+  function buildExplorerEntryDragData(entry: FileEntry) {
+    const data = JSON.stringify(entry);
+    return {
+      types: [EXPLORER_ENTRY_DRAG_MIME, "text/plain"],
+      files: [],
+      items: [],
+      dropEffect: "none",
+      getData: (type: string) => {
+        if (type === EXPLORER_ENTRY_DRAG_MIME) {
+          return data;
+        }
+        return type === "text/plain" ? entry.path : "";
+      },
+    };
+  }
+
   it("renders the editor", () => {
     renderComposer();
     const editor = getEditor();
@@ -353,17 +370,84 @@ describe("Composer", () => {
     expect(editor.className).toContain("md:max-h-[400px]");
   });
 
-  it("renders queued drafts inside the composer shell", () => {
+  it("renders queued drafts in an attached shelf above the composer shell", () => {
     renderComposer({
       queuedMessages: sampleQueuedMessages,
       onDeleteQueuedMessage: vi.fn(),
       onDispatchQueuedMessage: vi.fn(),
+      onCancelQueuedMessageDispatch: vi.fn(),
       onUpdateQueuedMessage: vi.fn().mockResolvedValue(true),
     });
 
-    const composerSection = getEditor().closest("section");
-    expect(composerSection?.textContent).toContain("1 queued draft");
-    expect(composerSection?.textContent).toContain("Review pending migrations and send after the current response finishes.");
+    const composerShell = getEditor().parentElement;
+    const queueShelf = container.querySelector('[data-testid="attached-queue-shelf"]');
+    expect(queueShelf).not.toBeNull();
+    expect(queueShelf?.textContent).toContain("1 Queued");
+    expect(queueShelf?.textContent).not.toContain("Review pending migrations and send after the current response finishes.");
+    expect(composerShell?.contains(queueShelf)).toBe(false);
+  });
+
+  it("renders a cancel send button for queued drafts with dispatch requested", () => {
+    renderComposer({
+      queuedMessages: sampleQueuedMessages,
+      onDeleteQueuedMessage: vi.fn(),
+      onDispatchQueuedMessage: vi.fn(),
+      onCancelQueuedMessageDispatch: vi.fn(),
+      onUpdateQueuedMessage: vi.fn().mockResolvedValue(true),
+    });
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Expand queued drafts"]')?.click();
+    });
+
+    expect(container.querySelector('button[aria-label="Cancel queued send"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Send queued draft now"]')).toBeNull();
+  });
+
+  it("clicking the queued stop button cancels dispatch without deleting", () => {
+    const onCancelQueuedMessageDispatch = vi.fn();
+    const onDeleteQueuedMessage = vi.fn();
+    const onDispatchQueuedMessage = vi.fn();
+    renderComposer({
+      queuedMessages: sampleQueuedMessages,
+      onDeleteQueuedMessage,
+      onDispatchQueuedMessage,
+      onCancelQueuedMessageDispatch,
+      onUpdateQueuedMessage: vi.fn().mockResolvedValue(true),
+    });
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Expand queued drafts"]')?.click();
+    });
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Cancel queued send"]')?.click();
+    });
+
+    expect(onCancelQueuedMessageDispatch).toHaveBeenCalledWith("queue-1");
+    expect(onDispatchQueuedMessage).not.toHaveBeenCalled();
+    expect(onDeleteQueuedMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps delete separate from canceling queued dispatch", () => {
+    const onCancelQueuedMessageDispatch = vi.fn();
+    const onDeleteQueuedMessage = vi.fn();
+    renderComposer({
+      queuedMessages: sampleQueuedMessages,
+      onDeleteQueuedMessage,
+      onDispatchQueuedMessage: vi.fn(),
+      onCancelQueuedMessageDispatch,
+      onUpdateQueuedMessage: vi.fn().mockResolvedValue(true),
+    });
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Expand queued drafts"]')?.click();
+    });
+    act(() => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Delete queued draft"]')?.click();
+    });
+
+    expect(onDeleteQueuedMessage).toHaveBeenCalledWith("queue-1");
+    expect(onCancelQueuedMessageDispatch).not.toHaveBeenCalled();
   });
 
   it("shows suggestions immediately when @ is typed", async () => {
@@ -1491,6 +1575,18 @@ describe("Composer", () => {
     expect(getSerializedTextFromEditor(editor)).toBe("first line\nsecond line\nthird line\n");
   });
 
+  it("preserves newline before native contenteditable block nodes after plain text", () => {
+    renderComposer();
+    const editor = getEditor();
+
+    act(() => {
+      editor.innerHTML = "first line<div>second line</div><div>third line</div>";
+    });
+
+    expect(getPlainTextFromEditor(editor)).toBe("first line\nsecond line\nthird line\n");
+    expect(getSerializedTextFromEditor(editor)).toBe("first line\nsecond line\nthird line\n");
+  });
+
   it("submits newline-separated content created by contenteditable block nodes", async () => {
     const onSubmitMessage = vi.fn().mockResolvedValue(true);
     renderComposer({ onSubmitMessage });
@@ -1508,6 +1604,31 @@ describe("Composer", () => {
 
     await act(async () => {
       sendButton?.click();
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    const [payload] = onSubmitMessage.mock.calls[0] as [{
+      content: string;
+      mode: string;
+      attachments: Array<{ source: string; content: string }>;
+    }];
+    expect(payload.content).toBe("first line\nsecond line\nthird line");
+  });
+
+  it("submits newline-separated content when native editing mixes text and block nodes", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
+
+    const editor = getEditor();
+
+    act(() => {
+      editor.innerHTML = "first line<div>second line</div><div>third line</div>";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
     expect(onSubmitMessage).toHaveBeenCalledTimes(1);
@@ -1576,7 +1697,7 @@ describe("Composer", () => {
     expect(payload.content).toContain("alpha");
   });
 
-  it("handles native Tauri drag/drop attachments in desktop mode", async () => {
+  it("handles Electron drag/drop attachments through bridged file paths", async () => {
     vi.spyOn(api, "readLocalAttachments").mockResolvedValue([{
       path: "/tmp/dropped.txt",
       filename: "dropped.txt",
@@ -1584,35 +1705,30 @@ describe("Composer", () => {
       sizeBytes: 11,
       content: "hello world",
     }]);
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const getFilePaths = vi.fn(() => ["/tmp/dropped.txt"]);
+    installElectronBridge(getFilePaths);
 
     renderComposer();
-    await vi.dynamicImportSettled();
-    await flushMicrotasks();
+    const dropTarget = getDragDropTarget();
+    const file = new File(["hello world"], "dropped.txt", { type: "text/plain" });
+    const dragData = buildFileDragData(file);
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
 
-    expect(tauriDragDropState.handler).toBeTypeOf("function");
-
-    await act(async () => {
-      await tauriDragDropState.handler?.({
-        payload: {
-          type: "drop",
-          paths: ["/tmp/dropped.txt"],
-        },
-      });
+    act(() => {
+      dropTarget.dispatchEvent(dropEvent);
     });
     await flushMicrotasks();
 
+    expect(getFilePaths).toHaveBeenCalledWith([file]);
     expect(api.readLocalAttachments).toHaveBeenCalledWith(["/tmp/dropped.txt"]);
     expect(container.textContent).toContain("dropped.txt");
   });
 
-  it("falls back to DOM drag/drop attachments in desktop mode when native drop handling does not arrive", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  it("falls back to DOM drag/drop attachments in Electron when bridged paths are unavailable", async () => {
+    installElectronBridge(() => []);
 
     renderComposer();
-    await vi.dynamicImportSettled();
-    await flushMicrotasks();
-
     const dropTarget = getDragDropTarget();
     const file = new File(["desktop fallback"], "desktop-fallback.txt", { type: "text/plain" });
     const dragData = buildFileDragData(file);
@@ -1631,8 +1747,7 @@ describe("Composer", () => {
     expect(container.textContent).toContain("desktop-fallback.txt");
   });
 
-  it("does not duplicate desktop drag/drop attachments when native Tauri handling succeeds", async () => {
-    vi.useFakeTimers();
+  it("does not duplicate desktop drag/drop attachments when Electron file path bridging succeeds", async () => {
     const onSubmitMessage = vi.fn().mockResolvedValue(true);
     vi.spyOn(api, "readLocalAttachments").mockResolvedValue([{
       path: "/tmp/desktop-native.txt",
@@ -1641,12 +1756,10 @@ describe("Composer", () => {
       sizeBytes: 14,
       content: "desktop native",
     }]);
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    const getFilePaths = vi.fn(() => ["/tmp/desktop-native.txt"]);
+    installElectronBridge(getFilePaths);
 
     renderComposer({ onSubmitMessage });
-    await vi.dynamicImportSettled();
-    await flushMicrotasks();
-
     const dropTarget = getDragDropTarget();
     const editor = getEditor();
     const file = new File(["desktop native"], "desktop-native.txt", { type: "text/plain" });
@@ -1658,18 +1771,6 @@ describe("Composer", () => {
       dropTarget.dispatchEvent(dropEvent);
     });
 
-    await act(async () => {
-      await tauriDragDropState.handler?.({
-        payload: {
-          type: "drop",
-          paths: ["/tmp/desktop-native.txt"],
-        },
-      });
-    });
-
-    await act(async () => {
-      vi.advanceTimersByTime(151);
-    });
     await flushMicrotasks();
 
     await act(async () => {
@@ -1677,6 +1778,8 @@ describe("Composer", () => {
     });
 
     expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(getFilePaths).toHaveBeenCalledTimes(1);
+    expect(api.readLocalAttachments).toHaveBeenCalledTimes(1);
     const [payload] = onSubmitMessage.mock.calls[0] as [{
       attachments: Array<{ filename: string }>;
     }];
@@ -1698,7 +1801,7 @@ describe("Composer", () => {
       const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
       Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
 
-      act(() => {
+      await reactAct(async () => {
         dropTarget.dispatchEvent(dragEnterEvent);
       });
 
@@ -1708,7 +1811,7 @@ describe("Composer", () => {
       Object.defineProperty(dragLeaveEvent, "dataTransfer", { value: dragData, configurable: true });
       Object.defineProperty(dragLeaveEvent, "relatedTarget", { value: editor, configurable: true });
 
-      act(() => {
+      await reactAct(async () => {
         dropTarget.dispatchEvent(dragLeaveEvent);
       });
 
@@ -1717,16 +1820,110 @@ describe("Composer", () => {
       const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
       Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
 
-      await act(async () => {
+      await reactAct(async () => {
         dropTarget.dispatchEvent(dropEvent);
       });
-      await flushMicrotasks();
+      await reactAct(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      });
 
       expect(container.textContent).not.toContain("Drop files here");
       expect(container.textContent).toContain("dropped.png");
     } finally {
       URL.createObjectURL = originalCreateObjectURL;
     }
+  });
+
+  it("clears the file drop overlay when the drag leaves the window without a drop", async () => {
+    renderComposer();
+    const dropTarget = getDragDropTarget();
+    const file = new File(["lost drag"], "lost-drag.txt", { type: "text/plain" });
+    const dragData = buildFileDragData(file);
+
+    const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    await reactAct(async () => {
+      dropTarget.dispatchEvent(dragEnterEvent);
+    });
+
+    expect(container.textContent).toContain("Drop files here");
+
+    await reactAct(async () => {
+      window.dispatchEvent(new Event("blur"));
+    });
+
+    expect(container.textContent).not.toContain("Drop files here");
+  });
+
+  it("clears the path drop overlay when the drag ends outside the composer", async () => {
+    renderComposer();
+    const dropTarget = getDragDropTarget();
+    const dragData = buildExplorerEntryDragData({ path: "src/index.ts", type: "file" });
+    const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    await reactAct(async () => {
+      dropTarget.dispatchEvent(dragEnterEvent);
+    });
+
+    expect(container.textContent).toContain("Drop to mention this path");
+
+    await reactAct(async () => {
+      document.dispatchEvent(new Event("dragend", { bubbles: true }));
+    });
+
+    expect(container.textContent).not.toContain("Drop to mention this path");
+  });
+
+  it("drops explorer entries into the composer as file mentions", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
+
+    const editor = getEditor();
+    const dropTarget = getDragDropTarget();
+    const dragData = buildExplorerEntryDragData({ path: "src/index.ts", type: "file" });
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    act(() => {
+      dropTarget.dispatchEvent(dropEvent);
+    });
+
+    expect(editor.querySelector('[data-mention-path="src/index.ts"]')).toBeTruthy();
+    expect(getSerializedTextFromEditor(editor).trim()).toBe("@file:src/index.ts");
+
+    const submitButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+    if (!submitButton) {
+      throw new Error("Send button not found");
+    }
+
+    await act(async () => {
+      submitButton.click();
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledWith({
+      content: "@file:src/index.ts",
+      mode: "default",
+      attachments: [],
+    });
+  });
+
+  it("drops explorer directories into the composer as directory mentions", () => {
+    renderComposer();
+
+    const editor = getEditor();
+    const dropTarget = getDragDropTarget();
+    const dragData = buildExplorerEntryDragData({ path: "src/utils", type: "directory" });
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    act(() => {
+      dropTarget.dispatchEvent(dropEvent);
+    });
+
+    expect(editor.querySelector('[data-mention-path="src/utils"]')).toBeTruthy();
+    expect(getSerializedTextFromEditor(editor).trim()).toBe("@dir:src/utils");
   });
 
   it("opens pasted text chip details from the composer before sending", async () => {

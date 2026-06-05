@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -330,6 +330,26 @@ describe("git utilities", () => {
       expect(result).toContain("Add new file");
       const status = await getGitStatus(repoDir);
       expect(status.entries.find(e => e.path === "new-file.txt")).toBeUndefined();
+    });
+
+    it("retries when a transient index lock is present", async () => {
+      await writeFile(join(repoDir, "locked-file.txt"), "content");
+      const lockPath = join(repoDir, ".git", "index.lock");
+      await writeFile(lockPath, "");
+
+      const releaseLock = setTimeout(() => {
+        void unlink(lockPath).catch(() => undefined);
+      }, 150);
+
+      try {
+        const result = await gitCommitAll(repoDir, "Add locked file");
+        expect(result).toContain("Add locked file");
+        const status = await getGitStatus(repoDir);
+        expect(status.entries.find(e => e.path === "locked-file.txt")).toBeUndefined();
+      } finally {
+        clearTimeout(releaseLock);
+        await unlink(lockPath).catch(() => undefined);
+      }
     });
   });
 

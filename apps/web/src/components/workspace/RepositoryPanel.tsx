@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { useQueries } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -41,7 +42,7 @@ import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBran
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
 import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
-import { isTauriDesktop } from "../../lib/openExternalUrl";
+import { isDesktopShell } from "../../lib/openExternalUrl";
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
 import { resolveWorkspaceShortcutPlatform } from "./keyboardShortcuts";
 import type {
@@ -94,6 +95,16 @@ type RepositoryPanelProps = {
 
 function sameIds(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function sameOptionalIds(a: string[] | null, b: string[] | null): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (!a || !b) {
+    return false;
+  }
+  return sameIds(a, b);
 }
 
 function reorderRepositoryIds(
@@ -156,6 +167,10 @@ function resolvePriorityThreadId(
 
 function hasNonIdleWorktreeStatus(status: WorktreeStatusSummary | undefined): boolean {
   return status != null && status.kind !== "idle";
+}
+
+function shouldShowWorktreeDiffSummary(review: ReviewRef | null): boolean {
+  return review?.state == null || review.state === "open";
 }
 
 const WORKTREE_STATUS_PRIORITY: WorktreeThreadUiStatus[] = [
@@ -508,8 +523,8 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   onDeleteWorktree,
   onRenameWorktreeBranch,
 }: RepositoryPanelProps) {
-  const enableNativeReorderPreview = !isTauriDesktop();
-  const enableDesktopPointerReorder = isTauriDesktop();
+  const enableNativeReorderPreview = !isDesktopShell();
+  const enableDesktopPointerReorder = isDesktopShell();
   const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(
     null,
   );
@@ -577,6 +592,21 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   useEffect(() => {
     previewVisibleRepositoryIdsRef.current = previewVisibleRepositoryIds;
   }, [previewVisibleRepositoryIds]);
+
+  function updatePreviewVisibleRepositoryIds(
+    resolveNext: (current: string[] | null) => string[] | null,
+  ) {
+    const current = previewVisibleRepositoryIdsRef.current;
+    const next = resolveNext(current);
+    if (sameOptionalIds(current, next)) {
+      return;
+    }
+
+    previewVisibleRepositoryIdsRef.current = next;
+    flushSync(() => {
+      setPreviewVisibleRepositoryIds(next);
+    });
+  }
 
   const metadataRepositoryWorktreeIndex = useMemo(
     () => buildRepositoryWorktreeIndex(metadataRepositories),
@@ -830,8 +860,8 @@ export const RepositoryPanel = memo(function RepositoryPanel({
       }
 
       setDraggedRepositoryId(repositoryId);
-      setPreviewVisibleRepositoryIds(
-        visibleRepositories.map((repository) => repository.id),
+      updatePreviewVisibleRepositoryIds((current) =>
+        current ?? visibleRepositoryIdsRef.current
       );
     }, 0);
   }
@@ -851,7 +881,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
       setDraggedRepositoryHeight(null);
     }
     setDraggedRepositoryId(dragState.repositoryId);
-    setPreviewVisibleRepositoryIds(visibleRepositoryIdsRef.current);
+    updatePreviewVisibleRepositoryIds(() => visibleRepositoryIdsRef.current);
   }
 
   function handleDesktopPointerReorderMove(clientX: number, clientY: number) {
@@ -885,7 +915,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     );
 
     if (!sameIds(currentOrder, nextOrder)) {
-      setPreviewVisibleRepositoryIds(nextOrder);
+      updatePreviewVisibleRepositoryIds(() => nextOrder);
     }
   }
 
@@ -921,10 +951,10 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     pendingDropTargetRef.current = { repositoryId, position };
 
     if (enableNativeReorderPreview) {
-      const currentOrder = previewVisibleRepositoryIds ?? visibleRepositoryIds;
+      const currentOrder = previewVisibleRepositoryIdsRef.current ?? visibleRepositoryIdsRef.current;
       const nextOrder = reorderRepositoryIds(currentOrder, sourceRepositoryId, repositoryId, position);
       if (!sameIds(currentOrder, nextOrder)) {
-        setPreviewVisibleRepositoryIds(nextOrder);
+        updatePreviewVisibleRepositoryIds(() => nextOrder);
       }
     }
 
@@ -1002,6 +1032,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     disposeDragResources();
     setDraggedRepositoryId(null);
     setDraggedRepositoryHeight(null);
+    previewVisibleRepositoryIdsRef.current = null;
     setPreviewVisibleRepositoryIds(null);
   }
 
@@ -1279,6 +1310,10 @@ export const RepositoryPanel = memo(function RepositoryPanel({
               reviewsByRepositoryId[repository.id] ?? {};
             const repositoryReviewKind =
               reviewKindsByRepositoryId[repository.id] ?? null;
+            const rootReview = rootWorkspace
+              ? repositoryReviews[rootWorkspace.branch] ?? null
+              : null;
+            const showRootDiffSummary = shouldShowWorktreeDiffSummary(rootReview);
 
             return (
               <article
@@ -1413,15 +1448,13 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                               status={displayWorktreeStatuses[rootWorkspace.id]?.kind}
                               shortcutLabel={rootShortcutLabel}
                               showShortcutHint={showWorktreeShortcutHints}
-                              review={
-                                repositoryReviews[rootWorkspace.branch] ?? null
-                              }
+                              review={rootReview}
                               reviewKind={repositoryReviewKind}
                               insertions={
-                                worktreeStats[rootWorkspace.id]?.insertions ?? 0
+                                showRootDiffSummary ? worktreeStats[rootWorkspace.id]?.insertions ?? 0 : 0
                               }
                               deletions={
-                                worktreeStats[rootWorkspace.id]?.deletions ?? 0
+                                showRootDiffSummary ? worktreeStats[rootWorkspace.id]?.deletions ?? 0 : 0
                               }
                               testId={`worktree-${rootWorkspace.id}`}
                             />
@@ -1442,6 +1475,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                           );
                           const review =
                             repositoryReviews[worktree.branch] ?? null;
+                          const showDiffSummary = shouldShowWorktreeDiffSummary(review);
                           const shortcutLabel = worktreeShortcutLabels.get(worktree.id);
 
                           return (
@@ -1528,6 +1562,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                     editingWorktreeId === worktree.id ? (
                                       <input
                                         type="text"
+                                        aria-label={`Rename branch ${worktree.branch}`}
                                         className="min-w-0 flex-1 rounded border border-input bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
                                         value={editingBranchValue}
                                         autoFocus
@@ -1590,8 +1625,8 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                   detailBadge={renderWorktreeLifecycleBadge(worktree)}
                                   review={review}
                                   reviewKind={repositoryReviewKind}
-                                  insertions={stats?.insertions ?? 0}
-                                  deletions={stats?.deletions ?? 0}
+                                  insertions={showDiffSummary ? stats?.insertions ?? 0 : 0}
+                                  deletions={showDiffSummary ? stats?.deletions ?? 0 : 0}
                                   testId={`worktree-${worktree.id}`}
                                   hideStatusOnHover={true}
                                 />

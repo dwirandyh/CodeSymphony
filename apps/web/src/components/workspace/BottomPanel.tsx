@@ -10,6 +10,7 @@ const MIN_HEIGHT = 120;
 const MAX_HEIGHT_RATIO = 0.6;
 const DEFAULT_HEIGHT = 250;
 const TERMINAL_SURFACE_CLASS = "bg-[#0f1218]";
+const FALLBACK_POINTER_ID = 1;
 
 const collapseIcon = (
     <svg
@@ -50,7 +51,7 @@ type BottomPanelContentProps = Omit<BottomPanelBodyProps, "activeTab" | "collaps
 type BottomPanelBodyProps = {
     collapsed: boolean;
     height: number;
-    panelRef: RefObject<HTMLDivElement | null>;
+    panelRef: RefObject<HTMLDivElement>;
     activeTab: string;
     setupOutputs: ScriptOutputEntry[];
     onRerunSetup?: () => void;
@@ -207,37 +208,70 @@ export const BottomPanel = memo(function BottomPanel({
     }, [isDragging]);
 
     const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-        if (!event.isPrimary || event.button !== 0) {
+        if (event.isPrimary === false || event.button !== 0) {
             return;
         }
 
+        const pointerId = event.pointerId ?? FALLBACK_POINTER_ID;
         event.preventDefault();
-        activePointerIdRef.current = event.pointerId;
+        activePointerIdRef.current = pointerId;
         startYRef.current = event.clientY;
         startHeightRef.current = height;
-        event.currentTarget.setPointerCapture(event.pointerId);
+        event.currentTarget.setPointerCapture(pointerId);
         setIsDragging(true);
     }, [height]);
 
     const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-        if (!isDragging || activePointerIdRef.current !== event.pointerId) {
+        const pointerId = event.pointerId ?? FALLBACK_POINTER_ID;
+        if (activePointerIdRef.current !== pointerId) {
             return;
         }
 
         event.preventDefault();
         updateHeightFromClientY(event.clientY);
-    }, [isDragging, updateHeightFromClientY]);
+    }, [updateHeightFromClientY]);
 
     const handlePointerRelease = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-        if (activePointerIdRef.current !== event.pointerId) {
+        const pointerId = event.pointerId ?? FALLBACK_POINTER_ID;
+        if (activePointerIdRef.current !== pointerId) {
             return;
         }
 
         activePointerIdRef.current = null;
         setIsDragging(false);
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            event.currentTarget.releasePointerCapture(event.pointerId);
+        if (event.currentTarget.hasPointerCapture(pointerId)) {
+            event.currentTarget.releasePointerCapture(pointerId);
         }
+    }, []);
+
+    const handleMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+        if (activePointerIdRef.current !== null || event.button !== 0) {
+            return;
+        }
+
+        event.preventDefault();
+        activePointerIdRef.current = FALLBACK_POINTER_ID;
+        startYRef.current = event.clientY;
+        startHeightRef.current = height;
+        setIsDragging(true);
+    }, [height]);
+
+    const handleMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+        if (activePointerIdRef.current !== FALLBACK_POINTER_ID) {
+            return;
+        }
+
+        event.preventDefault();
+        updateHeightFromClientY(event.clientY);
+    }, [updateHeightFromClientY]);
+
+    const handleMouseRelease = useCallback(() => {
+        if (activePointerIdRef.current !== FALLBACK_POINTER_ID) {
+            return;
+        }
+
+        activePointerIdRef.current = null;
+        setIsDragging(false);
     }, []);
 
     useEffect(() => {
@@ -312,6 +346,9 @@ export const BottomPanel = memo(function BottomPanel({
                     onPointerUp={handlePointerRelease}
                     onPointerCancel={handlePointerRelease}
                     onLostPointerCapture={handlePointerRelease}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseRelease}
                 >
                     <div
                         className={`h-[2px] w-10 rounded-full transition-colors ${isDragging

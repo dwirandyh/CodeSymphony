@@ -4,10 +4,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../../lib/api";
 import { debugLog } from "../../../lib/debugLog";
 import { queryKeys } from "../../../lib/queryKeys";
+import { isOptimisticThreadId } from "../../../lib/threadIds";
 import { measureStartupMetricSinceBoot } from "../../../lib/startupPerf";
 import { startWorkspaceStartupBootstrap } from "../../../lib/workspaceStartupBootstrap";
 import { subscribeToWorkspaceSyncSocket } from "../../../lib/workspaceLiveSocket";
-import { refetchRepositoriesCollection } from "../../../collections/repositories";
+import { refetchRepositoriesCollection, refreshRepositoriesCollectionFromServer } from "../../../collections/repositories";
 import {
   disposeThreadCollections,
   getThreadCollectionCounts,
@@ -38,6 +39,10 @@ function shouldRefreshKnownThreadCaches(
   queryClient: ReturnType<typeof useQueryClient>,
   threadId: string,
 ) {
+  if (isOptimisticThreadId(threadId)) {
+    return false;
+  }
+
   return getThreadCollectionCounts(threadId) != null
     || queryClient.getQueryData(queryKeys.threads.timelineSnapshot(threadId)) !== undefined
     || queryClient.getQueryData(queryKeys.threads.statusSnapshot(threadId)) !== undefined;
@@ -147,7 +152,9 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
   }
 
   if (event.type === "repository.created" || event.type === "repository.updated" || event.type === "repository.deleted") {
-    void refetchRepositoriesCollection(queryClient);
+    void refreshRepositoriesCollectionFromServer(queryClient).catch(() => {
+      void refetchRepositoriesCollection(queryClient);
+    });
   }
 
   if (
@@ -157,7 +164,9 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
     || event.type === "worktree.deletion_failed"
     || event.type === "worktree.deleted"
   ) {
-    void refetchRepositoriesCollection(queryClient);
+    void refreshRepositoriesCollectionFromServer(queryClient).catch(() => {
+      void refetchRepositoriesCollection(queryClient);
+    });
   }
 
   if (event.worktreeId && (event.type === "thread.created" || event.type === "thread.updated")) {
@@ -171,8 +180,11 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
       || event.type === "worktree.files.updated"
     )
   ) {
-    if (event.type === "worktree.git.updated") {
+    if (event.type === "worktree.files.updated") {
       void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitDiffScope(event.worktreeId) });
+    }
+
+    if (event.type === "worktree.git.updated") {
       void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitBranchDiffSummary(event.worktreeId, "__all__"), exact: false });
     }
   }

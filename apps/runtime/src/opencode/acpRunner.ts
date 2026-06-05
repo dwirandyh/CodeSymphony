@@ -524,6 +524,10 @@ function normalizePermissionDecision(params: {
   };
 }
 
+function requestSupportsAlwaysAllow(request: RequestPermissionRequest): boolean {
+  return request.options.some((option) => option.kind === "allow_always");
+}
+
 function spawnOpencodeProcess(cwd: string): {
   child: ChildProcessWithoutNullStreams;
   stderrChunks: string[];
@@ -917,6 +921,7 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
             blockedPath,
             decisionReason: null,
             suggestions: null,
+            canAlwaysAllow: requestSupportsAlwaysAllow(request),
             subagentOwnerToolUseId: null,
             launcherToolUseId: null,
           });

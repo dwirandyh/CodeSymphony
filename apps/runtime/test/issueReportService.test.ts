@@ -138,6 +138,32 @@ describe("issueReportService", () => {
     expect(debugLog).not.toContain("thread-2");
   });
 
+  it("keeps priority diagnosis entries even when noisy tail entries fill the report", async () => {
+    appendRuntimeDebugLog({
+      source: "diagnose.selection",
+      message: "[DEBUG-worktree-glitch] transient-null-url-update.suppressed",
+      data: { repositoryId: "repo-1", worktreeId: "worktree-1" },
+    });
+
+    for (let i = 0; i < 1_050; i += 1) {
+      appendRuntimeDebugLog({
+        source: "thread.workspace.event",
+        message: "worktree.git.updated",
+        data: { repositoryId: "repo-1", worktreeId: "worktree-1", seq: i },
+      });
+    }
+
+    const service = createIssueReportService({ prisma: createPrismaMock() });
+    const report = await service.createIssueReport({
+      description: "Selection oscillated",
+      repositoryId: "repo-1",
+      worktreeId: "worktree-1",
+    });
+
+    const debugLog = await readFile(report.debugLogPath, "utf-8");
+    expect(debugLog).toContain("transient-null-url-update.suppressed");
+  });
+
   it("redacts nested secrets and env-like values", () => {
     expect(redactDiagnosticValue({
       nested: {

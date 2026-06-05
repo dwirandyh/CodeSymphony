@@ -27,6 +27,8 @@ const HOME_PATH_PATTERN = new RegExp(escapeRegExp(os.homedir()), "g");
 const MAX_STRING_LENGTH = 2_000;
 const MAX_ARRAY_LENGTH = 400;
 const MAX_OBJECT_KEYS = 80;
+const MAX_ISSUE_DEBUG_TAIL_ENTRIES = 1_000;
+const MAX_ISSUE_PRIORITY_DEBUG_ENTRIES = 1_000;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -132,6 +134,43 @@ function isTerminalRawPayload(entry: DebugLogEntry): boolean {
   return entry.source === "terminal.input" || /(?:onData|beforeinput|input|output|chunk)/i.test(entry.message);
 }
 
+function isIssueReportPriorityDebugEntry(entry: DebugLogEntry): boolean {
+  if (entry.source.startsWith("diagnose.")) {
+    return true;
+  }
+
+  if (entry.message.startsWith("[DEBUG-")) {
+    return true;
+  }
+
+  if (entry.source.startsWith("thread.stream.") || entry.source.startsWith("thread.timeline.")) {
+    return true;
+  }
+
+  return entry.source === "runtime.chats"
+    || entry.source === "thread.bootstrap"
+    || entry.source === "thread.selection"
+    || entry.source === "workspace.header.tabs"
+    || entry.source === "workspace.selection.oscillation"
+    || entry.source === "workspace.selection.navigation"
+    || entry.source === "workspace.selection.repository"
+    || entry.source === "workspace.tabShell";
+}
+
+function selectIssueReportDebugEntries(entries: DebugLogEntry[]): DebugLogEntry[] {
+  const priorityEntries = entries
+    .filter((entry) => isIssueReportPriorityDebugEntry(entry))
+    .slice(-MAX_ISSUE_PRIORITY_DEBUG_ENTRIES);
+  const tailEntries = entries.slice(-MAX_ISSUE_DEBUG_TAIL_ENTRIES);
+  const bySeq = new Map<number, DebugLogEntry>();
+
+  for (const entry of [...priorityEntries, ...tailEntries]) {
+    bySeq.set(entry.seq, entry);
+  }
+
+  return Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
+}
+
 function matchesContext(entry: DebugLogEntry, input: {
   repositoryId: string | null;
   worktreeId: string | null;
@@ -162,10 +201,11 @@ function redactDebugEntries(entries: DebugLogEntry[], input: {
   worktreeId: string | null;
   threadId: string | null;
 }): DebugLogEntry[] {
-  return entries
+  const matchingEntries = entries
     .filter((entry) => !isTerminalRawPayload(entry))
-    .filter((entry) => matchesContext(entry, input))
-    .slice(-1_000)
+    .filter((entry) => matchesContext(entry, input));
+
+  return selectIssueReportDebugEntries(matchingEntries)
     .map((entry) => ({
       ...entry,
       source: redactString(entry.source),

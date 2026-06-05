@@ -1,13 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isTauriDesktop, openExternalUrl, shouldOpenInExternalApp } from "./openExternalUrl";
+import { isElectronDesktop, openExternalUrl, shouldOpenInExternalApp } from "./openExternalUrl";
 
-const { openUrlMock, logMock } = vi.hoisted(() => ({
-  openUrlMock: vi.fn(),
+const { electronOpenExternalMock, logMock } = vi.hoisted(() => ({
+  electronOpenExternalMock: vi.fn(),
   logMock: vi.fn(),
-}));
-
-vi.mock("@tauri-apps/plugin-opener", () => ({
-  openUrl: openUrlMock,
 }));
 
 vi.mock("./logService", () => ({
@@ -17,35 +13,61 @@ vi.mock("./logService", () => ({
 }));
 
 describe("openExternalUrl", () => {
-  const originalTauriInternals = (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  type DesktopTestWindow = Window & {
+    __CS_ELECTRON?: boolean;
+    __CS_ELECTRON__?: boolean;
+    __CS_ELECTRON_BRIDGE__?: {
+      openExternalUrl: (href: string) => Promise<void>;
+    };
+  };
+  const originalLegacyElectron = (window as DesktopTestWindow).__CS_ELECTRON;
+  const originalElectron = (window as DesktopTestWindow).__CS_ELECTRON__;
+  const originalElectronBridge = (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
 
   beforeEach(() => {
-    openUrlMock.mockReset();
+    electronOpenExternalMock.mockReset();
     logMock.mockReset();
     vi.spyOn(window, "open").mockImplementation(() => null);
-    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON;
+    delete (window as DesktopTestWindow).__CS_ELECTRON__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
     window.history.replaceState({}, "", "/workspace");
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    if (typeof originalTauriInternals === "undefined") {
-      delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    if (typeof originalLegacyElectron === "undefined") {
+      delete (window as DesktopTestWindow).__CS_ELECTRON;
     } else {
-      (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = originalTauriInternals;
+      (window as DesktopTestWindow).__CS_ELECTRON = originalLegacyElectron;
+    }
+    if (typeof originalElectron === "undefined") {
+      delete (window as DesktopTestWindow).__CS_ELECTRON__;
+    } else {
+      (window as DesktopTestWindow).__CS_ELECTRON__ = originalElectron;
+    }
+    if (typeof originalElectronBridge === "undefined") {
+      delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
+    } else {
+      (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__ = originalElectronBridge;
     }
   });
 
-  it("detects tauri desktop when internals are injected", () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-    expect(isTauriDesktop()).toBe(true);
+  it("detects electron desktop when bridge globals are injected", () => {
+    (window as DesktopTestWindow).__CS_ELECTRON__ = true;
+    expect(isElectronDesktop()).toBe(true);
   });
 
-  it("opens links via browser tabs outside tauri", async () => {
+  it("detects electron desktop from the legacy preload flag", () => {
+    (window as DesktopTestWindow).__CS_ELECTRON = true;
+    expect(isElectronDesktop()).toBe(true);
+  });
+
+  it("opens links via browser tabs outside desktop", async () => {
     await openExternalUrl("https://example.com");
 
     expect(window.open).toHaveBeenCalledWith("https://example.com", "_blank", "noopener,noreferrer");
-    expect(openUrlMock).not.toHaveBeenCalled();
+    expect(electronOpenExternalMock).not.toHaveBeenCalled();
     expect(logMock).toHaveBeenCalledWith("info", "external-link", "Opening external URL", {
       href: "https://example.com",
       environment: "browser",
@@ -56,32 +78,38 @@ describe("openExternalUrl", () => {
     });
   });
 
-  it("opens links via tauri opener inside desktop", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  it("opens links via electron bridge inside desktop", async () => {
+    (window as DesktopTestWindow).__CS_ELECTRON__ = true;
+    (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__ = {
+      openExternalUrl: electronOpenExternalMock,
+    };
 
     await openExternalUrl("https://example.com");
 
-    expect(openUrlMock).toHaveBeenCalledWith("https://example.com");
+    expect(electronOpenExternalMock).toHaveBeenCalledWith("https://example.com");
     expect(window.open).not.toHaveBeenCalled();
     expect(logMock).toHaveBeenCalledWith("info", "external-link", "Opening external URL", {
       href: "https://example.com",
-      environment: "tauri",
+      environment: "electron",
     });
     expect(logMock).toHaveBeenCalledWith("info", "external-link", "Opened external URL", {
       href: "https://example.com",
-      environment: "tauri",
+      environment: "electron",
     });
   });
 
   it("logs opener failures and rethrows", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
-    openUrlMock.mockRejectedValueOnce(new Error("open failed"));
+    (window as DesktopTestWindow).__CS_ELECTRON__ = true;
+    (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__ = {
+      openExternalUrl: electronOpenExternalMock,
+    };
+    electronOpenExternalMock.mockRejectedValueOnce(new Error("open failed"));
 
     await expect(openExternalUrl("https://example.com")).rejects.toThrow("open failed");
 
     expect(logMock).toHaveBeenCalledWith("error", "external-link", "Failed to open external URL", {
       href: "https://example.com",
-      environment: "tauri",
+      environment: "electron",
       error: "open failed",
     });
   });
@@ -91,7 +119,7 @@ describe("shouldOpenInExternalApp", () => {
   it("opens external http urls outside the current origin", () => {
     window.history.replaceState({}, "", "/workspace");
 
-    expect(shouldOpenInExternalApp("https://github.com/tauri-apps/tauri")).toBe(true);
+    expect(shouldOpenInExternalApp("https://github.com/electron/electron")).toBe(true);
   });
 
   it("keeps same-origin app links internal", () => {

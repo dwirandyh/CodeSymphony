@@ -76,7 +76,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
     sidebarDragging: rightDragging,
     handleSidebarMouseDown: handleRightPanelMouseDown,
     panelRef: rightPanelRef,
-  } = useSidebarResize(320, true);
+  } = useSidebarResize(320, true, { maxWidth: null });
 
   return (
     <>

@@ -1082,6 +1082,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
                   ...asArray(params?.proposedNetworkPolicyAmendments),
                 ]
                 : null,
+              canAlwaysAllow: true,
               subagentOwnerToolUseId: ownership.subagentOwnerToolUseId ?? null,
               launcherToolUseId: ownership.launcherToolUseId ?? null,
               ownershipReason: ownership.ownershipReason,

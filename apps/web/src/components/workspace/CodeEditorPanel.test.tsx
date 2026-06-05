@@ -262,6 +262,25 @@ describe("CodeEditorPanel", () => {
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.title === "Next change")).toBe(false);
   });
 
+  it("shows external file state without git controls", () => {
+    renderEditor({
+      filePath: "/Users/dwirandyh/.codex/skills/laravel-api-verification/SKILL.md",
+      externalFile: true,
+      desktopApp: true,
+      gitBranch: "main",
+      gitHeadContent: "# Old\n",
+      gitBaselineReady: true,
+      gitStatus: "modified",
+      content: "# New\n",
+    });
+
+    expect(container.textContent).toContain("External file");
+    expect(container.textContent).not.toContain("main");
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Compare")).toBe(false);
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.title === "Previous change")).toBe(false);
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.title === "Next change")).toBe(false);
+  });
+
   it("shows git changes only in the gutter without full-line git highlight classes", () => {
     renderEditor({
       content: "const value = 2;\n",

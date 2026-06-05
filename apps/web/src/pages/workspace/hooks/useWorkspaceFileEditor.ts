@@ -5,7 +5,7 @@ import type { WorkspaceFileTab } from "../../../components/workspace/WorkspaceHe
 import { buildQuickFileItems, filterQuickFileItems } from "../../../components/workspace/quickFilePickerUtils";
 import { markWorktreeGitStatusChanged } from "../../../hooks/queries/useGitStatus";
 import { api } from "../../../lib/api";
-import { parseFileLocation, resolveWorktreeRelativePath } from "../../../lib/worktree";
+import { isAbsoluteFsPath, parseFileLocation, resolveWorktreeRelativePath, toWorktreeRelativePath } from "../../../lib/worktree";
 import type { WorkspaceSearch } from "../../../routes/index";
 
 type EditorFileState = {
@@ -109,6 +109,18 @@ function createInitialEditorGitBaselineState(): EditorGitBaselineState {
   };
 }
 
+function isExternalFileReference(filePath: string | null, worktreePath: string | null): boolean {
+  if (!filePath || !isAbsoluteFsPath(filePath)) {
+    return false;
+  }
+
+  if (!worktreePath) {
+    return true;
+  }
+
+  return toWorktreeRelativePath(worktreePath, filePath) === null;
+}
+
 interface UseWorkspaceFileEditorOptions {
   activeFilePath: string | null;
   activeGitBaselineVersionKey: string;
@@ -204,6 +216,7 @@ export function useWorkspaceFileEditor({
     return null;
   }, [activeFilePath, activeView, activeWorktreeEditorStates, selectedWorktreeId]);
   const activeEditorGitBaselineState = activeFilePath ? activeWorktreeGitBaselines[activeFilePath] ?? null : null;
+  const activeFileExternal = isExternalFileReference(activeFilePath, selectedWorktreePath);
   const recentFilePaths = selectedWorktreeId ? recentFilePathsByWorktreeId[selectedWorktreeId] ?? [] : [];
   const activeFileDirty = !!(
     activeEditorFileState
@@ -417,6 +430,17 @@ export function useWorkspaceFileEditor({
 
   const normalizeOpenFileTarget = useCallback((filePath: string) => {
     const location = parseFileLocation(filePath);
+    if (isAbsoluteFsPath(location.path)) {
+      const directRelativePath = selectedWorktreePath
+        ? toWorktreeRelativePath(selectedWorktreePath, location.path)
+        : null;
+      return {
+        path: directRelativePath && directRelativePath.length > 0 ? directRelativePath : location.path,
+        line: location.line,
+        column: location.column,
+      };
+    }
+
     const relativePath = selectedWorktreePath
       ? resolveWorktreeRelativePath(
         selectedWorktreePath,
@@ -600,13 +624,14 @@ export function useWorkspaceFileEditor({
   }, [activeFilePath, activeView, loadEditorFile, selectedWorktreeId]);
 
   useEffect(() => {
-    if (!selectedWorktreeId || activeView !== "file" || !activeFilePath) {
+    if (!selectedWorktreeId || activeView !== "file" || !activeFilePath || activeFileExternal) {
       return;
     }
 
     return loadEditorGitBaseline(selectedWorktreeId, activeFilePath, activeGitBaselineVersionKey);
   }, [
     activeFilePath,
+    activeFileExternal,
     activeGitBaselineVersionKey,
     activeView,
     loadEditorGitBaseline,
@@ -955,11 +980,13 @@ export function useWorkspaceFileEditor({
         loaded: true,
         error: null,
       }));
-      markWorktreeGitStatusChanged(queryClient, selectedWorktreeId, {
-        cause: "file_saved",
-        invalidateBranchDiffSummary: true,
-      });
-      scheduleSaveAutomation(selectedWorktreeId, activeFilePath, selectedWorktreePath);
+      if (!activeFileExternal) {
+        markWorktreeGitStatusChanged(queryClient, selectedWorktreeId, {
+          cause: "file_saved",
+          invalidateBranchDiffSummary: true,
+        });
+        scheduleSaveAutomation(selectedWorktreeId, activeFilePath, selectedWorktreePath);
+      }
       onError(null);
     } catch (error) {
       updateEditorFileState(selectedWorktreeId, activeFilePath, (current) => ({
@@ -968,7 +995,7 @@ export function useWorkspaceFileEditor({
         error: error instanceof Error ? error.message : "Unable to save file",
       }));
     }
-  }, [activeFilePath, getEditorFileState, onError, queryClient, scheduleSaveAutomation, selectedWorktreeId, selectedWorktreePath, updateEditorFileState]);
+  }, [activeFileExternal, activeFilePath, getEditorFileState, onError, queryClient, scheduleSaveAutomation, selectedWorktreeId, selectedWorktreePath, updateEditorFileState]);
 
   useEffect(() => {
     if (activeView !== "file" || !activeFilePath) {
@@ -1006,6 +1033,7 @@ export function useWorkspaceFileEditor({
   return {
     activeEditorFileState,
     activeEditorGitBaselineState,
+    activeFileExternal,
     activeFileDirty,
     canDiscardDirtyWorktreeFiles,
     canSaveActiveFile,

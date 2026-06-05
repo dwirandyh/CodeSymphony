@@ -3,58 +3,33 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MacDesktopTitleBar } from "./MacDesktopTitleBar";
 
-const tauriWindowMocks = vi.hoisted(() => ({
+type DesktopTestWindow = Window & {
+  __CS_ELECTRON__?: boolean;
+  __CS_ELECTRON_BRIDGE__?: {
+    startDragging: () => Promise<void>;
+    toggleMaximize: () => Promise<boolean>;
+    isFullscreen: () => Promise<boolean>;
+    onWindowStateChanged: (handler: (state: { fullscreen?: boolean; maximized?: boolean }) => void) => () => void;
+  };
+};
+
+const electronWindowMocks = vi.hoisted(() => ({
   startDragging: vi.fn(async () => undefined),
-  toggleMaximize: vi.fn(async () => undefined),
+  toggleMaximize: vi.fn(async () => false),
   isFullscreen: vi.fn(async () => false),
-  resizedHandlers: new Set<() => void>(),
-  movedHandlers: new Set<() => void>(),
-  scaleChangedHandlers: new Set<() => void>(),
-  focusChangedHandlers: new Set<(event: { payload: boolean }) => void>(),
-  onResized: vi.fn(async (handler: () => void) => {
-    tauriWindowMocks.resizedHandlers.add(handler);
-    return () => tauriWindowMocks.resizedHandlers.delete(handler);
+  windowStateHandlers: new Set<(state: { fullscreen?: boolean; maximized?: boolean }) => void>(),
+  onWindowStateChanged: vi.fn((handler: (state: { fullscreen?: boolean; maximized?: boolean }) => void) => {
+    electronWindowMocks.windowStateHandlers.add(handler);
+    return () => electronWindowMocks.windowStateHandlers.delete(handler);
   }),
-  onMoved: vi.fn(async (handler: () => void) => {
-    tauriWindowMocks.movedHandlers.add(handler);
-    return () => tauriWindowMocks.movedHandlers.delete(handler);
-  }),
-  onScaleChanged: vi.fn(async (handler: () => void) => {
-    tauriWindowMocks.scaleChangedHandlers.add(handler);
-    return () => tauriWindowMocks.scaleChangedHandlers.delete(handler);
-  }),
-  onFocusChanged: vi.fn(async (handler: (event: { payload: boolean }) => void) => {
-    tauriWindowMocks.focusChangedHandlers.add(handler);
-    return () => tauriWindowMocks.focusChangedHandlers.delete(handler);
-  }),
-  emitResized: () => {
-    for (const handler of tauriWindowMocks.resizedHandlers) {
-      handler();
-    }
-  },
-  emitFocusChanged: (focused: boolean) => {
-    for (const handler of tauriWindowMocks.focusChangedHandlers) {
-      handler({ payload: focused });
+  emitWindowStateChanged: (state: { fullscreen?: boolean; maximized?: boolean }) => {
+    for (const handler of electronWindowMocks.windowStateHandlers) {
+      handler(state);
     }
   },
   resetWindowEventHandlers: () => {
-    tauriWindowMocks.resizedHandlers.clear();
-    tauriWindowMocks.movedHandlers.clear();
-    tauriWindowMocks.scaleChangedHandlers.clear();
-    tauriWindowMocks.focusChangedHandlers.clear();
+    electronWindowMocks.windowStateHandlers.clear();
   },
-}));
-
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({
-    startDragging: tauriWindowMocks.startDragging,
-    toggleMaximize: tauriWindowMocks.toggleMaximize,
-    isFullscreen: tauriWindowMocks.isFullscreen,
-    onResized: tauriWindowMocks.onResized,
-    onMoved: tauriWindowMocks.onMoved,
-    onScaleChanged: tauriWindowMocks.onScaleChanged,
-    onFocusChanged: tauriWindowMocks.onFocusChanged,
-  }),
 }));
 
 vi.mock("../../lib/debugLog", () => ({
@@ -67,22 +42,22 @@ describe("MacDesktopTitleBar", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    tauriWindowMocks.startDragging.mockClear();
-    tauriWindowMocks.toggleMaximize.mockClear();
-    tauriWindowMocks.isFullscreen.mockReset();
-    tauriWindowMocks.isFullscreen.mockResolvedValue(false);
-    tauriWindowMocks.onResized.mockClear();
-    tauriWindowMocks.onMoved.mockClear();
-    tauriWindowMocks.onScaleChanged.mockClear();
-    tauriWindowMocks.onFocusChanged.mockClear();
-    tauriWindowMocks.resetWindowEventHandlers();
+    electronWindowMocks.startDragging.mockClear();
+    electronWindowMocks.toggleMaximize.mockClear();
+    electronWindowMocks.isFullscreen.mockReset();
+    electronWindowMocks.isFullscreen.mockResolvedValue(false);
+    electronWindowMocks.onWindowStateChanged.mockClear();
+    electronWindowMocks.resetWindowEventHandlers();
+    delete (window as DesktopTestWindow).__CS_ELECTRON__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
   afterEach(() => {
-    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON__;
+    delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
     act(() => {
       root.unmount();
     });
@@ -107,6 +82,16 @@ describe("MacDesktopTitleBar", () => {
     });
 
     return props;
+  }
+
+  function installElectronBridge() {
+    (window as DesktopTestWindow).__CS_ELECTRON__ = true;
+    (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__ = {
+      startDragging: electronWindowMocks.startDragging,
+      toggleMaximize: electronWindowMocks.toggleMaximize,
+      isFullscreen: electronWindowMocks.isFullscreen,
+      onWindowStateChanged: electronWindowMocks.onWindowStateChanged,
+    };
   }
 
   async function flushWindowStateSync() {
@@ -136,8 +121,8 @@ describe("MacDesktopTitleBar", () => {
     expect(dragSurface.className).not.toContain("hidden lg:block");
   });
 
-  it("requests Tauri window dragging for non-interactive titlebar clicks", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  it("requests Electron window dragging for non-interactive titlebar clicks", async () => {
+    installElectronBridge();
     renderTitleBar();
     await flushWindowStateSync();
 
@@ -150,12 +135,12 @@ describe("MacDesktopTitleBar", () => {
       dragSurface.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, detail: 1 }));
     });
 
-    expect(tauriWindowMocks.startDragging).toHaveBeenCalledTimes(1);
-    expect(tauriWindowMocks.toggleMaximize).not.toHaveBeenCalled();
+    expect(electronWindowMocks.startDragging).toHaveBeenCalledTimes(1);
+    expect(electronWindowMocks.toggleMaximize).not.toHaveBeenCalled();
   });
 
-  it("requests Tauri zoom toggle for titlebar double clicks", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+  it("requests Electron zoom toggle for titlebar double clicks", async () => {
+    installElectronBridge();
     renderTitleBar();
     await flushWindowStateSync();
 
@@ -168,7 +153,7 @@ describe("MacDesktopTitleBar", () => {
       dragSurface.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, button: 0, detail: 2 }));
     });
 
-    expect(tauriWindowMocks.toggleMaximize).toHaveBeenCalledTimes(1);
+    expect(electronWindowMocks.toggleMaximize).toHaveBeenCalledTimes(1);
   });
 
   it("routes the left panel toggle", () => {
@@ -258,7 +243,7 @@ describe("MacDesktopTitleBar", () => {
   });
 
   it("shifts titlebar controls to the left edge in fullscreen and restores them after exit", async () => {
-    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    installElectronBridge();
     renderTitleBar();
     await flushWindowStateSync();
 
@@ -271,16 +256,16 @@ describe("MacDesktopTitleBar", () => {
     expect(dragSurface.dataset.titlebarLayout).toBe("windowed");
     expect(controls.className).toContain("pl-[82px]");
 
-    tauriWindowMocks.isFullscreen.mockResolvedValue(true);
-    tauriWindowMocks.emitResized();
+    electronWindowMocks.isFullscreen.mockResolvedValue(true);
+    electronWindowMocks.emitWindowStateChanged({ fullscreen: true });
     await flushWindowStateSync();
 
     expect(dragSurface.dataset.titlebarLayout).toBe("fullscreen");
     expect(controls.className).toContain("pl-3");
     expect(controls.className).not.toContain("pl-[82px]");
 
-    tauriWindowMocks.isFullscreen.mockResolvedValue(false);
-    tauriWindowMocks.emitFocusChanged(true);
+    electronWindowMocks.isFullscreen.mockResolvedValue(false);
+    electronWindowMocks.emitWindowStateChanged({ fullscreen: false });
     await flushWindowStateSync();
 
     expect(dragSurface.dataset.titlebarLayout).toBe("windowed");

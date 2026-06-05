@@ -727,12 +727,6 @@ describe("useChatSession", () => {
     });
 
     expect(hookResult.threads.find((thread) => thread.id === "thread-a")?.active).toBe(true);
-    expect(queryClient.getQueryData(queryKeys.threads.list("wt-1"))).toEqual([
-      expect.objectContaining({
-        id: "thread-a",
-        active: true,
-      }),
-    ]);
     expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot("thread-a"))).toEqual({
       status: "running",
       newestIdx: null,
@@ -1467,6 +1461,26 @@ describe("useChatSession", () => {
     expect(onThreadChange).toHaveBeenLastCalledWith(null);
   });
 
+  it("renders no-thread-selected when a desired startup thread is missing and the thread query is idle without data", async () => {
+    const onThreadChange = vi.fn();
+    threadsState.data = undefined;
+    threadsState.isLoading = false;
+    threadsState.isFetching = false;
+
+    renderHook("missing-thread", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+      onThreadChange,
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
+    expect(onThreadChange).toHaveBeenLastCalledWith(null);
+  });
+
   it("reselects desiredThreadId when it appears after an initial fallback", () => {
     threadsState.data = [makeThread("thread-b", true)];
     renderHook("thread-a");
@@ -1564,7 +1578,7 @@ describe("useChatSession", () => {
     expect(onThreadChange).toHaveBeenCalledWith("thread-target");
   });
 
-  it("keeps the requested thread in navigation while an empty cached list is still refetching", () => {
+  it("settles an empty fetched thread list even while a background refetch is active", () => {
     const onThreadChange = vi.fn();
     threadsState.data = [];
     threadsState.isLoading = false;
@@ -1577,8 +1591,10 @@ describe("useChatSession", () => {
     });
 
     expect(hookResult.selectedThreadId).toBe(null);
-    expect(hookResult.messageListEmptyState).toBe("loading-thread");
-    expect(onThreadChange).not.toHaveBeenCalled();
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
+    expect(onThreadChange).toHaveBeenCalledWith(null);
+
+    onThreadChange.mockClear();
 
     threadsState.data = [{ ...makeThread("thread-target"), worktreeId: "wt-2" }];
     threadsState.isFetching = false;
@@ -1680,6 +1696,32 @@ describe("useChatSession", () => {
     expect(hookResult.messageListEmptyState).not.toBe("no-thread-selected");
   });
 
+  it("keeps current visible threads when a post-run refresh resolves empty", () => {
+    const onThreadChange = vi.fn();
+    threadsState.data = [makeThread("thread-a", false), makeThread("thread-b")];
+    threadsState.isLoading = false;
+    threadsState.isFetching = false;
+
+    renderHook("thread-a", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+      onThreadChange,
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-b"]);
+
+    threadsState.data = [];
+    threadsState.isFetching = false;
+    renderHook("thread-a", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+      onThreadChange,
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-b"]);
+    expect(hookResult.messageListEmptyState).not.toBe("no-thread-selected");
+  });
+
   it("reuses an existing titled thread instead of creating a duplicate", async () => {
     threadsState.data = [
       {
@@ -1738,6 +1780,111 @@ describe("useChatSession", () => {
       model: "claude-sonnet-4-6",
       modelProviderId: null,
     });
+  });
+
+  it("deduplicates concurrent default thread creation", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    const createDeferredThread = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(createDeferredThread.promise);
+
+    renderHook("thread-a");
+
+    let firstCreatePromise: Promise<ChatThread | null> | undefined;
+    let secondCreatePromise: Promise<ChatThread | null> | undefined;
+    await act(async () => {
+      firstCreatePromise = hookResult.createAdditionalThread();
+      secondCreatePromise = hookResult.createAdditionalThread();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(hookResult.threads.filter((thread) => thread.id.startsWith("optimistic-thread:"))).toHaveLength(1);
+    if (!firstCreatePromise || !secondCreatePromise) {
+      throw new Error("Expected concurrent create promises to be captured");
+    }
+    const firstCreate = firstCreatePromise;
+    const secondCreate = secondCreatePromise;
+
+    let createdThreads: [ChatThread | null, ChatThread | null] | undefined;
+    await act(async () => {
+      createDeferredThread.resolve({
+        ...makeThread("thread-new"),
+        title: "New Thread",
+      });
+      createdThreads = await Promise.all([firstCreate, secondCreate]);
+    });
+
+    expect(createdThreads).toEqual([
+      expect.objectContaining({ id: "thread-new" }),
+      expect.objectContaining({ id: "thread-new" }),
+    ]);
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.threads.map((thread) => thread.id)).not.toContain(expect.stringMatching(/^optimistic-thread:/));
+    expect(
+      (queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1")) ?? [])
+        .map((thread) => thread.id),
+    ).not.toContain(expect.stringMatching(/^optimistic-thread:/));
+  });
+
+  it("does not leave an optimistic tab when the thread query echoes the optimistic shell before creation resolves", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    const createDeferredThread = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(createDeferredThread.promise);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      void hookResult.createAdditionalThread();
+      await Promise.resolve();
+    });
+
+    const optimisticThreadId = hookResult.selectedThreadId;
+    expect(optimisticThreadId).toMatch(/^optimistic-thread:/);
+    if (!optimisticThreadId) {
+      throw new Error("Expected optimistic thread selection");
+    }
+
+    threadsState.data = [...hookResult.threads];
+    renderHook(optimisticThreadId);
+
+    await act(async () => {
+      createDeferredThread.resolve({
+        ...makeThread("thread-new"),
+        title: "New Thread",
+      });
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-new"]);
+    expect(
+      (queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1")) ?? [])
+        .map((thread) => thread.id),
+    ).toEqual(["thread-new"]);
+  });
+
+  it("does not bootstrap remote data for optimistic thread ids", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    const createDeferredThread = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(createDeferredThread.promise);
+
+    renderHook("thread-a");
+    vi.mocked(useThreadSnapshot).mockClear();
+    vi.mocked(useThreadStatusSnapshot).mockClear();
+    vi.mocked(useThreadEventStream).mockClear();
+    vi.mocked(api.listQueuedMessages).mockClear();
+
+    await act(async () => {
+      void hookResult.createAdditionalThread();
+      await Promise.resolve();
+    });
+
+    const optimisticThreadId = hookResult.selectedThreadId;
+    expect(optimisticThreadId).toMatch(/^optimistic-thread:/);
+    expect(vi.mocked(useThreadSnapshot).mock.calls.map(([threadId]) => threadId)).not.toContain(optimisticThreadId);
+    expect(vi.mocked(useThreadStatusSnapshot).mock.calls.map(([threadId]) => threadId)).not.toContain(optimisticThreadId);
+    expect(vi.mocked(useThreadEventStream).mock.calls.map(([params]) => params.selectedThreadId)).not.toContain(optimisticThreadId);
+    expect(api.listQueuedMessages).not.toHaveBeenCalledWith(optimisticThreadId);
   });
 
   it("keeps a newly created thread selected while the query list is still stale", async () => {
@@ -2029,6 +2176,7 @@ describe("useChatSession", () => {
 
   it("marks a requested thread as loading while selection bootstrap is unresolved", () => {
     threadsState.data = undefined;
+    threadsState.isLoading = true;
 
     renderHook("thread-a");
 

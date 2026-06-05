@@ -2,7 +2,6 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { ChatThread } from "@codesymphony/shared-types";
 import {
   CalendarCog,
-  Bug,
   ChevronDown,
   ChevronRight,
   Dot,
@@ -81,7 +80,6 @@ type WorkspaceHeaderProps = {
   onCloseReviewTab?: () => void;
   runScriptRunning?: boolean;
   onToggleRunScript?: () => void;
-  onOpenIssueReport?: () => void;
   leftPanelVisible?: boolean;
   onToggleLeftPanel?: () => void;
   mergeWithContent?: boolean;
@@ -161,7 +159,6 @@ export function WorkspaceHeader({
   onCloseReviewTab,
   runScriptRunning,
   onToggleRunScript,
-  onOpenIssueReport,
   leftPanelVisible = true,
   onToggleLeftPanel,
   resourceMonitor,
@@ -186,7 +183,7 @@ export function WorkspaceHeader({
       ? `Current branch: ${selectedWorktreeBranch}`
       : "Worktree";
   const targetBranchLabel = targetBranch ? `origin/${targetBranch}` : "Select target branch";
-  const canChooseTargetBranch = !!onSelectTargetBranch && (targetBranchOptions.length > 0 || targetBranchLoading);
+  const canChooseTargetBranch = !!onSelectTargetBranch;
   const normalizedTargetBranchFilter = targetBranchFilter.trim().toLowerCase();
   const filteredTargetBranchOptions = normalizedTargetBranchFilter
     ? targetBranchOptions.filter((branchOption) => branchOption.toLowerCase().includes(normalizedTargetBranchFilter))
@@ -504,19 +501,6 @@ export function WorkspaceHeader({
             </Button>
           )}
 
-          {onOpenIssueReport ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Report issue"
-              title="Report issue"
-              className="h-9 w-9 shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={onOpenIssueReport}
-            >
-              <Bug className="h-4 w-4" />
-            </Button>
-          ) : null}
         </div>
       </div>
 

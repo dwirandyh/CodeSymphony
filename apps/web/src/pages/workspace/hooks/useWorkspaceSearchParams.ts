@@ -47,19 +47,23 @@ export function useWorkspaceSearchParams() {
   const navigate = useNavigate();
 
   const pendingRef = useRef<Partial<WorkspaceSearch> | null>(null);
+  const pendingReplaceRef = useRef(true);
   const scheduledRef = useRef(false);
   const searchRef = useRef(search);
   searchRef.current = search;
 
   const updateSearch = useCallback(
-    (partial: Partial<WorkspaceSearch>) => {
+    (partial: Partial<WorkspaceSearch>, options?: { replace?: boolean }) => {
       pendingRef.current = { ...pendingRef.current, ...partial };
+      pendingReplaceRef.current = pendingReplaceRef.current && options?.replace !== false;
 
       if (!scheduledRef.current) {
         scheduledRef.current = true;
         queueMicrotask(() => {
           const merged = pendingRef.current;
+          const replace = pendingReplaceRef.current;
           pendingRef.current = null;
+          pendingReplaceRef.current = true;
           scheduledRef.current = false;
           if (!merged) return;
 
@@ -75,7 +79,7 @@ export function useWorkspaceSearchParams() {
           void navigate({
             to: "/",
             search: () => nextSearch,
-            replace: true,
+            replace,
           });
         });
       }

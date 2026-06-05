@@ -1,7 +1,12 @@
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vitest/config";
 
+process.env.NODE_ENV = "test";
+
 export default defineConfig({
+  define: {
+    "process.env.NODE_ENV": JSON.stringify("test"),
+  },
   resolve: {
     alias: {
       "@codesymphony/chat-timeline-core": fileURLToPath(

@@ -7,8 +7,16 @@ let container: HTMLDivElement;
 let root: Root;
 let hookResult: ReturnType<typeof useSidebarResize>;
 
-function TestComponent({ initialWidth, reverse }: { initialWidth?: number; reverse?: boolean }) {
-  hookResult = useSidebarResize(initialWidth, reverse);
+function TestComponent({
+  initialWidth,
+  reverse,
+  maxWidth,
+}: {
+  initialWidth?: number;
+  reverse?: boolean;
+  maxWidth?: number | null;
+}) {
+  hookResult = useSidebarResize(initialWidth, reverse, maxWidth === undefined ? undefined : { maxWidth });
   return <div ref={hookResult.panelRef as React.RefObject<HTMLDivElement>}>width:{hookResult.sidebarWidth}</div>;
 }
 
@@ -114,6 +122,28 @@ describe("useSidebarResize", () => {
       document.dispatchEvent(new MouseEvent("mouseup"));
     });
     expect(container.textContent).toContain("width:500");
+  });
+
+  it("allows disabling the max width clamp", () => {
+    act(() => {
+      root.render(<TestComponent maxWidth={null} />);
+    });
+
+    const mouseDownEvent = new MouseEvent("mousedown", { clientX: 300, bubbles: true }) as unknown as React.MouseEvent;
+    Object.defineProperty(mouseDownEvent, "preventDefault", { value: () => {} });
+
+    act(() => {
+      hookResult.handleSidebarMouseDown(mouseDownEvent);
+    });
+
+    act(() => {
+      document.dispatchEvent(new MouseEvent("mousemove", { clientX: 900 }));
+    });
+
+    act(() => {
+      document.dispatchEvent(new MouseEvent("mouseup"));
+    });
+    expect(container.textContent).toContain("width:900");
   });
 
   it("reverses drag direction when reverse=true", () => {

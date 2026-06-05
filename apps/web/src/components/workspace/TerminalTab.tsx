@@ -15,7 +15,7 @@ import {
 } from "react";
 import { validateAttachmentSize } from "../../lib/attachments";
 import { api } from "../../lib/api";
-import { isTauriDesktop } from "../../lib/openExternalUrl";
+import { getElectronFilePaths, isDesktopShell, isElectronDesktop } from "../../lib/desktopBridge";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -25,8 +25,6 @@ import {
 } from "./terminalRuntimeRegistry";
 import "@xterm/xterm/css/xterm.css";
 
-const DESKTOP_DOM_DROP_FALLBACK_DELAY_MS = 150;
-const DESKTOP_NATIVE_DROP_SUPPRESSION_MS = 500;
 const TERMINAL_TITLE_BRAILLE_PREFIX_PATTERN = /^([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏])\s+(.*)$/u;
 const TERMINAL_SEARCH_DECORATIONS: ISearchOptions["decorations"] = {
   matchBackground: "#1e293b",
@@ -314,55 +312,19 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
   };
 
   useEffect(() => {
-    if (!isTauriDesktop()) {
+    if (!isDesktopShell()) {
       return;
     }
 
-    let active = true;
-    let unlisten: null | (() => void) = null;
-
-    void (async () => {
-      try {
-        const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-        if (!active) {
-          return;
-        }
-
-        nativeDesktopDropListenerReadyRef.current = true;
-        unlisten = await getCurrentWebviewWindow().onDragDropEvent((event) => {
-          const payload = event.payload as { type: string; paths?: string[] };
-
-          if (payload.type === "over") {
-            setIsDragOver(true);
-            return;
-          }
-
-          dragDepthRef.current = 0;
-          setIsDragOver(false);
-
-          if (payload.type !== "drop") {
-            return;
-          }
-
-          const paths = Array.isArray(payload.paths) ? payload.paths : [];
-          if (paths.length === 0) {
-            return;
-          }
-
-          lastNativeDesktopDropAtRef.current = Date.now();
-          void pastePathsToTerminal(paths);
-        });
-      } catch {
+    if (isElectronDesktop()) {
+      nativeDesktopDropListenerReadyRef.current = true;
+      return () => {
         nativeDesktopDropListenerReadyRef.current = false;
-      }
-    })();
+        lastNativeDesktopDropAtRef.current = null;
+      };
+    }
 
-    return () => {
-      active = false;
-      nativeDesktopDropListenerReadyRef.current = false;
-      lastNativeDesktopDropAtRef.current = null;
-      unlisten?.();
-    };
+    return undefined;
   }, []);
 
   const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -429,16 +391,13 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
       return;
     }
 
-    if (isTauriDesktop() && nativeDesktopDropListenerReadyRef.current) {
-      window.setTimeout(() => {
-        const lastNativeDropAt = lastNativeDesktopDropAtRef.current;
-        if (lastNativeDropAt !== null && Date.now() - lastNativeDropAt < DESKTOP_NATIVE_DROP_SUPPRESSION_MS) {
-          return;
-        }
-
-        void pasteBrowserFilesToTerminal(files);
-      }, DESKTOP_DOM_DROP_FALLBACK_DELAY_MS);
-      return;
+    if (isElectronDesktop() && nativeDesktopDropListenerReadyRef.current) {
+      const paths = getElectronFilePaths(files);
+      if (paths.length > 0) {
+        lastNativeDesktopDropAtRef.current = Date.now();
+        void pastePathsToTerminal(paths);
+        return;
+      }
     }
 
     void pasteBrowserFilesToTerminal(files);

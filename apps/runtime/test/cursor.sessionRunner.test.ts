@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -118,6 +118,62 @@ describe("cursor session runner", () => {
         env: [],
       },
     ]);
+  });
+
+  it("runs default Cursor ACP threads with an isolated allowlist approval config", async () => {
+    const tempHome = await mkdtemp(join(tmpdir(), "cursor-config-home-"));
+    await mkdir(join(tempHome, ".cursor"), { recursive: true });
+    await writeFile(join(tempHome, ".cursor", "cli-config.json"), JSON.stringify({
+      approvalMode: "unrestricted",
+      permissions: {
+        allow: ["Shell(ls)"],
+        deny: [],
+      },
+    }));
+    vi.stubEnv("HOME", tempHome);
+
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitText(sessionId, "Done.");
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+
+    await runCursorWithStreaming({
+      prompt: "Run a command.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    const spawnOptions = spawnMock.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+    const isolatedConfigDir = spawnOptions?.env?.CURSOR_CONFIG_DIR;
+    expect(spawnOptions?.env?.HOME).toBe(tempHome);
+    expect(isolatedConfigDir).toBeTruthy();
+    expect(isolatedConfigDir).not.toBe(join(tempHome, ".cursor"));
+
+    const isolatedConfig = JSON.parse(await readFile(join(isolatedConfigDir!, "cli-config.json"), "utf8")) as Record<string, unknown>;
+    expect(isolatedConfig).toMatchObject({
+      approvalMode: "allowlist",
+      permissions: {
+        allow: [],
+        deny: [],
+      },
+    });
   });
 
   it("streams text, tools, auto-approved workspace edits, and plan events from Cursor ACP", async () => {
@@ -307,6 +363,357 @@ describe("cursor session runner", () => {
     expect(fakeCursorSessions.get("cursor-session-1")?.prompts[0]).toContain("Approval-gated edits and command execution should go through the runtime approval flow");
     expect(fakeCursorSessions.get("cursor-session-1")?.prompts[0]).not.toContain("Do not edit files or execute commands.");
     expect(fakeCursorSessions.get("cursor-session-1")?.prompts[0]).toContain("User request:\nInspect this repo and propose a plan.");
+  });
+
+  it("maps Cursor ACP allow-once permission requests without exposing always allow", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        const permission = await agent.requestPermission({
+          sessionId,
+          toolCall: {
+            toolCallId: "shell_1",
+            title: "Run tests",
+            kind: "execute",
+            status: "pending",
+            locations: [],
+            rawInput: {
+              command: "bun test",
+            },
+            content: [],
+          },
+          options: [
+            {
+              kind: "allow_once",
+              name: "Allow once",
+              optionId: "allow-once",
+            },
+            {
+              kind: "reject_once",
+              name: "Reject",
+              optionId: "reject",
+            },
+          ],
+        });
+        expect(permission).toEqual({
+          outcome: {
+            outcome: "selected",
+            optionId: "allow-once",
+          },
+        });
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const permissionRequests: Array<Record<string, unknown>> = [];
+
+    await runCursorWithStreaming({
+      prompt: "Run tests.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async (event) => {
+        permissionRequests.push(event as unknown as Record<string, unknown>);
+        return { decision: "allow" };
+      },
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(permissionRequests).toHaveLength(1);
+    expect(permissionRequests[0]).toMatchObject({
+      toolName: "Bash",
+      toolInput: {
+        command: "bun test",
+      },
+      canAlwaysAllow: false,
+      alwaysAllowScope: null,
+      alwaysAllowDescription: null,
+    });
+  });
+
+  it("maps Cursor ACP native always-allow permission requests", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        const permission = await agent.requestPermission({
+          sessionId,
+          toolCall: {
+            toolCallId: "shell_2",
+            title: "Run tests",
+            kind: "execute",
+            status: "pending",
+            locations: [],
+            rawInput: {
+              command: "bun test",
+            },
+            content: [],
+          },
+          options: [
+            {
+              kind: "allow_once",
+              name: "Allow once",
+              optionId: "allow-once",
+            },
+            {
+              kind: "allow_always",
+              name: "Always allow",
+              optionId: "allow-always",
+            },
+            {
+              kind: "reject_once",
+              name: "Reject",
+              optionId: "reject",
+            },
+          ],
+        });
+        expect(permission).toEqual({
+          outcome: {
+            outcome: "selected",
+            optionId: "allow-always",
+          },
+        });
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const permissionRequests: Array<Record<string, unknown>> = [];
+
+    await runCursorWithStreaming({
+      prompt: "Run tests.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async (event) => {
+        permissionRequests.push(event as unknown as Record<string, unknown>);
+        return { decision: "allow_always" };
+      },
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(permissionRequests).toHaveLength(1);
+    expect(permissionRequests[0]).toMatchObject({
+      canAlwaysAllow: true,
+      alwaysAllowScope: "native",
+      alwaysAllowDescription: "Uses Cursor's native always-allow option for matching future requests.",
+    });
+  });
+
+  it("maps Cursor ACP deny decisions to reject options", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        const permission = await agent.requestPermission({
+          sessionId,
+          toolCall: {
+            toolCallId: "shell_3",
+            title: "Run tests",
+            kind: "execute",
+            status: "pending",
+            locations: [],
+            rawInput: {
+              command: "bun test",
+            },
+            content: [],
+          },
+          options: [
+            {
+              kind: "allow_once",
+              name: "Allow once",
+              optionId: "allow-once",
+            },
+            {
+              kind: "reject_once",
+              name: "Reject",
+              optionId: "reject",
+            },
+          ],
+        });
+        expect(permission).toEqual({
+          outcome: {
+            outcome: "selected",
+            optionId: "reject",
+          },
+        });
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+
+    await runCursorWithStreaming({
+      prompt: "Run tests.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "deny" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+  });
+
+  it("auto-selects Cursor ACP allow_always for full access threads when available", async () => {
+    const permissionResponses: unknown[] = [];
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        permissionResponses.push(await agent.requestPermission({
+          sessionId,
+          toolCall: {
+            toolCallId: "shell_4",
+            title: "Run tests",
+            kind: "execute",
+            status: "pending",
+            locations: [],
+            rawInput: {
+              command: "bun test",
+            },
+            content: [],
+          },
+          options: [
+            {
+              kind: "allow_once",
+              name: "Allow once",
+              optionId: "allow-once",
+            },
+            {
+              kind: "allow_always",
+              name: "Always allow",
+              optionId: "allow-always",
+            },
+            {
+              kind: "reject_once",
+              name: "Reject",
+              optionId: "reject",
+            },
+          ],
+        }));
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const onPermissionRequest = vi.fn(async () => ({ decision: "allow" as const }));
+
+    await runCursorWithStreaming({
+      prompt: "Run tests.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "full_access",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest,
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(onPermissionRequest).not.toHaveBeenCalled();
+    expect(permissionResponses).toEqual([
+      {
+        outcome: {
+          outcome: "selected",
+          optionId: "allow-always",
+        },
+      },
+    ]);
+  });
+
+  it("falls back to Cursor ACP allow_once for full access threads when always allow is unavailable", async () => {
+    const permissionResponses: unknown[] = [];
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        permissionResponses.push(await agent.requestPermission({
+          sessionId,
+          toolCall: {
+            toolCallId: "shell_5",
+            title: "Run tests",
+            kind: "execute",
+            status: "pending",
+            locations: [],
+            rawInput: {
+              command: "bun test",
+            },
+            content: [],
+          },
+          options: [
+            {
+              kind: "allow_once",
+              name: "Allow once",
+              optionId: "allow-once",
+            },
+            {
+              kind: "reject_once",
+              name: "Reject",
+              optionId: "reject",
+            },
+          ],
+        }));
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+
+    await runCursorWithStreaming({
+      prompt: "Run tests.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "full_access",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(permissionResponses).toEqual([
+      {
+        outcome: {
+          outcome: "selected",
+          optionId: "allow-once",
+        },
+      },
+    ]);
   });
 
   it("keeps a stable todo group across repeated Cursor ACP plan snapshots", async () => {

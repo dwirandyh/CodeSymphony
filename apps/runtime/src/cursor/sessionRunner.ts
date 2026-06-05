@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -40,6 +40,7 @@ const CURSOR_BINARY = process.env.CURSOR_AGENT_BINARY_PATH ?? "cursor-agent";
 const CURSOR_CATALOG_TIMEOUT_MS = 2_500;
 const CURSOR_SHUTDOWN_TIMEOUT_MS = 1_000;
 const CURSOR_CONNECTION_IDLE_TIMEOUT_MS = 2 * 60_000;
+const CURSOR_NATIVE_ALWAYS_ALLOW_DESCRIPTION = "Uses Cursor's native always-allow option for matching future requests.";
 
 type CursorAcpMode = "agent" | "ask" | "plan";
 
@@ -87,6 +88,7 @@ type PooledCursorConnection = {
   connection: ClientSideConnection;
   initializeResponse: Awaited<ReturnType<ClientSideConnection["initialize"]>>;
   stderrChunks: string[];
+  cursorConfigDir: string | null;
   cwd: string;
   sessionId: string | null;
   currentModeId: string | null;
@@ -1380,14 +1382,12 @@ function normalizePermissionDecision(params: {
   decision: PermissionDecision;
   request: RequestPermissionRequest;
 }): RequestPermissionResponse {
-  const preferredKind = params.decision === "allow_always"
-    ? "allow_always"
+  const selected = params.decision === "allow_always"
+    ? params.request.options.find((option) => option.kind === "allow_always")
     : params.decision === "allow"
-      ? "allow_once"
-      : "reject_once";
-  const selected = params.request.options.find((option) => option.kind === preferredKind)
-    ?? params.request.options.find((option) => option.kind.startsWith(params.decision === "deny" ? "reject" : "allow"))
-    ?? params.request.options[0];
+      ? params.request.options.find((option) => option.kind === "allow_once")
+      : params.request.options.find((option) => option.kind.startsWith("reject"))
+        ?? params.request.options.find((option) => /deny|cancel/i.test(option.kind));
 
   if (!selected) {
     return {
@@ -1405,13 +1405,72 @@ function normalizePermissionDecision(params: {
   };
 }
 
-function spawnCursorProcess(cwd: string): {
+function normalizeFullAccessPermissionDecision(request: RequestPermissionRequest): RequestPermissionResponse {
+  const selected = request.options.find((option) => option.kind === "allow_always")
+    ?? request.options.find((option) => option.kind === "allow_once");
+
+  if (!selected) {
+    return {
+      outcome: {
+        outcome: "cancelled",
+      },
+    };
+  }
+
+  return {
+    outcome: {
+      outcome: "selected",
+      optionId: selected.optionId,
+    },
+  };
+}
+
+function requestSupportsAlwaysAllow(request: RequestPermissionRequest): boolean {
+  return request.options.some((option) => option.kind === "allow_always");
+}
+
+async function prepareCursorConfigDir(threadPermissionMode: "default" | "full_access" | undefined): Promise<string | null> {
+  if (threadPermissionMode === "full_access") {
+    return null;
+  }
+
+  const sourceCursorDir = join(homedir(), ".cursor");
+  const sourceConfigPath = join(sourceCursorDir, "cli-config.json");
+  let config: Record<string, unknown> = {};
+
+  try {
+    config = JSON.parse(await readFile(sourceConfigPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    config = {};
+  }
+
+  const tempConfigDir = await mkdtemp(join(tmpdir(), "codesymphony-cursor-config-"));
+
+  const permissions = (config.permissions && typeof config.permissions === "object" && !Array.isArray(config.permissions))
+    ? config.permissions as Record<string, unknown>
+    : {};
+  await writeFile(join(tempConfigDir, "cli-config.json"), JSON.stringify({
+    ...config,
+    permissions: {
+      ...permissions,
+      allow: [],
+    },
+    approvalMode: "allowlist",
+  }, null, 2));
+
+  return tempConfigDir;
+}
+
+function spawnCursorProcess(params: {
+  cwd: string;
+  cursorConfigDir: string | null;
+}): {
   child: ChildProcessWithoutNullStreams;
   stderrChunks: string[];
 } {
   const child = spawn(CURSOR_BINARY, ["acp"], {
-    cwd,
-    env: process.env,
+    cwd: params.cwd,
+    env: params.cursorConfigDir ? { ...process.env, CURSOR_CONFIG_DIR: params.cursorConfigDir } : process.env,
     stdio: ["pipe", "pipe", "pipe"],
     shell: process.platform === "win32",
   });
@@ -1448,14 +1507,20 @@ async function terminateCursorChild(child: ChildProcessWithoutNullStreams): Prom
 
 async function createCursorConnection(params: {
   cwd: string;
+  threadPermissionMode: "default" | "full_access" | undefined;
   client: CursorClientHandlers;
 }): Promise<{
   child: ChildProcessWithoutNullStreams;
   connection: ClientSideConnection;
   initializeResponse: Awaited<ReturnType<ClientSideConnection["initialize"]>>;
   stderrChunks: string[];
+  cursorConfigDir: string | null;
 }> {
-  const { child, stderrChunks } = spawnCursorProcess(params.cwd);
+  const cursorConfigDir = await prepareCursorConfigDir(params.threadPermissionMode);
+  const { child, stderrChunks } = spawnCursorProcess({
+    cwd: params.cwd,
+    cursorConfigDir,
+  });
   const stream = ndJsonStream(
     Writable.toWeb(child.stdin as Writable) as unknown as WritableStream<Uint8Array>,
     Readable.toWeb(child.stdout as Readable) as unknown as ReadableStream<Uint8Array>,
@@ -1467,7 +1532,9 @@ async function createCursorConnection(params: {
     extMethod: params.client.extMethod,
   }), stream);
 
-  const initializeResponse = await new Promise<Awaited<ReturnType<ClientSideConnection["initialize"]>>>((resolve, reject) => {
+  let initializeResponse: Awaited<ReturnType<ClientSideConnection["initialize"]>>;
+  try {
+    initializeResponse = await new Promise<Awaited<ReturnType<ClientSideConnection["initialize"]>>>((resolve, reject) => {
     let settled = false;
 
     const cleanup = () => {
@@ -1522,13 +1589,21 @@ async function createCursorConnection(params: {
     }, (error) => {
       fail(error instanceof Error ? error : new Error(String(error)));
     });
-  });
+    });
+  } catch (error) {
+    await terminateCursorChild(child);
+    if (cursorConfigDir) {
+      await rm(cursorConfigDir, { recursive: true, force: true });
+    }
+    throw error;
+  }
 
   return {
     child,
     connection,
     initializeResponse,
     stderrChunks,
+    cursorConfigDir,
   };
 }
 
@@ -1556,6 +1631,9 @@ async function destroyPooledCursorConnection(entry: PooledCursorConnection): Pro
   clearCursorConnectionIdleTimer(entry);
   unregisterPooledCursorConnection(entry);
   await terminateCursorChild(entry.child);
+  if (entry.cursorConfigDir) {
+    await rm(entry.cursorConfigDir, { recursive: true, force: true });
+  }
 }
 
 function schedulePooledCursorConnectionIdleClose(entry: PooledCursorConnection): void {
@@ -1569,6 +1647,7 @@ function schedulePooledCursorConnectionIdleClose(entry: PooledCursorConnection):
 async function acquirePooledCursorConnection(params: {
   cwd: string;
   sessionId: string | null;
+  threadPermissionMode: "default" | "full_access" | undefined;
   handlers: CursorClientHandlers;
 }): Promise<{
   entry: PooledCursorConnection;
@@ -1607,6 +1686,7 @@ async function acquirePooledCursorConnection(params: {
 
   const created = await createCursorConnection({
     cwd: params.cwd,
+    threadPermissionMode: params.threadPermissionMode,
     client: handlerBridge,
   });
 
@@ -1740,6 +1820,7 @@ async function listCursorCatalog(cwd: string): Promise<CursorCatalogSnapshot> {
   try {
     ({ child, connection } = await createCursorConnection({
       cwd,
+      threadPermissionMode: "full_access",
       client: {
         sessionUpdate: async ({ update }) => {
           if (update.sessionUpdate === "available_commands_update") {
@@ -2169,6 +2250,11 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
         });
         const blockedPath = request.toolCall.locations?.[0]?.path?.trim() || null;
         const syntheticRequestId = `${toolUseId || "cursor-tool"}:${randomUUID()}`;
+        const supportsAlwaysAllow = requestSupportsAlwaysAllow(request);
+
+        if (threadPermissionMode === "full_access") {
+          return normalizeFullAccessPermissionDecision(request);
+        }
 
         if (shouldAutoApproveCursorWorkspaceEdit({
           cwd,
@@ -2190,6 +2276,9 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
           blockedPath,
           decisionReason: null,
           suggestions: null,
+          canAlwaysAllow: supportsAlwaysAllow,
+          alwaysAllowScope: supportsAlwaysAllow ? "native" : null,
+          alwaysAllowDescription: supportsAlwaysAllow ? CURSOR_NATIVE_ALWAYS_ALLOW_DESCRIPTION : null,
           subagentOwnerToolUseId: null,
           launcherToolUseId: null,
         });
@@ -2224,6 +2313,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     const acquired = await acquirePooledCursorConnection({
       cwd,
       sessionId,
+      threadPermissionMode,
       handlers,
     });
     pooledConnection = acquired.entry;

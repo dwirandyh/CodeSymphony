@@ -20,6 +20,10 @@ function isEditTool(toolName: string): boolean {
   return /^(edit|multiedit|write)$/i.test(toolName.trim());
 }
 
+function parseAlwaysAllowScope(value: unknown): PendingPermissionRequest["alwaysAllowScope"] {
+  return value === "session" || value === "workspace" || value === "native" ? value : null;
+}
+
 function extractEditTarget(toolName: string, toolInput: unknown): string | null {
   if (!isEditTool(toolName) || !isRecord(toolInput)) {
     return null;
@@ -165,6 +169,11 @@ export function derivePendingPermissionRequests(events: ChatEvent[]): PendingPer
         editTarget,
         blockedPath: typeof event.payload.blockedPath === "string" ? event.payload.blockedPath : null,
         decisionReason: typeof event.payload.decisionReason === "string" ? event.payload.decisionReason : null,
+        canAlwaysAllow: event.payload.canAlwaysAllow === true,
+        alwaysAllowScope: parseAlwaysAllowScope(event.payload.alwaysAllowScope),
+        alwaysAllowDescription: typeof event.payload.alwaysAllowDescription === "string"
+          ? event.payload.alwaysAllowDescription
+          : null,
         idx: event.idx,
       });
       continue;

@@ -95,7 +95,7 @@ vi.mock("../../components/ui/dialog", () => ({
   DialogContent: ({
     children,
     ...props
-  }: React.HTMLAttributes<HTMLDivElement>) => <div {...props}>{children}</div>,
+  }: React.HTMLAttributes<HTMLDivElement>) => <div role="dialog" aria-modal="true" {...props}>{children}</div>,
   DialogDescription: ({
     children,
     ...props
@@ -579,6 +579,21 @@ describe("AutomationsListPage", () => {
     expect(promptField).toBeTruthy();
   });
 
+  it("renders create automation inside a modal dialog", async () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage prefills={{ create: true }} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+
+    const dialog = document.body.querySelector('[role="dialog"][aria-modal="true"][aria-label="Create automation"]');
+    expect(dialog).toBeTruthy();
+  });
+
   it("uses workspace-header-style pickers for create automation targets", async () => {
     act(() => {
       root.render(
@@ -604,7 +619,7 @@ describe("AutomationsListPage", () => {
     }
   });
 
-  it("shows field-specific validation before attempting to create an invalid automation", async () => {
+  it("keeps the create action disabled while the form is invalid", async () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -615,13 +630,37 @@ describe("AutomationsListPage", () => {
 
     await flushEffects();
 
-    await act(async () => {
-      findButton("Create").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    expect(findButton("Create").disabled).toBe(true);
 
     expect(apiMocks.createAutomation).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("Add a title before creating the automation.");
-    expect(document.body.textContent).toContain("Add a prompt so the automation knows what to do.");
+  });
+
+  it("disables the create action until the required fields are filled", async () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage prefills={{ create: true }} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+
+    const createButton = findButton("Create");
+    const titleInput = findInputByPlaceholder("Automation title");
+    const promptField = document.body.querySelector('[data-testid="automation-create-prompt-editor"]');
+
+    if (!(promptField instanceof HTMLElement)) {
+      throw new Error("Expected prompt editor");
+    }
+
+    expect(createButton.disabled).toBe(true);
+
+    await setInputValue(titleInput, "Automation smoke");
+    await setEditorValue(promptField, "Watch for failures and summarize them.");
+    await flushEffects();
+
+    expect(findButton("Create").disabled).toBe(false);
   });
 
   it("uses the repository root worktree when creating a root automation from a feature-worktree context", async () => {
@@ -1358,5 +1397,143 @@ describe("AutomationDetailPage", () => {
       threadId: "thread-1",
     }), "repo-1");
     expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the active project filter as the default project when opening a new automation", async () => {
+    const repoOne = makeRepository();
+    const repoTwo = makeRepository({
+      id: "repo-2",
+      name: "other-repo",
+      rootPath: "/tmp/other-repo",
+      worktrees: [
+        {
+          id: "wt-2",
+          repositoryId: "repo-2",
+          branch: "main",
+          path: "/tmp/other-repo",
+          status: "active",
+          baseBranch: "main",
+          branchRenamed: false,
+          lastCreateError: null,
+          lastDeleteError: null,
+          createdAt: "2026-05-10T10:00:00.000Z",
+          updatedAt: "2026-05-10T10:00:00.000Z",
+        },
+      ],
+    });
+
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [repoOne, repoTwo],
+      isLoading: false,
+    });
+    apiMocks.listAutomations.mockResolvedValue([]);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    await chooseSelectOption("Project filter", "other-repo");
+
+    await act(async () => {
+      findButton("New automation").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(findButtonByAriaLabel("Select project").textContent).toContain("other-repo");
+  });
+
+  it("preserves the active project filter when workspace create mode toggles", async () => {
+    const repoOne = makeRepository();
+    const repoTwo = makeRepository({
+      id: "repo-2",
+      name: "other-repo",
+      rootPath: "/tmp/other-repo",
+      worktrees: [
+        {
+          id: "wt-2",
+          repositoryId: "repo-2",
+          branch: "main",
+          path: "/tmp/other-repo",
+          status: "active",
+          baseBranch: "main",
+          branchRenamed: false,
+          lastCreateError: null,
+          lastDeleteError: null,
+          createdAt: "2026-05-10T10:00:00.000Z",
+          updatedAt: "2026-05-10T10:00:00.000Z",
+        },
+      ],
+    });
+
+    useRepositoriesMock.useRepositories.mockReturnValue({
+      data: [repoOne, repoTwo],
+      isLoading: false,
+    });
+    apiMocks.listAutomations.mockResolvedValue([]);
+
+    const onCreateDialogOpenChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspaceAutomationsPanel
+            create={false}
+            prefills={{ repositoryId: "repo-1", worktreeId: "wt-1" }}
+            onOpenAutomation={vi.fn()}
+            onBack={vi.fn()}
+            onCreateDialogOpenChange={onCreateDialogOpenChange}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    await chooseSelectOption("Project filter", "other-repo");
+    expect(findButtonByAriaLabel("Project filter").textContent).toContain("other-repo");
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspaceAutomationsPanel
+            create={true}
+            prefills={{ repositoryId: "repo-1", worktreeId: "wt-1" }}
+            onOpenAutomation={vi.fn()}
+            onBack={vi.fn()}
+            onCreateDialogOpenChange={onCreateDialogOpenChange}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+
+    expect(findButtonByAriaLabel("Select project").textContent).toContain("other-repo");
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspaceAutomationsPanel
+            create={false}
+            prefills={{ repositoryId: "repo-1", worktreeId: "wt-1" }}
+            onOpenAutomation={vi.fn()}
+            onBack={vi.fn()}
+            onCreateDialogOpenChange={onCreateDialogOpenChange}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+
+    expect(findButtonByAriaLabel("Project filter").textContent).toContain("other-repo");
   });
 });

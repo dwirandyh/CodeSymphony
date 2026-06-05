@@ -6,15 +6,20 @@ import {
 
 declare global {
   interface Window {
+    __CS_DESKTOP?: boolean;
     __CS_RUNTIME_API_BASE?: string;
     __CS_RUNTIME_PORT?: number;
-    __TAURI_INTERNALS__?: unknown;
+    __CS_DESKTOP__?: boolean;
+    __CS_ELECTRON?: boolean;
+    __CS_ELECTRON__?: boolean;
   }
 }
 
 function isDesktopRuntimeWindow(windowRef: Window): boolean {
-  if (windowRef.__TAURI_INTERNALS__) return true;
-  // Tauri production can use a non-http(s) protocol (e.g. "tauri:").
+  if (windowRef.__CS_DESKTOP__ || windowRef.__CS_DESKTOP || windowRef.__CS_ELECTRON__ || windowRef.__CS_ELECTRON) {
+    return true;
+  }
+  // Packaged desktop shells can use a non-http(s) protocol.
   return windowRef.location.protocol !== "http:" && windowRef.location.protocol !== "https:";
 }
 

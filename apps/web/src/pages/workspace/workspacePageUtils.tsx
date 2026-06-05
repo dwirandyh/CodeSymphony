@@ -56,6 +56,21 @@ export function shouldShowWorkspaceEmptyState(params: {
   return params.messageListEmptyState === "no-thread-selected" || params.messageListEmptyState === "creating-thread";
 }
 
+export function deriveVisibleUserGates(params: {
+  pendingPermissionRequestCount: number;
+  pendingQuestionRequestCount: number;
+}): {
+  showPermissionGate: boolean;
+  showQuestionGate: boolean;
+} {
+  const showPermissionGate = params.pendingPermissionRequestCount > 0;
+
+  return {
+    showPermissionGate,
+    showQuestionGate: !showPermissionGate && params.pendingQuestionRequestCount > 0,
+  };
+}
+
 export function resolveWorkspaceThreadlessFallbackSurface(params: {
   activeTerminalTabId: string | null;
   openFilePaths: string[];

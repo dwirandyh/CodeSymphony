@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   GetWorktreeFileContentQuerySchema,
@@ -28,6 +28,33 @@ import { appendRuntimeDebugLog } from "./debug.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
+const gitStatusQuery = z.object({
+  refresh: z.string().optional().transform((value) => value === "true" || value === "1"),
+});
+const filesQuery = z.object({ q: z.string().optional().default("") });
+const fileTreeQuery = z.object({ path: z.string().optional() });
+const worktreePathBody = z.object({
+  path: z.string().trim().min(1),
+});
+const worktreeCreateFileBody = z.object({
+  path: z.string().trim().min(1),
+  content: z.string().optional().default(""),
+});
+const worktreeCreateDirectoryBody = z.object({
+  path: z.string().trim().min(1),
+});
+const worktreeRenamePathBody = z.object({
+  path: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+});
+const worktreePathTransferBody = z.object({
+  sourcePath: z.string().trim().min(1),
+  destinationDirectoryPath: z.string().trim().optional().default(""),
+  overwrite: z.boolean().optional().default(false),
+});
+const worktreePasteFromHostClipboardBody = z.object({
+  destinationDirectoryPath: z.string().trim().optional().default(""),
+});
 // These sidebar metadata requests are non-critical and expensive enough that
 // recomputing them on every page refresh can stall other thread bootstrap
 // requests behind the browser's per-origin connection limits.
@@ -74,6 +101,42 @@ async function resolveWorktreeFile(worktree: { path: string }, inputPath: string
   };
 }
 
+async function resolveEditorFile(worktree: { path: string }, inputPath: string) {
+  const rootPath = path.resolve(worktree.path);
+  const targetPath = path.isAbsolute(inputPath)
+    ? path.resolve(inputPath)
+    : path.resolve(rootPath, inputPath);
+
+  if (!path.isAbsolute(inputPath) && !isPathInsideRoot(rootPath, targetPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  const targetStat = await stat(targetPath).catch(() => null);
+  if (!targetStat || !targetStat.isFile()) {
+    throw new Error("Target file does not exist");
+  }
+
+  const canonicalRootPath = await realpath(rootPath).catch(() => rootPath);
+  const canonicalTargetPath = await realpath(targetPath).catch(() => targetPath);
+  if (isPathInsideRoot(canonicalRootPath, canonicalTargetPath)) {
+    return {
+      canonicalTargetPath,
+      editorPath: path.relative(canonicalRootPath, canonicalTargetPath).split(path.sep).join("/"),
+      external: false,
+    };
+  }
+
+  if (!path.isAbsolute(inputPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  return {
+    canonicalTargetPath,
+    editorPath: canonicalTargetPath,
+    external: true,
+  };
+}
+
 async function resolveWorktreeDirectory(worktree: { path: string }, inputPath?: string) {
   const rootPath = path.resolve(worktree.path);
   const targetPath = inputPath && inputPath.trim().length > 0
@@ -100,6 +163,61 @@ async function resolveWorktreeDirectory(worktree: { path: string }, inputPath?: 
   return {
     relativePath: relativePath === "." ? "" : relativePath,
   };
+}
+
+async function resolveWorktreePathForWrite(worktree: { path: string }, inputPath: string) {
+  const rootPath = path.resolve(worktree.path);
+  const targetPath = path.isAbsolute(inputPath)
+    ? path.resolve(inputPath)
+    : path.resolve(rootPath, inputPath);
+
+  if (!isPathInsideRoot(rootPath, targetPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  const canonicalRootPath = await realpath(rootPath).catch(() => rootPath);
+  const existingAncestorPath = await findExistingAncestor(targetPath, canonicalRootPath);
+  const canonicalAncestorPath = await realpath(existingAncestorPath).catch(() => existingAncestorPath);
+  if (!isPathInsideRoot(canonicalRootPath, canonicalAncestorPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  return {
+    rootPath,
+    targetPath,
+    relativePath: path.relative(rootPath, targetPath).split(path.sep).join("/"),
+  };
+}
+
+async function findExistingAncestor(targetPath: string, rootPath: string) {
+  let currentPath = targetPath;
+  while (currentPath.length >= rootPath.length) {
+    const currentStat = await stat(currentPath).catch(() => null);
+    if (currentStat) {
+      return currentPath;
+    }
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      break;
+    }
+    currentPath = parentPath;
+  }
+  return rootPath;
+}
+
+function assertSafeBasename(name: string) {
+  if (name !== path.basename(name) || name === "." || name === "..") {
+    throw new Error("Name must not include path separators");
+  }
+}
+
+function publishWorktreeFilesChanged(app: FastifyInstance, worktree: { id: string; repositoryId: string; path: string }) {
+  app.fileService.invalidateCache(worktree.path);
+  publishWorktreeActivity({
+    workspaceEventHub: app.workspaceEventHub,
+    worktree,
+    activity: WORKTREE_ACTIVITY.WATCHER_FILES_CHANGED,
+  });
 }
 
 async function getCachedRepositoryReviews(app: FastifyInstance, repositoryId: string): Promise<RepositoryReviewStateResult> {
@@ -452,9 +570,6 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     return reply.code(204).send();
   });
 
-  const filesQuery = z.object({ q: z.string().optional().default("") });
-  const fileTreeQuery = z.object({ path: z.string().optional() });
-
   app.get("/worktrees/:id/files", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
     const query = filesQuery.parse(request.query);
@@ -521,6 +636,261 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/worktrees/:id/files/create-file", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = worktreeCreateFileBody.parse(request.body);
+
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to create file";
+      return reply.code(409).send({ error: message });
+    }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      const { targetPath, relativePath } = await resolveWorktreePathForWrite(worktree, input.path);
+      await mkdir(path.dirname(targetPath), { recursive: true });
+      await writeFile(targetPath, input.content, { encoding: "utf8", flag: "wx" });
+      publishWorktreeFilesChanged(app, worktree);
+      return reply.code(201).send({ data: { path: relativePath, type: "file" } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to create file";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/worktrees/:id/files/create-directory", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = worktreeCreateDirectoryBody.parse(request.body);
+
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to create folder";
+      return reply.code(409).send({ error: message });
+    }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      const { targetPath, relativePath } = await resolveWorktreePathForWrite(worktree, input.path);
+      const existing = await stat(targetPath).catch(() => null);
+      if (existing) {
+        throw new Error("Target already exists");
+      }
+      await mkdir(targetPath, { recursive: true });
+      publishWorktreeFilesChanged(app, worktree);
+      return reply.code(201).send({ data: { path: relativePath, type: "directory" } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to create folder";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.patch("/worktrees/:id/files/rename", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = worktreeRenamePathBody.parse(request.body);
+
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to rename path";
+      return reply.code(409).send({ error: message });
+    }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      assertSafeBasename(input.name);
+      const source = await resolveWorktreePathForWrite(worktree, input.path);
+      const sourceStat = await stat(source.targetPath).catch(() => null);
+      if (!sourceStat) {
+        throw new Error("Source path does not exist");
+      }
+      const destinationPath = path.join(path.dirname(source.targetPath), input.name);
+      const destination = await resolveWorktreePathForWrite(worktree, destinationPath);
+      const destinationStat = await stat(destination.targetPath).catch(() => null);
+      if (destinationStat) {
+        throw new Error("Target already exists");
+      }
+      await rename(source.targetPath, destination.targetPath);
+      publishWorktreeFilesChanged(app, worktree);
+      return { data: { path: destination.relativePath, type: sourceStat.isDirectory() ? "directory" : "file" } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to rename path";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/worktrees/:id/files/copy", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = worktreePathTransferBody.parse(request.body);
+
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to copy path";
+      return reply.code(409).send({ error: message });
+    }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      const source = await resolveWorktreePathForWrite(worktree, input.sourcePath);
+      const sourceStat = await stat(source.targetPath).catch(() => null);
+      if (!sourceStat) {
+        throw new Error("Source path does not exist");
+      }
+      const destinationDirectory = await resolveWorktreePathForWrite(worktree, input.destinationDirectoryPath);
+      const destinationDirectoryStat = await stat(destinationDirectory.targetPath).catch(() => null);
+      if (!destinationDirectoryStat?.isDirectory()) {
+        throw new Error("Destination directory does not exist");
+      }
+      const destination = await resolveWorktreePathForWrite(
+        worktree,
+        path.join(destinationDirectory.targetPath, path.basename(source.targetPath)),
+      );
+      await cp(source.targetPath, destination.targetPath, {
+        recursive: sourceStat.isDirectory(),
+        force: input.overwrite,
+        errorOnExist: !input.overwrite,
+      });
+      publishWorktreeFilesChanged(app, worktree);
+      return { data: { path: destination.relativePath, type: sourceStat.isDirectory() ? "directory" : "file" } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to copy path";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/worktrees/:id/files/move", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = worktreePathTransferBody.parse(request.body);
+
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to move path";
+      return reply.code(409).send({ error: message });
+    }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      const source = await resolveWorktreePathForWrite(worktree, input.sourcePath);
+      const sourceStat = await stat(source.targetPath).catch(() => null);
+      if (!sourceStat) {
+        throw new Error("Source path does not exist");
+      }
+      const destinationDirectory = await resolveWorktreePathForWrite(worktree, input.destinationDirectoryPath);
+      const destinationDirectoryStat = await stat(destinationDirectory.targetPath).catch(() => null);
+      if (!destinationDirectoryStat?.isDirectory()) {
+        throw new Error("Destination directory does not exist");
+      }
+      const destination = await resolveWorktreePathForWrite(
+        worktree,
+        path.join(destinationDirectory.targetPath, path.basename(source.targetPath)),
+      );
+      const destinationStat = await stat(destination.targetPath).catch(() => null);
+      if (destinationStat) {
+        throw new Error("Target already exists");
+      }
+      await rename(source.targetPath, destination.targetPath);
+      publishWorktreeFilesChanged(app, worktree);
+      return { data: { path: destination.relativePath, type: sourceStat.isDirectory() ? "directory" : "file" } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to move path";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/worktrees/:id/files/paste-from-host-clipboard", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = worktreePasteFromHostClipboardBody.parse(request.body ?? {});
+
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to paste clipboard paths";
+      return reply.code(409).send({ error: message });
+    }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      const sourcePaths = await app.systemService.readClipboardFilePaths();
+      if (sourcePaths.length === 0) {
+        throw new Error("Host clipboard does not contain copied files or folders");
+      }
+
+      const destinationDirectory = await resolveWorktreePathForWrite(worktree, input.destinationDirectoryPath);
+      const destinationDirectoryStat = await stat(destinationDirectory.targetPath).catch(() => null);
+      if (!destinationDirectoryStat?.isDirectory()) {
+        throw new Error("Destination directory does not exist");
+      }
+
+      const entries = [];
+      for (const sourcePath of sourcePaths) {
+        const sourceStat = await stat(sourcePath).catch(() => null);
+        if (!sourceStat) {
+          throw new Error(`Clipboard path does not exist: ${sourcePath}`);
+        }
+
+        const sourceName = path.basename(sourcePath);
+        assertSafeBasename(sourceName);
+        const destination = await resolveWorktreePathForWrite(
+          worktree,
+          path.join(destinationDirectory.targetPath, sourceName),
+        );
+        await cp(sourcePath, destination.targetPath, {
+          recursive: sourceStat.isDirectory(),
+          force: false,
+          errorOnExist: true,
+        });
+        entries.push({
+          path: destination.relativePath,
+          type: sourceStat.isDirectory() ? "directory" as const : "file" as const,
+        });
+      }
+
+      publishWorktreeFilesChanged(app, worktree);
+      return { data: entries };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to paste clipboard paths";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.delete("/worktrees/:id/files/path", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = worktreePathBody.parse(request.body);
+
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to delete path";
+      return reply.code(409).send({ error: message });
+    }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      const target = await resolveWorktreePathForWrite(worktree, input.path);
+      const targetStat = await stat(target.targetPath).catch(() => null);
+      if (!targetStat) {
+        throw new Error("Target path does not exist");
+      }
+      await rm(target.targetPath, { recursive: targetStat.isDirectory(), force: false });
+      publishWorktreeFilesChanged(app, worktree);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to delete path";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.get("/worktrees/:id/files/content", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
     const query = GetWorktreeFileContentQuerySchema.parse(request.query);
@@ -535,13 +905,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, query.path);
+      const { canonicalTargetPath, editorPath } = await resolveEditorFile(worktree, query.path);
       const buffer = await readFile(canonicalTargetPath);
       const mimeType = detectMimeType(canonicalTargetPath);
       if (isImageMimeType(mimeType)) {
         return {
           data: {
-            path: relativePath,
+            path: editorPath,
             content: buffer.toString("base64"),
             mimeType,
           },
@@ -554,7 +924,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
       return {
         data: {
-          path: relativePath,
+          path: editorPath,
           content: buffer.toString("utf8"),
           mimeType,
         },
@@ -579,16 +949,18 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, input.path);
+      const { canonicalTargetPath, editorPath, external } = await resolveEditorFile(worktree, input.path);
       await writeFile(canonicalTargetPath, input.content, "utf8");
-      publishWorktreeActivity({
-        workspaceEventHub: app.workspaceEventHub,
-        worktree,
-        activity: WORKTREE_ACTIVITY.FILE_SAVED,
-      });
+      if (!external) {
+        publishWorktreeActivity({
+          workspaceEventHub: app.workspaceEventHub,
+          worktree,
+          activity: WORKTREE_ACTIVITY.FILE_SAVED,
+        });
+      }
       return {
         data: {
-          path: relativePath,
+          path: editorPath,
           content: input.content,
           mimeType: detectMimeType(canonicalTargetPath),
         },
@@ -601,6 +973,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
   app.get("/worktrees/:id/git/status", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
+    const query = gitStatusQuery.parse(request.query);
     let worktree;
     try {
       worktree = await getOperationalWorktree(app, params.id);
@@ -611,7 +984,9 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const status = await getCachedWorktreeGitStatus(worktree.id, worktree.path);
+      const status = await getCachedWorktreeGitStatus(worktree.id, worktree.path, {
+        refresh: query.refresh === true,
+      });
       return { data: status };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to get git status";

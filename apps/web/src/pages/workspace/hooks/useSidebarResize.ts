@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export function useSidebarResize(initialWidth = 300, reverse = false) {
+type SidebarResizeOptions = {
+  minWidth?: number;
+  maxWidth?: number | null;
+};
+
+export function useSidebarResize(initialWidth = 300, reverse = false, options: SidebarResizeOptions = {}) {
+  const { minWidth = 200, maxWidth = 500 } = options;
   const [sidebarWidth, setSidebarWidth] = useState(initialWidth);
   const [sidebarDragging, setSidebarDragging] = useState(false);
   const sidebarStartXRef = useRef(0);
@@ -27,7 +33,11 @@ export function useSidebarResize(initialWidth = 300, reverse = false) {
       const delta = reverse
         ? sidebarStartXRef.current - e.clientX
         : e.clientX - sidebarStartXRef.current;
-      const newWidth = Math.max(200, Math.min(500, sidebarStartWidthRef.current + delta));
+      const nextWidth = sidebarStartWidthRef.current + delta;
+      const newWidth = Math.max(
+        minWidth,
+        maxWidth == null ? nextWidth : Math.min(maxWidth, nextWidth),
+      );
       widthRef.current = newWidth;
       if (panelRef.current) {
         panelRef.current.style.width = `${newWidth}px`;
@@ -48,7 +58,7 @@ export function useSidebarResize(initialWidth = 300, reverse = false) {
       document.body.style.cursor = previousCursor;
       document.body.style.userSelect = previousUserSelect;
     };
-  }, [sidebarDragging, reverse]);
+  }, [maxWidth, minWidth, sidebarDragging, reverse]);
 
   return { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef };
 }

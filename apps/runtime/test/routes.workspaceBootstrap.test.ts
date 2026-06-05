@@ -214,6 +214,99 @@ describe("workspace bootstrap routes", () => {
     expect(getCachedWorktreeGitStatusMock).not.toHaveBeenCalled();
   });
 
+  it("selects the backend-preferred thread when bootstrapping a worktree without a thread id", async () => {
+    repositoryList.mockResolvedValueOnce([]);
+    repositoryGetById.mockResolvedValueOnce({
+      id: "repo-1",
+      name: "CodeSymphony",
+      rootPath: "/repo",
+      defaultBranch: "main",
+      setupScript: null,
+      teardownScript: null,
+      runScript: null,
+      createdAt: "2026-05-20T00:00:00.000Z",
+      updatedAt: "2026-05-20T00:00:00.000Z",
+      worktrees: [],
+    });
+    worktreeGetById.mockResolvedValueOnce({
+      id: "wt-1",
+      repositoryId: "repo-1",
+      branch: "main",
+      path: "/repo",
+      baseBranch: "main",
+      status: "active",
+      lastCreateError: null,
+      lastDeleteError: null,
+      branchRenamed: false,
+      createdAt: "2026-05-20T00:00:00.000Z",
+      updatedAt: "2026-05-20T00:00:00.000Z",
+    });
+    chatListThreads.mockResolvedValueOnce([
+      {
+        id: "thread-old",
+        worktreeId: "wt-1",
+        title: "Old",
+        kind: "default",
+        isAutomation: false,
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        agent: "claude",
+        model: "claude-sonnet-4-6",
+        modelProviderId: null,
+        claudeSessionId: null,
+        codexSessionId: null,
+        cursorSessionId: null,
+        opencodeSessionId: null,
+        active: false,
+        createdAt: "2026-05-20T00:00:00.000Z",
+        updatedAt: "2026-05-20T00:00:00.000Z",
+      },
+      {
+        id: "thread-preferred",
+        worktreeId: "wt-1",
+        title: "Preferred",
+        kind: "default",
+        isAutomation: false,
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        agent: "claude",
+        model: "claude-sonnet-4-6",
+        modelProviderId: null,
+        claudeSessionId: null,
+        codexSessionId: null,
+        cursorSessionId: null,
+        opencodeSessionId: null,
+        active: false,
+        preferred: true,
+        createdAt: "2026-05-20T00:00:01.000Z",
+        updatedAt: "2026-05-20T00:00:01.000Z",
+      },
+    ]);
+    getCachedWorktreeGitStatusMock.mockResolvedValueOnce({
+      branch: "main",
+      upstream: "origin/main",
+      ahead: 0,
+      behind: 0,
+      entries: [],
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/workspace/bootstrap?repositoryId=repo-1&worktreeId=wt-1",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data.selection.threadId).toBe("thread-preferred");
+    expect(response.json().data.thread).toMatchObject({
+      id: "thread-preferred",
+      title: "Preferred",
+    });
+  });
+
   it("marks thread bootstrap as unresolved when listing threads fails", async () => {
     repositoryList.mockResolvedValueOnce([{
       id: "repo-1",

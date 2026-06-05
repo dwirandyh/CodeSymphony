@@ -129,12 +129,16 @@ export function createFilesystemService() {
 
   async function browse(path?: string): Promise<{
     currentPath: string;
+    currentPathIsGitRepo: boolean;
     parentPath: string | null;
     entries: FilesystemEntry[];
   }> {
     const targetPath = resolve(path?.trim() || homedir());
 
     const dirents = await readdir(targetPath, { withFileTypes: true });
+    const currentPathIsGitRepo = await access(join(targetPath, ".git"))
+      .then(() => true)
+      .catch(() => false);
 
     const dirs = dirents.filter((d) => d.isDirectory() || d.isSymbolicLink());
 
@@ -152,13 +156,14 @@ export function createFilesystemService() {
       const aHidden = a.name.startsWith(".");
       const bHidden = b.name.startsWith(".");
       if (aHidden !== bHidden) return aHidden ? 1 : -1;
+      if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
 
     const parent = dirname(targetPath);
     const parentPath = parent === targetPath ? null : parent;
 
-    return { currentPath: targetPath, parentPath, entries };
+    return { currentPath: targetPath, currentPathIsGitRepo, parentPath, entries };
   }
 
   async function readAttachments(paths: string[]): Promise<FilesystemReadAttachment[]> {

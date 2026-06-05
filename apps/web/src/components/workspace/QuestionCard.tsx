@@ -16,8 +16,15 @@ type QuestionItem = {
 
 type QuestionCardProps = {
   requestId: string;
+  agentLabel: string;
   questions: QuestionItem[];
   busy: boolean;
+  position?: {
+    current: number;
+    total: number;
+  };
+  onPrevious?: () => void;
+  onNext?: () => void;
   onAnswer: (requestId: string, answers: Record<string, string>) => void;
   onDismiss: (requestId: string) => void;
 };
@@ -29,12 +36,23 @@ function normalizeAnswerParts(parts: string[]): string {
     .join(", ");
 }
 
-export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }: QuestionCardProps) {
+export function QuestionCard({
+  requestId,
+  agentLabel,
+  questions,
+  busy,
+  position,
+  onPrevious,
+  onNext,
+  onAnswer,
+  onDismiss,
+}: QuestionCardProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const [selectedByQuestion, setSelectedByQuestion] = useState<Map<string, Set<string>>>(() => new Map());
   const [freeTextByQuestion, setFreeTextByQuestion] = useState<Map<string, string>>(() => new Map());
 
   const total = questions.length;
+  const hasPosition = Boolean(position && position.total > 1);
   const question = questions[currentStep];
   if (!question) {
     return null;
@@ -154,17 +172,24 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <MessageCircleQuestion className="h-4 w-4 shrink-0 text-blue-400" />
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-400">Claude is asking</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-400">{agentLabel} is asking</p>
         </div>
-        {total > 1 ? (
-          <span className="shrink-0 rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] tabular-nums tracking-wide text-blue-400">
-            {currentStep + 1} / {total}
-          </span>
-        ) : (
-          <span className="shrink-0 rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-blue-400">
-            Awaiting Answer
-          </span>
-        )}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+          {hasPosition ? (
+            <span className="rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] tabular-nums tracking-wide text-blue-400">
+              Request {position!.current} / {position!.total}
+            </span>
+          ) : null}
+          {total > 1 ? (
+            <span className="rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] tabular-nums tracking-wide text-blue-400">
+              Question {currentStep + 1} / {total}
+            </span>
+          ) : !hasPosition ? (
+            <span className="rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-blue-400">
+              Awaiting Answer
+            </span>
+          ) : null}
+        </div>
       </div>
 
       <div className="mt-3">
@@ -313,6 +338,32 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
 
       <div className="mt-3 flex items-center justify-between">
         <div className="flex items-center gap-1.5">
+          {hasPosition ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={busy || !onPrevious || position!.current === 1}
+                className="h-7 w-7 p-0"
+                onClick={onPrevious}
+                aria-label="Previous question request"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={busy || !onNext || position!.current === position!.total}
+                className="h-7 w-7 p-0"
+                onClick={onNext}
+                aria-label="Next question request"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
+            </>
+          ) : null}
           {total > 1 ? (
             <Button
               type="button"

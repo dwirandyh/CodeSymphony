@@ -61,6 +61,10 @@ export function formatSseEvent(event: ChatEvent): string {
   return `id: ${event.idx}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
+function formatSseHeartbeat(): string {
+  return `event: heartbeat\ndata: ${JSON.stringify({ ts: new Date().toISOString() })}\n\n`;
+}
+
 function summarizeTimelineEnvelope(snapshot: ChatTimelineSnapshot) {
   return {
     timelineItemsCount: snapshot.timelineItems.length,
@@ -98,6 +102,7 @@ function respondForChatRouteError(reply: { code: (statusCode: number) => { send:
   if (
     message === "Cannot dispatch queued messages while the assistant is waiting for approval or review"
     || message === "Cannot edit a queued message while it is dispatching"
+    || message === "Cannot cancel queued message dispatch while it is dispatching"
   ) {
     return reply.code(409).send({ error: message });
   }
@@ -537,6 +542,20 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/threads/:id/queue/:queueMessageId/cancel-dispatch", async (request, reply) => {
+    const params = z.object({
+      id: z.string().min(1),
+      queueMessageId: z.string().min(1),
+    }).parse(request.params);
+
+    try {
+      const queuedMessage = await app.chatService.cancelQueuedMessageDispatch(params.id, params.queueMessageId);
+      return { data: queuedMessage };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to cancel queued message dispatch");
+    }
+  });
+
   app.post("/threads/:id/stop", async (request, reply) => {
     const params = threadParams.parse(request.params);
 
@@ -674,9 +693,9 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const bufferedEvents: ChatEvent[] = [];
       const heartbeat = setInterval(() => {
         if (!closed) {
-          reply.raw.write(": ping\n\n");
+          reply.raw.write(formatSseHeartbeat());
         }
-      }, 15000);
+      }, 5000);
 
       const cleanup = () => {
         if (closed) {

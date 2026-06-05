@@ -24,6 +24,7 @@ describe("filesystem routes", () => {
   it("GET /api/filesystem/browse returns directory listing", async () => {
     browse.mockResolvedValue({
       currentPath: "/home",
+      currentPathIsGitRepo: false,
       parentPath: "/",
       entries: [{ name: "user", type: "directory", isGitRepo: false }],
     });

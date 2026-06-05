@@ -164,6 +164,16 @@ export function applyWorkspaceStartupBootstrap(
   const mergedThreads = mergeBootstrapThreads(data.threads, data.thread);
   queryClient.setQueryData<ChatThread[]>(queryKeys.threads.list(worktreeId), mergedThreads);
 
+  void import("../collections/threads")
+    .then(({ getExistingThreadsCollection, replaceThreadsCollection }) => {
+      if (!getExistingThreadsCollection(queryClient, worktreeId)) {
+        return;
+      }
+
+      replaceThreadsCollection(queryClient, worktreeId, mergedThreads);
+    })
+    .catch(() => {});
+
   if (data.gitStatus) {
     queryClient.setQueryData<Array<GitStatus & { worktreeId: string }>>(
       queryKeys.worktrees.gitStatus(worktreeId),

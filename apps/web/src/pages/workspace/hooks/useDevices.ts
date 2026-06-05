@@ -1,6 +1,7 @@
-import { startTransition, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { DeviceInventorySnapshot, DeviceStreamSession, StartDeviceStreamInput } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
+import { debugLog } from "../../../lib/debugLog";
 
 const EMPTY_SNAPSHOT: DeviceInventorySnapshot = {
   devices: [],
@@ -8,6 +9,62 @@ const EMPTY_SNAPSHOT: DeviceInventorySnapshot = {
   issues: [],
   refreshedAt: new Date(0).toISOString(),
 };
+const DEVICE_SNAPSHOT_TIMEOUT_MS = 5_000;
+
+function roundDurationMs(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function getNowMs(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function createDeviceSnapshotTimeoutError(): Error {
+  return new Error(`Device discovery timed out after ${DEVICE_SNAPSHOT_TIMEOUT_MS}ms`);
+}
+
+function isAbortError(error: unknown): boolean {
+  return (error instanceof DOMException && error.name === "AbortError")
+    || (error instanceof Error && error.name === "AbortError");
+}
+
+async function fetchDevicesSnapshot(reason: "initial" | "reconnect" | "refresh"): Promise<DeviceInventorySnapshot> {
+  const startedAt = getNowMs();
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => {
+    controller.abort();
+  }, DEVICE_SNAPSHOT_TIMEOUT_MS);
+
+  debugLog("devices.panel", "snapshot.load.started", {
+    reason,
+  });
+
+  try {
+    const snapshot = await api.getDevices(controller.signal);
+    debugLog("devices.panel", "snapshot.load.succeeded", {
+      deviceCount: snapshot.devices.length,
+      durationMs: roundDurationMs(getNowMs() - startedAt),
+      issueCount: snapshot.issues.length,
+      reason,
+      sessionCount: snapshot.activeSessions.length,
+    });
+    return snapshot;
+  } catch (error) {
+    const resolvedError = isAbortError(error)
+      ? createDeviceSnapshotTimeoutError()
+      : (error instanceof Error ? error : new Error("Failed to load devices"));
+    debugLog("devices.panel", "snapshot.load.failed", {
+      durationMs: roundDurationMs(getNowMs() - startedAt),
+      error: resolvedError.message,
+      reason,
+    });
+    throw resolvedError;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+}
 
 function upsertSession(snapshot: DeviceInventorySnapshot, session: DeviceStreamSession): DeviceInventorySnapshot {
   const existingIndex = snapshot.activeSessions.findIndex((entry) => entry.sessionId === session.sessionId);
@@ -69,17 +126,15 @@ export function useDevices() {
   const [stoppingSessionId, setStoppingSessionId] = useState<string | null>(null);
 
   const applySnapshot = useCallback((nextSnapshot: DeviceInventorySnapshot) => {
-    startTransition(() => {
-      setSnapshot(nextSnapshot);
-      setLoading(false);
-      setError(null);
-    });
+    setSnapshot(nextSnapshot);
+    setLoading(false);
+    setError(null);
   }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const nextSnapshot = await api.getDevices();
+      const nextSnapshot = await fetchDevicesSnapshot("refresh");
       applySnapshot(nextSnapshot);
     } catch (fetchError) {
       setLoading(false);
@@ -92,9 +147,9 @@ export function useDevices() {
     let stream: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const connect = async () => {
+    const connect = async (reason: "initial" | "reconnect" = "initial") => {
       try {
-        const nextSnapshot = await api.getDevices();
+        const nextSnapshot = await fetchDevicesSnapshot(reason);
         if (!disposed) {
           applySnapshot(nextSnapshot);
         }
@@ -132,12 +187,12 @@ export function useDevices() {
 
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
-          void connect();
+          void connect("reconnect");
         }, 3_000);
       };
     };
 
-    void connect();
+    void connect("initial");
 
     return () => {
       disposed = true;
@@ -152,10 +207,8 @@ export function useDevices() {
     setStartingDeviceId(deviceId);
     try {
       const session = await api.startDeviceStream(deviceId, input);
-      startTransition(() => {
-        setSnapshot((current) => upsertSession(current, session));
-        setError(null);
-      });
+      setSnapshot((current) => upsertSession(current, session));
+      setError(null);
       return session;
     } catch (startError) {
       const message = startError instanceof Error ? startError.message : "Failed to start device stream";
@@ -170,10 +223,8 @@ export function useDevices() {
     setStoppingSessionId(sessionId);
     try {
       await api.stopDeviceStream({ sessionId });
-      startTransition(() => {
-        setSnapshot((current) => removeSession(current, sessionId));
-        setError(null);
-      });
+      setSnapshot((current) => removeSession(current, sessionId));
+      setError(null);
     } catch (stopError) {
       const message = stopError instanceof Error ? stopError.message : "Failed to stop device stream";
       setError(message);

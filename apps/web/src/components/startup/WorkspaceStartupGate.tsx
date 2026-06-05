@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../../lib/api";
-import { isTauriDesktop } from "../../lib/openExternalUrl";
+import { isDesktopShell } from "../../lib/openExternalUrl";
 import {
   hasStartupShellSnapshot,
   loadStartupShellSnapshot,
@@ -26,7 +26,7 @@ function getRuntimeHealthUrl() {
 }
 
 export function WorkspaceStartupGate({ children }: { children: ReactNode }) {
-  const desktopShell = isTauriDesktop();
+  const desktopShell = isDesktopShell();
   const [startupSnapshot] = useState(() => loadStartupShellSnapshot());
   const hasPersistedShell = hasStartupShellSnapshot(startupSnapshot);
   const [ready, setReady] = useState(() => !desktopShell || hasPersistedShell);

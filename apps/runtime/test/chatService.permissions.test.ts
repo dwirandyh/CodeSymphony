@@ -1512,11 +1512,14 @@ describe("chatService permission flow", () => {
       content: "jalankan flutter analyze ya",
     });
 
-    await waitForEvent(
+    const requestedEvent = await waitForEvent(
       chatService,
       threadId,
       (event) => event.type === "permission.requested" && event.payload.requestId === "perm-always-1",
     );
+    expect(requestedEvent.payload.canAlwaysAllow).toBe(true);
+    expect(requestedEvent.payload.alwaysAllowScope).toBe("workspace");
+    expect(requestedEvent.payload.alwaysAllowDescription).toBe("Persists this approval in the workspace for matching future requests.");
 
     await chatService.resolvePermission(threadId, {
       requestId: "perm-always-1",
@@ -1543,6 +1546,248 @@ describe("chatService permission flow", () => {
       permissions?: { allow?: string[] };
     };
     expect(settings.permissions?.allow).toContain("Bash(flutter analyze:*)");
+  });
+
+  it("returns allow_always to native agents when the request supports always allow", async () => {
+    const cursorRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const decision = await onPermissionRequest({
+        requestId: "perm-native-always",
+        toolName: "Bash",
+        toolInput: { command: "bun test" },
+        blockedPath: null,
+        decisionReason: "Tool requires approval",
+        suggestions: [],
+        canAlwaysAllow: true,
+        alwaysAllowScope: "native",
+        alwaysAllowDescription: "Uses Cursor's native always-allow option for matching future requests.",
+        subagentOwnerToolUseId: null,
+        launcherToolUseId: null,
+      });
+
+      await onText(`Decision: ${decision.decision}`);
+      return {
+        output: `Decision: ${decision.decision}`,
+        sessionId: "cursor-session-always",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({ output: "", sessionId: "unused" })),
+      cursorRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+    await prisma.chatThread.update({
+      where: { id: threadId },
+      data: { agent: "cursor", model: "cursor-default" },
+    });
+
+    await chatService.sendMessage(threadId, {
+      content: "run tests",
+    });
+
+    const requestedEvent = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-native-always",
+    );
+    expect(requestedEvent.payload.canAlwaysAllow).toBe(true);
+    expect(requestedEvent.payload.alwaysAllowScope).toBe("native");
+    expect(requestedEvent.payload.alwaysAllowDescription).toBe("Uses Cursor's native always-allow option for matching future requests.");
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-native-always",
+      decision: "allow_always",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Decision: allow_always");
+    expect(
+      events.some(
+        (event) =>
+          event.type === "permission.resolved"
+          && event.payload.requestId === "perm-native-always"
+          && event.payload.decision === "allow_always",
+      ),
+    ).toBe(true);
+  });
+
+  it("emits native always allow scope for OpenCode requests that support always allow", async () => {
+    const opencodeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const decision = await onPermissionRequest({
+        requestId: "perm-opencode-native-always",
+        toolName: "Bash",
+        toolInput: { command: "bun test" },
+        blockedPath: null,
+        decisionReason: "Tool requires approval",
+        suggestions: [],
+        canAlwaysAllow: true,
+        subagentOwnerToolUseId: null,
+        launcherToolUseId: null,
+      });
+
+      await onText(`Decision: ${decision.decision}`);
+      return {
+        output: `Decision: ${decision.decision}`,
+        sessionId: "opencode-session-always",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({ output: "", sessionId: "unused" })),
+      opencodeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+    await prisma.chatThread.update({
+      where: { id: threadId },
+      data: { agent: "opencode", model: "opencode/minimax-m2.5-free" },
+    });
+
+    await chatService.sendMessage(threadId, {
+      content: "run tests",
+    });
+
+    const requestedEvent = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-opencode-native-always",
+    );
+    expect(requestedEvent.payload.canAlwaysAllow).toBe(true);
+    expect(requestedEvent.payload.alwaysAllowScope).toBe("native");
+    expect(requestedEvent.payload.alwaysAllowDescription).toBe("Uses the agent's native always-allow option for matching future requests.");
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-opencode-native-always",
+      decision: "allow_always",
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Decision: allow_always");
+  });
+
+  it("exposes session-level always allow for Codex approvals", async () => {
+    const codexRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const decision = await onPermissionRequest({
+        requestId: "perm-codex-session",
+        toolName: "Bash",
+        toolInput: { command: "bun test" },
+        blockedPath: null,
+        decisionReason: "Tool requires approval",
+        suggestions: [],
+        canAlwaysAllow: true,
+        subagentOwnerToolUseId: null,
+        launcherToolUseId: null,
+      });
+
+      await onText(`Decision: ${decision.decision}`);
+      return {
+        output: `Decision: ${decision.decision}`,
+        sessionId: "codex-session-only",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({ output: "", sessionId: "unused" })),
+      codexRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+    await prisma.chatThread.update({
+      where: { id: threadId },
+      data: { agent: "codex", model: "gpt-5-codex" },
+    });
+
+    await chatService.sendMessage(threadId, {
+      content: "run tests",
+    });
+
+    const requestedEvent = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-codex-session",
+    );
+    expect(requestedEvent.payload.canAlwaysAllow).toBe(true);
+    expect(requestedEvent.payload.alwaysAllowScope).toBe("session");
+    expect(requestedEvent.payload.alwaysAllowDescription).toBe("Remembers this approval for the current Codex session only.");
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-codex-session",
+      decision: "allow_always",
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Decision: allow_always");
+  });
+
+  it("emits null always allow scope for unsupported native requests", async () => {
+    const cursorRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const decision = await onPermissionRequest({
+        requestId: "perm-native-no-always",
+        toolName: "Bash",
+        toolInput: { command: "bun test" },
+        blockedPath: null,
+        decisionReason: "Tool requires approval",
+        suggestions: [],
+        canAlwaysAllow: false,
+        subagentOwnerToolUseId: null,
+        launcherToolUseId: null,
+      });
+
+      await onText(`Decision: ${decision.decision}`);
+      return {
+        output: `Decision: ${decision.decision}`,
+        sessionId: "cursor-session-no-always",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({ output: "", sessionId: "unused" })),
+      cursorRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+    await prisma.chatThread.update({
+      where: { id: threadId },
+      data: { agent: "cursor", model: "cursor-default" },
+    });
+
+    await chatService.sendMessage(threadId, {
+      content: "run tests",
+    });
+
+    const requestedEvent = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-native-no-always",
+    );
+    expect(requestedEvent.payload.canAlwaysAllow).toBe(false);
+    expect(requestedEvent.payload.alwaysAllowScope).toBeNull();
+    expect(requestedEvent.payload.alwaysAllowDescription).toBeNull();
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-native-no-always",
+      decision: "allow",
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Decision: allow");
   });
 
   it("returns error for allow_always when local settings file has invalid JSON", async () => {

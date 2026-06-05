@@ -84,6 +84,7 @@ const ANDROID_GESTURE_LONG_PRESS_DELAY_MS = 420;
 const ANDROID_GESTURE_MAX_SWIPE_DURATION_MS = 1_500;
 const ANDROID_GESTURE_MIN_SWIPE_DURATION_MS = 80;
 const ANDROID_GESTURE_TAP_SLOP_CSS_PX = 8;
+const ANDROID_KEYBOARD_TEXT_FLUSH_DELAY_MS = 35;
 const ANDROID_STREAM_CONNECT_TIMEOUT_MS = 3_000;
 const ANDROID_STREAM_DECODER_STALL_TIMEOUT_MS = 3_500;
 const ANDROID_STREAM_MAX_AUTO_RESTARTS = 8;
@@ -151,6 +152,8 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
   const pendingGestureRef = useRef<PendingAndroidGesture | null>(null);
   const deviceSizeRef = useRef({ height: 0, width: 0 });
   const keyboardActiveRef = useRef(false);
+  const keyboardTextBufferRef = useRef("");
+  const keyboardTextFlushTimerRef = useRef<number | null>(null);
   const packetTimestampUsRef = useRef(0);
   const lastDecodedFrameAtRef = useRef<number | null>(null);
   const lastPacketAtRef = useRef<number | null>(null);
@@ -175,6 +178,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
   const [interactionMessage, setInteractionMessage] = useState<string | null>(null);
   const [keyboardBridgeFocused, setKeyboardBridgeFocused] = useState(false);
   const showMobileViewerControls = useMemo(() => getMobileDeviceViewerControlsFlag(), []);
+  const canUseKeyboardBridge = !showMobileViewerControls;
   const metrics = useMemo(
     () => createDeviceStreamMetrics({
       platform: "android",
@@ -265,6 +269,10 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
   };
 
   const focusKeyboardBridge = () => {
+    if (!canUseKeyboardBridge) {
+      return;
+    }
+
     keyboardActiveRef.current = true;
     debugLog("android.viewer", "keyboard.focus.requested", {
       sessionId,
@@ -275,6 +283,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
   };
 
   const blurKeyboardBridge = () => {
+    flushKeyboardTextBuffer();
     keyboardActiveRef.current = false;
     debugLog("android.viewer", "keyboard.blur.requested", {
       sessionId,
@@ -446,6 +455,38 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
       sessionId,
     });
     return true;
+  };
+
+  const flushKeyboardTextBuffer = () => {
+    if (keyboardTextFlushTimerRef.current != null) {
+      window.clearTimeout(keyboardTextFlushTimerRef.current);
+      keyboardTextFlushTimerRef.current = null;
+    }
+
+    const text = keyboardTextBufferRef.current;
+    keyboardTextBufferRef.current = "";
+    if (text.length === 0) {
+      return;
+    }
+
+    void sendTextInput(text).catch((error) => {
+      showInteractionFeedback(error instanceof Error ? error.message : "Failed to send Android text input.");
+    });
+  };
+
+  const queueKeyboardTextInput = (text: string) => {
+    if (text.length === 0) {
+      return;
+    }
+
+    keyboardTextBufferRef.current += text;
+    if (keyboardTextFlushTimerRef.current != null) {
+      window.clearTimeout(keyboardTextFlushTimerRef.current);
+    }
+
+    keyboardTextFlushTimerRef.current = window.setTimeout(() => {
+      flushKeyboardTextBuffer();
+    }, ANDROID_KEYBOARD_TEXT_FLUSH_DELAY_MS);
   };
 
   const writeDeviceClipboard = async (text: string, paste = false): Promise<boolean> => {
@@ -671,6 +712,11 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
 
   useEffect(() => () => {
     keyboardActiveRef.current = false;
+    if (keyboardTextFlushTimerRef.current != null) {
+      window.clearTimeout(keyboardTextFlushTimerRef.current);
+      keyboardTextFlushTimerRef.current = null;
+    }
+    keyboardTextBufferRef.current = "";
     clipboardPollInFlightRef.current = false;
     hasObservedDeviceClipboardRef.current = false;
     lastClipboardPollErrorRef.current = null;
@@ -771,12 +817,14 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
         metaKey: event.metaKey,
       });
       if (clipboardShortcutAction === "copy_from_device") {
+        flushKeyboardTextBuffer();
         event.preventDefault();
         void handleCopyFromDeviceClipboard();
         return;
       }
 
       if (clipboardShortcutAction === "paste_to_device") {
+        flushKeyboardTextBuffer();
         lastShortcutPasteAtRef.current = Date.now();
         event.preventDefault();
         void handlePasteFromHostClipboard();
@@ -790,6 +838,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
       const specialKeyCode = ANDROID_SPECIAL_KEY_MAP[event.key];
       if (specialKeyCode != null) {
         event.preventDefault();
+        flushKeyboardTextBuffer();
         clearKeyboardBridge();
         sendKeyPress(specialKeyCode);
         return;
@@ -800,9 +849,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
       }
 
       event.preventDefault();
-      void sendTextInput(event.key).catch((error) => {
-        showInteractionFeedback(error instanceof Error ? error.message : "Failed to send Android text input.");
-      });
+      queueKeyboardTextInput(event.key);
       clearKeyboardBridge();
     };
 
@@ -819,6 +866,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
 
       const pastedText = event.clipboardData?.getData("text/plain") ?? "";
       event.preventDefault();
+      flushKeyboardTextBuffer();
       pastePlainTextToDevice(pastedText);
       clearKeyboardBridge();
     };
@@ -828,6 +876,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("paste", handlePaste, true);
+      flushKeyboardTextBuffer();
     };
   }, [sessionId]);
 
@@ -1555,9 +1604,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
       preview: text.slice(0, 64),
       sessionId,
     });
-    void sendTextInput(text).catch((error) => {
-      showInteractionFeedback(error instanceof Error ? error.message : "Failed to send Android text input.");
-    });
+    queueKeyboardTextInput(text);
     clearKeyboardBridge();
   };
 
@@ -1570,6 +1617,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
 
     const pastedText = event.clipboardData.getData("text/plain");
     event.preventDefault();
+    flushKeyboardTextBuffer();
     pastePlainTextToDevice(pastedText);
     clearKeyboardBridge();
   };
@@ -1593,28 +1641,30 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
         viewerExpanded && "fixed inset-0 z-[90]",
       )}
     >
-      <textarea
-        ref={keyboardInputRef}
-        aria-label="Android keyboard bridge"
-        autoCapitalize="off"
-        autoComplete="off"
-        autoCorrect="off"
-        className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
-        enterKeyHint="done"
-        inputMode="text"
-        spellCheck={false}
-        tabIndex={-1}
-        onBlur={() => {
-          clearKeyboardBridge();
-          setKeyboardBridgeFocused(false);
-        }}
-        onFocus={() => {
-          keyboardActiveRef.current = true;
-          setKeyboardBridgeFocused(true);
-        }}
-        onInput={handleKeyboardInput}
-        onPaste={handleKeyboardPaste}
-      />
+      {canUseKeyboardBridge ? (
+        <textarea
+          ref={keyboardInputRef}
+          aria-label="Android keyboard bridge"
+          autoCapitalize="off"
+          autoComplete="off"
+          autoCorrect="off"
+          className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+          enterKeyHint="done"
+          inputMode="text"
+          spellCheck={false}
+          tabIndex={-1}
+          onBlur={() => {
+            clearKeyboardBridge();
+            setKeyboardBridgeFocused(false);
+          }}
+          onFocus={() => {
+            keyboardActiveRef.current = true;
+            setKeyboardBridgeFocused(true);
+          }}
+          onInput={handleKeyboardInput}
+          onPaste={handleKeyboardPaste}
+        />
+      ) : null}
 
       <div className="absolute left-4 top-4 z-20 rounded-full border border-white/10 bg-black/45 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/70">
         {statusLabel}
@@ -1719,26 +1769,28 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
           >
             <LayoutGrid className="h-4 w-4" />
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className={cn(
-              "h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white",
-              keyboardBridgeFocused && "bg-white/12 text-white",
-            )}
-            aria-label={keyboardBridgeFocused ? "Hide Android keyboard bridge" : "Show Android keyboard bridge"}
-            onClick={() => {
-              if (keyboardBridgeFocused) {
-                blurKeyboardBridge();
-                return;
-              }
+          {canUseKeyboardBridge ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white",
+                keyboardBridgeFocused && "bg-white/12 text-white",
+              )}
+              aria-label={keyboardBridgeFocused ? "Hide Android keyboard bridge" : "Show Android keyboard bridge"}
+              onClick={() => {
+                if (keyboardBridgeFocused) {
+                  blurKeyboardBridge();
+                  return;
+                }
 
-              focusKeyboardBridge();
-            }}
-          >
-            <Keyboard className="h-4 w-4" />
-          </Button>
+                focusKeyboardBridge();
+              }}
+            >
+              <Keyboard className="h-4 w-4" />
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="ghost"

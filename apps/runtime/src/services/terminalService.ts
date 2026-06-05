@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildClaudeRuntimeEnv } from "../claude/shellEnv.js";
@@ -71,11 +71,22 @@ function resolveTerminalZdotdir(): string | undefined {
         return undefined;
     }
 
-    // Desktop sidecar sets WEB_DIST_PATH to runtime-bundle/web-dist; avoid existsSync on the
-    // app bundle path (can fail under sandbox) so ZDOTDIR is always wired for packaged builds.
-    const webDistPath = process.env.WEB_DIST_PATH?.trim();
-    if (webDistPath) {
-        return join(dirname(webDistPath), "terminal-zsh");
+    const configuredZdotdir = process.env.CODESYMPHONY_TERMINAL_ZDOTDIR?.trim();
+    if (configuredZdotdir) {
+        const templateZshrc = process.env.CODESYMPHONY_TERMINAL_ZSHRC_TEMPLATE?.trim();
+        const targetZshrc = join(configuredZdotdir, ".zshrc");
+
+        try {
+            mkdirSync(configuredZdotdir, { recursive: true });
+            if (templateZshrc && existsSync(templateZshrc)) {
+                copyFileSync(templateZshrc, targetZshrc);
+            }
+            if (existsSync(targetZshrc)) {
+                return configuredZdotdir;
+            }
+        } catch (error) {
+            console.warn(`Unable to prepare terminal ZDOTDIR at ${configuredZdotdir}:`, error);
+        }
     }
 
     const moduleDir = dirname(fileURLToPath(import.meta.url));

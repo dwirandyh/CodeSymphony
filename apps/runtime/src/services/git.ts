@@ -10,6 +10,7 @@ const DEFAULT_GIT_TIMEOUT_MS = 15_000;
 const STATUS_GIT_TIMEOUT_MS = 4_000;
 const REVIEW_CLI_TIMEOUT_MS = 60_000;
 const BINARY_DETECTION_SAMPLE_BYTES = 8_000;
+const GIT_INDEX_LOCK_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000, 4_000];
 const COMMON_EXECUTABLE_PATHS: Partial<Record<string, string[]>> = {
   gh: ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"],
   glab: ["/opt/homebrew/bin/glab", "/usr/local/bin/glab"],
@@ -110,6 +111,36 @@ async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Pr
     timeoutMs: options?.timeoutMs,
     allowedExitCodes: options?.allowedExitCodes,
   });
+}
+
+function isGitIndexLockError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:index|HEAD)\.lock/i.test(message) && /(?:File exists|Unable to create)/i.test(message);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runGitWithIndexLockRetry(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {
+  let lastError: unknown;
+
+  for (const retryDelayMs of [0, ...GIT_INDEX_LOCK_RETRY_DELAYS_MS]) {
+    if (retryDelayMs > 0) {
+      await delay(retryDelayMs);
+    }
+
+    try {
+      return await runGit(args, cwd, options);
+    } catch (error) {
+      if (!isGitIndexLockError(error)) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+
+  throw lastError;
 }
 
 async function runCommandBuffer(command: string, args: string[], options?: Pick<RunCommandOptions, "cwd" | "timeoutMs">): Promise<Buffer> {
@@ -896,6 +927,6 @@ export async function getFileAtHeadBuffer(cwd: string, filePath: string): Promis
 }
 
 export async function gitCommitAll(cwd: string, message: string): Promise<string> {
-  await runGit(["add", "-A"], cwd);
-  return await runGit(["commit", "-m", message], cwd);
+  await runGitWithIndexLockRetry(["add", "-A"], cwd);
+  return await runGitWithIndexLockRetry(["commit", "-m", message], cwd);
 }

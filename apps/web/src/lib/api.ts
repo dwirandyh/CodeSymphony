@@ -781,6 +781,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({}),
     }),
+  cancelQueuedMessageDispatch: (threadId: string, queueMessageId: string) =>
+    request<ChatQueuedMessage>(`/threads/${threadId}/queue/${queueMessageId}/cancel-dispatch`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   stopRun: async (threadId: string) => {
     const response = await runtimeFetch(`/threads/${threadId}/stop`, {
       method: "POST",
@@ -870,8 +875,10 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to revise plan");
     }
   },
-  getGitStatus: (worktreeId: string) =>
-    request<GitStatus>(`/worktrees/${worktreeId}/git/status`),
+  getGitStatus: (worktreeId: string, opts?: { refresh?: boolean }) => {
+    const params = opts?.refresh ? "?refresh=true" : "";
+    return request<GitStatus>(`/worktrees/${worktreeId}/git/status${params}`);
+  },
   getGitBranchDiffSummary: (worktreeId: string) =>
     request<GitBranchDiffSummary>(`/worktrees/${worktreeId}/git/branch-diff-summary`),
   getGitDiff: (worktreeId: string, opts?: { filePath?: string }) => {
@@ -923,6 +930,48 @@ export const api = {
   getWorktreeDirectoryEntries: (worktreeId: string, directoryPath?: string, signal?: AbortSignal) => {
     const params = directoryPath ? `?path=${encodeURIComponent(directoryPath)}` : "";
     return request<FileEntry[]>(`/worktrees/${worktreeId}/files/tree${params}`, { signal });
+  },
+  createWorktreeFile: (worktreeId: string, input: { path: string; content?: string }) =>
+    request<FileEntry>(`/worktrees/${worktreeId}/files/create-file`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  createWorktreeDirectory: (worktreeId: string, input: { path: string }) =>
+    request<FileEntry>(`/worktrees/${worktreeId}/files/create-directory`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  renameWorktreePath: (worktreeId: string, input: { path: string; name: string }) =>
+    request<FileEntry>(`/worktrees/${worktreeId}/files/rename`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  copyWorktreePath: (worktreeId: string, input: { sourcePath: string; destinationDirectoryPath?: string; overwrite?: boolean }) =>
+    request<FileEntry>(`/worktrees/${worktreeId}/files/copy`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  moveWorktreePath: (worktreeId: string, input: { sourcePath: string; destinationDirectoryPath?: string; overwrite?: boolean }) =>
+    request<FileEntry>(`/worktrees/${worktreeId}/files/move`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  pasteHostClipboardPaths: (worktreeId: string, input: { destinationDirectoryPath?: string }) =>
+    request<FileEntry[]>(`/worktrees/${worktreeId}/files/paste-from-host-clipboard`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  deleteWorktreePath: async (worktreeId: string, input: { path: string }) => {
+    const response = await runtimeFetch(`/worktrees/${worktreeId}/files/path`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to delete path");
+    }
   },
   getSlashCommands: (worktreeId: string, agent: CliAgent, signal?: AbortSignal) =>
     request<SlashCommandCatalog>(`/worktrees/${worktreeId}/slash-commands?agent=${encodeURIComponent(agent)}`, { signal }),
@@ -1013,7 +1062,7 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to open path");
     }
   },
-  getDevices: () => request<DeviceInventorySnapshot>("/devices"),
+  getDevices: (signal?: AbortSignal) => request<DeviceInventorySnapshot>("/devices", signal ? { signal } : undefined),
   streamDevices: () => createEventSource("/devices/stream"),
   startDeviceStream: (deviceId: string, input: StartDeviceStreamInput = {}) =>
     request<DeviceStreamSession>(`/devices/${encodeURIComponent(deviceId)}/stream/start`, {

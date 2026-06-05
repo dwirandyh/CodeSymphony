@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
+import { isOptimisticThreadId } from "../../lib/threadIds";
 
 export const THREAD_STATUS_SNAPSHOT_STALE_TIME_MS = 10_000;
 
@@ -14,7 +15,7 @@ export function useThreadStatusSnapshot(
   return useQuery({
     queryKey: queryKeys.threads.statusSnapshot(threadId!),
     queryFn: () => api.getThreadStatusSnapshot(threadId!),
-    enabled: !!threadId && enabled,
+    enabled: !!threadId && !isOptimisticThreadId(threadId) && enabled,
     staleTime: THREAD_STATUS_SNAPSHOT_STALE_TIME_MS,
   });
 }

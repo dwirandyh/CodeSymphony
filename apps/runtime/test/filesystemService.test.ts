@@ -28,6 +28,7 @@ describe("filesystemService", () => {
     it("lists directories in path", async () => {
       const result = await service.browse(tempDir);
       expect(result.currentPath).toBe(tempDir);
+      expect(result.currentPathIsGitRepo).toBe(false);
       expect(result.parentPath).toBeTruthy();
       const names = result.entries.map((e) => e.name);
       expect(names).toContain("project-a");
@@ -36,6 +37,8 @@ describe("filesystemService", () => {
 
     it("detects git repos", async () => {
       const result = await service.browse(tempDir);
+      const gitRoot = await service.browse(join(tempDir, "project-b"));
+      expect(gitRoot.currentPathIsGitRepo).toBe(true);
       const gitRepo = result.entries.find((e) => e.name === "project-b");
       expect(gitRepo?.isGitRepo).toBe(true);
       const nonGitDir = result.entries.find((e) => e.name === "project-a");

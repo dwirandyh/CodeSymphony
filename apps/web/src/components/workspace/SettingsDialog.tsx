@@ -30,7 +30,7 @@ import {
   supportsDesktopNotifications,
   usesSystemManagedDesktopNotificationPermissions,
 } from "../../lib/desktopNotifications";
-import { isTauriDesktop } from "../../lib/openExternalUrl";
+import { isDesktopShell } from "../../lib/openExternalUrl";
 import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
 import { cn } from "../../lib/utils";
@@ -569,7 +569,7 @@ interface SettingsDialogProps {
 }
 
 function isMacDesktopShell(): boolean {
-  if (!isTauriDesktop() || typeof navigator === "undefined") {
+  if (!isDesktopShell() || typeof navigator === "undefined") {
     return false;
   }
 

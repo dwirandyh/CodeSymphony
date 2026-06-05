@@ -93,6 +93,21 @@ describe("useWorkspaceSearchParams", () => {
     expect(mockNav).toHaveBeenCalledTimes(1);
   });
 
+  it("can push a browser history entry for top-level workspace navigation", async () => {
+    const mockNav = vi.fn();
+    vi.mocked(useNavigate).mockReturnValue(mockNav);
+    act(() => {
+      root.render(<TestComponent />);
+    });
+    act(() => {
+      hookResult.updateSearch({ view: "automations" }, { replace: false });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(mockNav.mock.calls[0]?.[0]).toMatchObject({ replace: false });
+  });
+
   it("clears automation-only search params when leaving the automations view", async () => {
     const mockNav = vi.fn();
     vi.mocked(useNavigate).mockReturnValue(mockNav);

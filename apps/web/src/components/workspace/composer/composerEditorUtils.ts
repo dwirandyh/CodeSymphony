@@ -90,12 +90,31 @@ function getTextFromNode(node: Node, options?: { serializeMentions?: boolean }):
   return `${text}\n`;
 }
 
+function getTextFromNodes(nodes: Iterable<Node>, options?: { serializeMentions?: boolean }): string {
+  let text = "";
+
+  for (const node of nodes) {
+    const nodeText = getTextFromNode(node, options);
+    if (
+      text.length > 0
+      && !text.endsWith("\n")
+      && node instanceof HTMLElement
+      && isBlockElement(node)
+    ) {
+      text += "\n";
+    }
+    text += nodeText;
+  }
+
+  return text;
+}
+
 export function getPlainTextFromEditor(el: HTMLElement): string {
-  return Array.from(el.childNodes).map((node) => getTextFromNode(node)).join("");
+  return getTextFromNodes(el.childNodes);
 }
 
 export function getSerializedTextFromEditor(el: HTMLElement): string {
-  return Array.from(el.childNodes).map((node) => getTextFromNode(node, { serializeMentions: true })).join("");
+  return getTextFromNodes(el.childNodes, { serializeMentions: true });
 }
 
 export function getMentionedFilesFromEditor(el: HTMLElement): MentionedFile[] {

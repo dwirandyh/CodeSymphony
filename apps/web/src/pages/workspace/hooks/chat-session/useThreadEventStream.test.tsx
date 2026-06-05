@@ -79,7 +79,7 @@ class MockEventSource {
     this.readyState = MockEventSource.CLOSED;
   }
 
-  emit(type: string, payload: ChatEvent) {
+  emit(type: string, payload: ChatEvent | Record<string, unknown>) {
     const event = { data: JSON.stringify(payload) } as MessageEvent<string>;
     for (const listener of this.listeners.get(type) ?? []) {
       listener(event);
@@ -351,6 +351,20 @@ afterEach(() => {
 });
 
 describe("useThreadEventStream", () => {
+  it("does not open a stream or fetch snapshots for optimistic thread ids", async () => {
+    const threadId = "optimistic-thread:wt-1:test";
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(MockEventSource.instances).toHaveLength(0);
+    expect(getThreadStatusSnapshotMock).not.toHaveBeenCalled();
+    expect(getTimelineSnapshotMock).not.toHaveBeenCalled();
+  });
+
   it("does not hit a render loop while bootstrapping with no selected thread", async () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -1038,7 +1052,7 @@ describe("useThreadEventStream", () => {
     expect(cancelQueriesMock).not.toHaveBeenCalled();
   });
 
-  it("waits for the bootstrap status snapshot before opening the first SSE stream", async () => {
+  it("does not use a status-only bootstrap snapshot as the first SSE cursor", async () => {
     const threadId = "selected-thread";
     let resolveStatus: ((snapshot: { status: string; newestIdx: number | null }) => void) | null = null;
     const pendingStatus = new Promise<{ status: string; newestIdx: number | null }>((resolve) => {
@@ -1060,7 +1074,7 @@ describe("useThreadEventStream", () => {
     });
 
     expect(MockEventSource.instances).toHaveLength(1);
-    expect(MockEventSource.instances[0]?.url).toContain("afterIdx=41");
+    expect(MockEventSource.instances[0]?.url).not.toContain("afterIdx=41");
 
     const stream = MockEventSource.instances[0]!;
     act(() => {
@@ -1356,5 +1370,58 @@ describe("useThreadEventStream", () => {
       "event-8",
     ]);
     expect(latestWaitingAssistant).toBeNull();
+  });
+
+  it("keeps an open stream healthy when heartbeat events arrive without chat events", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot([
+      makeEvent({
+        id: "event-1",
+        threadId,
+        idx: 1,
+        type: "tool.started",
+        payload: { toolUseId: "tool-1", toolName: "Read" },
+      }),
+    ]));
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+      {
+        id: threadId,
+        worktreeId: "wt-1",
+        title: "Thread",
+        kind: "default",
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: true,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      } satisfies ChatThread,
+    ]);
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.readyState = MockEventSource.OPEN;
+      stream.onopen?.();
+    });
+    expect(getThreadStreamConnectionState(threadId)).toBe("healthy");
+
+    await act(async () => {
+      vi.advanceTimersByTime(6_000);
+      stream.emit("heartbeat", { ts: "2026-01-01T00:00:06.000Z" });
+      vi.advanceTimersByTime(4_000);
+      await Promise.resolve();
+    });
+
+    expect(getThreadStreamConnectionState(threadId)).toBe("healthy");
+    expect(getThreadStatusSnapshotMock).not.toHaveBeenCalled();
+    expect(getTimelineSnapshotMock).not.toHaveBeenCalled();
   });
 });

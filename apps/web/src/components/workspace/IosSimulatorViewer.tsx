@@ -523,6 +523,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const [keyboardSyncAvailable, setKeyboardSyncAvailable] = useState(false);
   const [softwareKeyboardVisible, setSoftwareKeyboardVisible] = useState(false);
   const showMobileViewerControls = useMemo(() => getMobileDeviceViewerControlsFlag(), []);
+  const canUseKeyboardBridge = !showMobileViewerControls;
 
   const urls = useMemo(() => buildIosViewerUrls(sessionId), [sessionId]);
   const metrics = useMemo(
@@ -536,6 +537,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
 
   const screenInteractionEnabled = liveViewportAligned;
   const keyboardUiState = resolveIosKeyboardUiState({
+    keyboardBridgeEnabled: canUseKeyboardBridge,
     keyboardBridgeFocused,
     keyboardSyncAvailable,
     showMobileViewerControls,
@@ -979,7 +981,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   }, [liveViewportAligned, metrics]);
 
   useEffect(() => {
-    if (!showMobileViewerControls || !keyboardSyncAvailable || !softwareKeyboardVisible) {
+    if (!canUseKeyboardBridge || !showMobileViewerControls || !keyboardSyncAvailable || !softwareKeyboardVisible) {
       return;
     }
 
@@ -989,10 +991,10 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     }
 
     focusKeyboardInput();
-  }, [keyboardSyncAvailable, showMobileViewerControls, softwareKeyboardVisible]);
+  }, [canUseKeyboardBridge, keyboardSyncAvailable, showMobileViewerControls, softwareKeyboardVisible]);
 
   useEffect(() => {
-    if (!showMobileViewerControls || !keyboardSyncAvailable || softwareKeyboardVisible) {
+    if (!canUseKeyboardBridge || !showMobileViewerControls || !keyboardSyncAvailable || softwareKeyboardVisible) {
       return;
     }
 
@@ -1002,7 +1004,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     }
 
     dismissKeyboardInput();
-  }, [keyboardBridgeFocused, keyboardSyncAvailable, showMobileViewerControls, softwareKeyboardVisible]);
+  }, [canUseKeyboardBridge, keyboardBridgeFocused, keyboardSyncAvailable, showMobileViewerControls, softwareKeyboardVisible]);
 
   useEffect(() => {
     void loadPointDimensions();
@@ -1950,6 +1952,10 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   };
 
   const focusKeyboardInput = () => {
+    if (!canUseKeyboardBridge) {
+      return;
+    }
+
     clearKeyboardRefocusTimer();
     if (document.activeElement === keyboardInputRef.current) {
       keyboardActiveRef.current = true;
@@ -1983,6 +1989,10 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   };
 
   const toggleKeyboardInput = (closeKeyboard = false) => {
+    if (!canUseKeyboardBridge) {
+      return;
+    }
+
     const input = keyboardInputRef.current;
     if (!input) {
       return;
@@ -2379,6 +2389,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     }
 
     const shouldFocusKeyboardBridge = shouldFocusIosKeyboardBridgeOnSurfacePointerDown({
+      keyboardBridgeEnabled: canUseKeyboardBridge,
       keyboardBridgeFocused,
       keyboardSyncAvailable: keyboardSyncAvailableRef.current,
       showMobileViewerControls,
@@ -2710,56 +2721,59 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         viewerExpanded && "fixed inset-0 z-[90]",
       )}
     >
-      <textarea
-        ref={keyboardInputRef}
-        aria-label="iOS keyboard bridge"
-        autoCapitalize="off"
-        autoComplete="off"
-        autoCorrect="off"
-        className={cn(
-          showMobileKeyboardBridge
-            ? "absolute inset-x-3 bottom-3 z-30 min-h-11 rounded-2xl border border-white/15 bg-black/45 px-3 py-2 text-sm text-white shadow-[0_16px_48px_rgba(0,0,0,0.35)] backdrop-blur-md placeholder:text-white/45"
-            : "pointer-events-none absolute left-0 top-0 h-px w-px opacity-0",
-        )}
-        enterKeyHint="done"
-        inputMode="text"
-        placeholder={showMobileKeyboardBridge ? "Type into iOS" : undefined}
-        spellCheck={false}
-        tabIndex={-1}
-        onBlur={() => {
-          flushKeyboardTextBuffer();
-          keyboardActiveRef.current = false;
-          setKeyboardBridgeFocused(false);
-          if (keyboardBlurSuppressedRef.current) {
-            keyboardBlurSuppressedRef.current = false;
-            return;
-          }
-
-          if (!shouldMaintainIosKeyboardBridgeFocusOnBlur({
-            keyboardSyncAvailable: keyboardSyncAvailableRef.current,
-            showMobileViewerControls,
-            softwareKeyboardVisible: softwareKeyboardVisibleRef.current,
-          })) {
-            return;
-          }
-
-          clearKeyboardRefocusTimer();
-          keyboardRefocusTimerRef.current = window.setTimeout(() => {
-            keyboardRefocusTimerRef.current = null;
-            if (!softwareKeyboardVisibleRef.current || !keyboardSyncAvailableRef.current) {
+      {canUseKeyboardBridge ? (
+        <textarea
+          ref={keyboardInputRef}
+          aria-label="iOS keyboard bridge"
+          autoCapitalize="off"
+          autoComplete="off"
+          autoCorrect="off"
+          className={cn(
+            showMobileKeyboardBridge
+              ? "absolute inset-x-3 bottom-3 z-30 min-h-11 rounded-2xl border border-white/15 bg-black/45 px-3 py-2 text-sm text-white shadow-[0_16px_48px_rgba(0,0,0,0.35)] backdrop-blur-md placeholder:text-white/45"
+              : "pointer-events-none absolute left-0 top-0 h-px w-px opacity-0",
+          )}
+          enterKeyHint="done"
+          inputMode="text"
+          placeholder={showMobileKeyboardBridge ? "Type into iOS" : undefined}
+          spellCheck={false}
+          tabIndex={-1}
+          onBlur={() => {
+            flushKeyboardTextBuffer();
+            keyboardActiveRef.current = false;
+            setKeyboardBridgeFocused(false);
+            if (keyboardBlurSuppressedRef.current) {
+              keyboardBlurSuppressedRef.current = false;
               return;
             }
-            focusKeyboardInput();
-          }, 120);
-        }}
-        onFocus={() => {
-          clearKeyboardRefocusTimer();
-          keyboardActiveRef.current = true;
-          setKeyboardBridgeFocused(true);
-        }}
-        onInput={handleKeyboardInput}
-        onKeyDown={handleKeyboardKeyDown}
-      />
+
+            if (!shouldMaintainIosKeyboardBridgeFocusOnBlur({
+              keyboardBridgeEnabled: canUseKeyboardBridge,
+              keyboardSyncAvailable: keyboardSyncAvailableRef.current,
+              showMobileViewerControls,
+              softwareKeyboardVisible: softwareKeyboardVisibleRef.current,
+            })) {
+              return;
+            }
+
+            clearKeyboardRefocusTimer();
+            keyboardRefocusTimerRef.current = window.setTimeout(() => {
+              keyboardRefocusTimerRef.current = null;
+              if (!softwareKeyboardVisibleRef.current || !keyboardSyncAvailableRef.current) {
+                return;
+              }
+              focusKeyboardInput();
+            }, 120);
+          }}
+          onFocus={() => {
+            clearKeyboardRefocusTimer();
+            keyboardActiveRef.current = true;
+            setKeyboardBridgeFocused(true);
+          }}
+          onInput={handleKeyboardInput}
+          onKeyDown={handleKeyboardKeyDown}
+        />
+      ) : null}
 
       <div className="pointer-events-none absolute left-4 top-4 z-20 rounded-full border border-white/10 bg-black/45 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/70">
         {statusLabel}
@@ -2767,28 +2781,6 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
 
       {showMobileViewerControls ? (
         <div className="absolute right-4 top-4 z-20 flex items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className={cn(
-              "h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white",
-              keyboardButtonActive && "bg-white/12 text-white",
-            )}
-            aria-label={keyboardButtonActive ? "Hide iOS keyboard" : "Show iOS keyboard"}
-            title={keyboardButtonActive ? "Hide iOS keyboard" : "Show iOS keyboard"}
-            onPointerDown={() => {
-              keyboardToggleSnapshotRef.current = keyboardUiState.usesSimulatorKeyboardSync
-                ? softwareKeyboardVisibleRef.current
-                : document.activeElement === keyboardInputRef.current || keyboardBridgeFocused;
-            }}
-            onClick={() => {
-              toggleKeyboardInput(keyboardToggleSnapshotRef.current);
-              keyboardToggleSnapshotRef.current = false;
-            }}
-          >
-            <Keyboard className="h-4 w-4" />
-          </Button>
           <Button
             type="button"
             variant="ghost"

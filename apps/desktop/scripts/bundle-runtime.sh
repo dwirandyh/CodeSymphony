@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bundle the runtime for Tauri packaging.
+# Bundle the runtime for Electron packaging.
 # Produces a self-contained runtime-bundle/ directory with:
 #   - dist/          (compiled JS)
 #   - prisma/        (schema + migrations)
@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DESKTOP_DIR="${SCRIPT_DIR}/.."
 WORKSPACE_ROOT="${DESKTOP_DIR}/../.."
-BUNDLE_DIR="$(cd "${DESKTOP_DIR}/src-tauri" && pwd)/runtime-bundle"
+BUNDLE_DIR="$(cd "${DESKTOP_DIR}/electron" && pwd)/runtime-bundle"
 SIGN_MACOS_BINARIES_SCRIPT="${SCRIPT_DIR}/sign-macos-binaries.sh"
 WRITE_RUNTIME_BUNDLE_MANIFEST_SCRIPT="${SCRIPT_DIR}/write-runtime-bundle-manifest.mjs"
 CURRENT_ARCH="$(uname -m)"
@@ -82,32 +82,6 @@ install_runtime_bundle_dependencies() {
     cd "${BUNDLE_DIR}"
     bun install --production --linker=hoisted --no-progress
   )
-}
-
-prune_node_pty_prebuilds() {
-  local prebuilds_dir="${BUNDLE_DIR}/node_modules/node-pty/prebuilds"
-  local keep_dir=""
-  local entry=""
-
-  if [[ ! -d "${prebuilds_dir}" ]]; then
-    return 0
-  fi
-
-  case "${CURRENT_ARCH}" in
-    arm64)
-      keep_dir="darwin-arm64"
-      ;;
-    x86_64)
-      keep_dir="darwin-x64"
-      ;;
-  esac
-
-  shopt -s nullglob
-  for entry in "${prebuilds_dir}"/*; do
-    [[ "$(basename "${entry}")" == "${keep_dir}" ]] && continue
-    rm -rf "${entry}"
-  done
-  shopt -u nullglob
 }
 
 prune_claude_sdk_vendor_binaries() {
@@ -211,9 +185,15 @@ bun run --filter @codesymphony/runtime build
 echo "=== Installing runtime production dependencies ==="
 install_runtime_bundle_dependencies
 
-echo "=== Copying compiled JS ==="
+echo "=== Bundling runtime JS ==="
 rm -rf "${BUNDLE_DIR}/dist"
-cp -r "${WORKSPACE_ROOT}/apps/runtime/dist" "${BUNDLE_DIR}/dist"
+mkdir -p "${BUNDLE_DIR}/dist"
+bun build "${WORKSPACE_ROOT}/apps/runtime/src/index.ts" \
+  --target=bun \
+  --format=esm \
+  --minify \
+  --packages=external \
+  --outfile="${BUNDLE_DIR}/dist/index.js"
 
 echo "=== Copying terminal zsh bootstrap ==="
 rm -rf "${BUNDLE_DIR}/terminal-zsh"
@@ -335,16 +315,10 @@ echo "=== Pruning bundled artifacts for production ==="
 prune_bundle_root
 rm -rf "${BUNDLE_DIR}/android-ws-scrcpy/dist/node_modules/.bin" "${NODE_MODULES_DIR}/.bin"
 remove_bundle_source_maps
-prune_node_pty_prebuilds
 prune_claude_sdk_vendor_binaries
 prune_prisma_runtime_artifacts
 assert_no_prohibited_files
 assert_no_symlinks_under "${BUNDLE_DIR}"
-
-echo "=== Fixing node-pty permissions ==="
-# node-pty v1.x uses prebuilds/<platform>/spawn-helper
-# Search the entire bundle to catch all copies regardless of Bun's hoisting.
-find "${BUNDLE_DIR}/node_modules" -name "spawn-helper" -exec chmod +x {} \; -exec echo "✓ Fixed permissions: {}" \;
 
 echo "=== Signing bundled macOS native binaries ==="
 bash "${SIGN_MACOS_BINARIES_SCRIPT}" "${BUNDLE_DIR}"

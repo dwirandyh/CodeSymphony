@@ -149,6 +149,21 @@ describe("worktreeService", () => {
       expect(isDefaultBranchName(result.worktree.branch)).toBe(true);
       const readyWorktree = await waitForProvisionedWorktree(service, result.worktree.id);
       expect(readyWorktree.status).toBe("active");
+
+      const threads = await service.listThreads(result.worktree.id);
+      expect(threads).toHaveLength(0);
+    });
+
+    it("creates an initial thread only when explicitly requested", async () => {
+      const result = await service.create(repositoryId, { branch: "initial-thread-test", ensureInitialThread: true });
+      createdWorktreeIds.push(result.worktree.id);
+
+      const readyWorktree = await waitForProvisionedWorktree(service, result.worktree.id);
+      expect(readyWorktree.status).toBe("active");
+
+      const threads = await service.listThreads(result.worktree.id);
+      expect(threads).toHaveLength(1);
+      expect(threads[0]?.title).toBe("New Thread");
     });
 
     it("skips automatic names that already exist as local git branches", async () => {
@@ -392,8 +407,15 @@ describe("worktreeService", () => {
       createdWorktreeIds.push(created.worktree.id);
       await waitForProvisionedWorktree(service, created.worktree.id);
 
+      const thread = await prisma.chatThread.create({
+        data: {
+          worktreeId: created.worktree.id,
+          title: "Thread",
+        },
+      });
+
       const threads = await service.listThreads(created.worktree.id);
-      expect(threads.length).toBeGreaterThanOrEqual(1);
+      expect(threads.map((entry) => entry.id)).toEqual([thread.id]);
     });
 
     it("returns threads in createdAt ascending order", async () => {
@@ -401,10 +423,12 @@ describe("worktreeService", () => {
       createdWorktreeIds.push(created.worktree.id);
       await waitForProvisionedWorktree(service, created.worktree.id);
 
-      const mainThread = await prisma.chatThread.findFirst({
-        where: { worktreeId: created.worktree.id },
+      const mainThread = await prisma.chatThread.create({
+        data: {
+          worktreeId: created.worktree.id,
+          title: "First Thread",
+        },
       });
-      expect(mainThread).toBeTruthy();
 
       const newerThread = await prisma.chatThread.create({
         data: {
@@ -414,7 +438,7 @@ describe("worktreeService", () => {
       });
 
       const threads = await service.listThreads(created.worktree.id);
-      expect(threads.map((thread) => thread.id)).toEqual([mainThread!.id, newerThread.id]);
+      expect(threads.map((thread) => thread.id)).toEqual([mainThread.id, newerThread.id]);
     });
   });
 });

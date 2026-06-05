@@ -14,6 +14,11 @@ function compareRepositories(left: Repository, right: Repository) {
   return right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt);
 }
 
+function isCollectionSyncNotInitializedError(error: unknown) {
+  return error instanceof Error
+    && error.message === "Collection must be in 'ready' state for manual sync operations. Sync not initialized yet.";
+}
+
 function toPlainWorktree(worktree: Worktree): Worktree {
   return {
     id: worktree.id,
@@ -141,11 +146,42 @@ export function refetchRepositoriesCollection(queryClient: QueryClient) {
   return getRepositoriesCollection(queryClient).utils.refetch();
 }
 
+export async function refreshRepositoriesCollectionFromServer(queryClient: QueryClient) {
+  const liveRepositories = (await api.listRepositories()).map(toPlainRepository).sort(compareRepositories);
+  queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, liveRepositories);
+
+  const collection = getExistingRepositoriesCollection(queryClient);
+  if (!collection) {
+    return liveRepositories;
+  }
+
+  const liveRepositoryIds = new Set(liveRepositories.map((repository) => repository.id));
+
+  try {
+    collection.utils.writeBatch(() => {
+      for (const repository of (collection.toArray as unknown as Repository[])) {
+        if (!liveRepositoryIds.has(repository.id)) {
+          collection.utils.writeDelete(repository.id);
+        }
+      }
+
+      for (const repository of liveRepositories) {
+        collection.utils.writeUpsert(repository);
+      }
+    });
+  } catch (error) {
+    if (!isCollectionSyncNotInitializedError(error)) {
+      throw error;
+    }
+  }
+
+  return liveRepositories;
+}
+
 export function upsertRepositoryInCollection(queryClient: QueryClient, repository: Repository) {
   const collection = getRepositoriesCollection(queryClient);
   const nextRepository = toPlainRepository(repository);
 
-  collection.utils.writeUpsert(nextRepository);
   queryClient.setQueryData<Repository[] | undefined>(queryKeys.repositories.all, (current) => {
     const next = [...(current ?? [])];
     const existingIndex = next.findIndex((entry) => entry.id === nextRepository.id);
@@ -158,6 +194,14 @@ export function upsertRepositoryInCollection(queryClient: QueryClient, repositor
 
     return [...next].sort(compareRepositories);
   });
+
+  try {
+    collection.utils.writeUpsert(nextRepository);
+  } catch (error) {
+    if (!isCollectionSyncNotInitializedError(error)) {
+      throw error;
+    }
+  }
 }
 
 export async function resetRepositoriesCollectionRegistryForTest() {

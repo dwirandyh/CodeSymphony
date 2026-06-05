@@ -11,6 +11,8 @@ import {
   matchesNavigateForwardShortcut,
   matchesNextSessionTabShortcut,
   matchesNextWorktreeShortcut,
+  matchesOpenInAppShortcut,
+  matchesOpenPullRequestShortcut,
   matchesOpenSettingsShortcut,
   matchesPreviousSessionTabShortcut,
   matchesPreviousWorktreeShortcut,
@@ -28,6 +30,10 @@ describe("keyboardShortcuts", () => {
   it("returns the current-platform label for a shortcut definition", () => {
     expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_settings, "mac")).toBe("⌘,");
     expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_settings, "windows")).toBe("Ctrl+,");
+    expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_in_app, "mac")).toBe("⌘⇧A");
+    expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_in_app, "windows")).toBe("Ctrl+Shift+A");
+    expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_pull_request, "mac")).toBe("⌘G");
+    expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.open_pull_request, "windows")).toBe("Ctrl+G");
     expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.close_active_surface, "linux")).toBeNull();
   });
 
@@ -105,6 +111,54 @@ describe("keyboardShortcuts", () => {
       shiftKey: false,
       defaultPrevented: true,
     }, true)).toBe(false);
+  });
+
+  it("has unique platform bindings for shortcuts with a concrete binding", () => {
+    for (const platform of ["mac", "windows", "linux"] as const) {
+      const bindings = Object.values(WORKSPACE_SHORTCUTS)
+        .map((shortcut) => shortcut.bindings[platform])
+        .filter((binding): binding is string => binding != null);
+
+      expect(new Set(bindings).size).toBe(bindings.length);
+    }
+  });
+
+  it("matches open-in-app and open-pull-request shortcuts", () => {
+    expect(matchesOpenInAppShortcut({
+      key: "A",
+      metaKey: true,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: true,
+      defaultPrevented: false,
+    }, true)).toBe(true);
+
+    expect(matchesOpenInAppShortcut({
+      key: "a",
+      metaKey: false,
+      ctrlKey: true,
+      altKey: false,
+      shiftKey: true,
+      defaultPrevented: false,
+    }, false)).toBe(true);
+
+    expect(matchesOpenPullRequestShortcut({
+      key: "g",
+      metaKey: true,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+    }, true)).toBe(true);
+
+    expect(matchesOpenPullRequestShortcut({
+      key: "G",
+      metaKey: false,
+      ctrlKey: true,
+      altKey: false,
+      shiftKey: false,
+      defaultPrevented: false,
+    }, false)).toBe(true);
   });
 
   it("matches create session shortcuts from the ADR", () => {

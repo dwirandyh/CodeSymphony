@@ -5,6 +5,7 @@ import path from "node:path";
 type FileEntry = {
   path: string;
   type: "file" | "directory";
+  sourceControlStatus?: "tracked" | "untracked" | "ignored";
 };
 
 type CacheEntry = {
@@ -14,6 +15,15 @@ type CacheEntry = {
 };
 
 const CACHE_TTL_MS = 30_000;
+const FALLBACK_SCAN_ENTRY_LIMIT = 10_000;
+const FALLBACK_SCAN_IGNORED_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".next",
+  "dist",
+  "build",
+  "coverage",
+]);
 
 export function createFileService() {
   const cache = new Map<string, CacheEntry>();
@@ -44,10 +54,18 @@ export function createFileService() {
         );
       });
 
-    const [allFiles, deletedFiles] = await Promise.all([
-      execGit(["ls-files", "--cached", "--others", "--exclude-standard"]),
-      execGit(["ls-files", "--deleted"]),
-    ]);
+    let allFiles: string[];
+    let deletedFiles: string[];
+    try {
+      [allFiles, deletedFiles] = await Promise.all([
+        execGit(["ls-files", "--cached", "--others", "--exclude-standard"]),
+        execGit(["ls-files", "--deleted"]),
+      ]);
+    } catch {
+      const fallbackEntry = await listFromFilesystem(worktreePath);
+      cache.set(worktreePath, fallbackEntry);
+      return fallbackEntry;
+    }
 
     const deletedSet = new Set(deletedFiles);
     const files = allFiles.filter((f) => !deletedSet.has(f));
@@ -66,6 +84,136 @@ export function createFileService() {
     const entry: CacheEntry = { files, directories, timestamp: Date.now() };
     cache.set(worktreePath, entry);
     return entry;
+  }
+
+  async function listFromFilesystem(worktreePath: string): Promise<CacheEntry> {
+    const files: string[] = [];
+    const directories: string[] = [];
+
+    async function visit(relativeDirectoryPath: string): Promise<void> {
+      if (files.length + directories.length >= FALLBACK_SCAN_ENTRY_LIMIT) {
+        return;
+      }
+
+      const absoluteDirectoryPath = path.join(worktreePath, relativeDirectoryPath);
+      const dirents = await readdir(absoluteDirectoryPath, { withFileTypes: true }).catch(() => []);
+
+      for (const dirent of dirents) {
+        if (files.length + directories.length >= FALLBACK_SCAN_ENTRY_LIMIT) {
+          return;
+        }
+
+        if (FALLBACK_SCAN_IGNORED_DIRS.has(dirent.name)) {
+          continue;
+        }
+
+        const relativePath = relativeDirectoryPath ? `${relativeDirectoryPath}/${dirent.name}` : dirent.name;
+        if (dirent.isDirectory()) {
+          directories.push(relativePath);
+          await visit(relativePath);
+          continue;
+        }
+
+        if (dirent.isFile()) {
+          files.push(relativePath);
+          continue;
+        }
+
+        if (dirent.isSymbolicLink()) {
+          const targetStat = await stat(path.join(worktreePath, relativePath)).catch(() => null);
+          if (targetStat?.isDirectory()) {
+            directories.push(relativePath);
+            await visit(relativePath);
+          } else if (targetStat?.isFile()) {
+            files.push(relativePath);
+          }
+        }
+      }
+    }
+
+    await visit("");
+    return {
+      files: files.sort(),
+      directories: directories.sort(),
+      timestamp: Date.now(),
+    };
+  }
+
+  function gitPathspec(entry: FileEntry): string {
+    return entry.type === "directory" ? `${entry.path}/` : entry.path;
+  }
+
+  async function execGit(worktreePath: string, args: string[]): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      execFile(
+        "git",
+        args,
+        { cwd: worktreePath, maxBuffer: 10 * 1024 * 1024 },
+        (error, stdout) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(stdout);
+        },
+      );
+    });
+  }
+
+  async function listIgnoredPaths(worktreePath: string, entries: FileEntry[]): Promise<Set<string>> {
+    return new Promise<Set<string>>((resolve) => {
+      execFile(
+        "git",
+        ["check-ignore", "--", ...entries.map((entry) => entry.path)],
+        { cwd: worktreePath, maxBuffer: 10 * 1024 * 1024 },
+        (error, stdout) => {
+          if (error && error.code !== 1) {
+            resolve(new Set());
+            return;
+          }
+
+          resolve(new Set(
+            stdout
+              .split("\n")
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0),
+          ));
+        },
+      );
+    });
+  }
+
+  async function addSourceControlStatus(worktreePath: string, entries: FileEntry[]): Promise<FileEntry[]> {
+    if (entries.length === 0) {
+      return entries;
+    }
+
+    const trackedOutput = await execGit(worktreePath, [
+      "ls-files",
+      "--",
+      ...entries.map(gitPathspec),
+    ]).catch(() => "");
+    const trackedPaths = trackedOutput
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    const ignoredPaths = await listIgnoredPaths(worktreePath, entries);
+
+    return entries.map((entry) => {
+      const prefix = entry.type === "directory" ? `${entry.path}/` : entry.path;
+      const tracked = trackedPaths.some((trackedPath) => (
+        entry.type === "directory" ? trackedPath.startsWith(prefix) : trackedPath === entry.path
+      ));
+
+      if (tracked) {
+        return { ...entry, sourceControlStatus: "tracked" as const };
+      }
+
+      return {
+        ...entry,
+        sourceControlStatus: ignoredPaths.has(entry.path) ? "ignored" as const : "untracked" as const,
+      };
+    });
   }
 
   function scoreMatch(entryPath: string, queryLower: string): number {
@@ -96,8 +244,9 @@ export function createFileService() {
         : path.resolve(worktreePath);
 
       const dirents = await readdir(targetPath, { withFileTypes: true });
+      const visibleDirents = dirents.filter((dirent) => !FALLBACK_SCAN_IGNORED_DIRS.has(dirent.name));
       const entries = await Promise.all(
-        dirents.map(async (dirent) => {
+        visibleDirents.map(async (dirent) => {
           let type: FileEntry["type"] | null = null;
 
           if (dirent.isDirectory()) {
@@ -124,7 +273,7 @@ export function createFileService() {
         }),
       );
 
-      return entries
+      const sortedEntries = entries
         .filter((entry): entry is FileEntry => entry !== null)
         .sort((left, right) => {
           if (left.type !== right.type) {
@@ -133,6 +282,8 @@ export function createFileService() {
 
           return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: "base" });
         });
+
+      return addSourceControlStatus(worktreePath, sortedEntries);
     },
 
     async searchFiles(

@@ -9,6 +9,7 @@ import {
   type Worktree,
 } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
+import { AGENT_LABELS } from "../components/workspace/composer/AgentModelSelector";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { disposeTerminalRuntime } from "../components/workspace/terminalRuntimeRegistry";
@@ -83,6 +84,10 @@ const WorkspaceAutomationsPanel = lazy(loadWorkspaceAutomationsPanel);
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import {
+  pruneSettledWorktreeStatusOverrides,
+  reconcileWorktreeStatusOverrides,
+} from "./workspace/worktreeStatusOverrides";
+import {
   getJumpToWorktreeShortcutIndex,
   matchesCreateTerminalShortcut,
   matchesCreateThreadShortcut,
@@ -91,11 +96,14 @@ import {
   matchesNavigateForwardShortcut,
   matchesNextSessionTabShortcut,
   matchesNextWorktreeShortcut,
+  matchesOpenInAppShortcut,
+  matchesOpenPullRequestShortcut,
   matchesOpenSettingsShortcut,
   matchesPreviousSessionTabShortcut,
   matchesPreviousWorktreeShortcut,
   matchesToggleWorkspaceSidebarShortcut,
 } from "../components/workspace/keyboardShortcuts";
+import { resolvePreferredApp } from "../components/workspace/openInAppPreferences";
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
@@ -140,7 +148,7 @@ import {
   type WorkspaceLiveScopeSelection,
   type WorkspaceLiveScopeSwitch,
 } from "../lib/workspaceLiveBadgeState";
-import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
+import { isDesktopShell, isElectronDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import {
   emitStartupSnapshotReadMetric,
   finalizeStartupBootstrapPayloadMetric,
@@ -150,6 +158,7 @@ import {
   trackStartupPersistedRead,
 } from "../lib/startupPerf";
 import { cn } from "../lib/utils";
+import { isOptimisticThreadId } from "../lib/threadIds";
 import {
   findRootWorktree,
   isOperationalWorktreeStatus,
@@ -188,7 +197,8 @@ import {
   promoteSessionShortcutTarget,
   type SessionShortcutTarget,
 } from "./workspace/sessionShortcutTargets";
-import { useQueryClient } from "@tanstack/react-query";
+import { shouldSuppressStartupFallbackSearchUpdate } from "./workspace/startupSelectionNavigation";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
 import { useCodexModels } from "../hooks/queries/useCodexModels";
@@ -197,9 +207,11 @@ import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
 import { useCursorModels } from "../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
 import { useSlashCommandsQuery } from "../hooks/queries/useSlashCommandsQuery";
+import { useInstalledApps } from "../hooks/queries/useInstalledApps";
 import { THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS } from "../hooks/queries/useThreadSnapshot";
 import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../hooks/queries/useThreads";
 import { queryKeys } from "../lib/queryKeys";
+import { startWorkspaceStartupBootstrap } from "../lib/workspaceStartupBootstrap";
 import { refetchGitStatusCollection } from "../collections/gitStatus";
 import { getThreadsCollection, replaceThreadsCollection } from "../collections/threads";
 import { writeWorkspaceShellStateSnapshot } from "../collections/workspaceShellState";
@@ -257,6 +269,7 @@ import {
 } from "./workspace/visibleRepositorySelection";
 import {
   buildInitialWorkspaceLandingHoldState,
+  deriveVisibleUserGates,
   deriveWorkingStatus,
   FilledPauseIcon,
   FilledPlayIcon,
@@ -363,7 +376,15 @@ function formatRuntimeTitle(runtimeInfo: RuntimeInfo | null | undefined): string
 }
 
 function isMacDesktopShell(): boolean {
-  if (!isTauriDesktop() || typeof navigator === "undefined") {
+  if (!isDesktopShell()) {
+    return false;
+  }
+
+  if (isElectronDesktop()) {
+    return true;
+  }
+
+  if (typeof navigator === "undefined") {
     return false;
   }
 
@@ -519,6 +540,21 @@ function isDesktopViewportNow(): boolean {
   return window.matchMedia("(min-width: 1024px)").matches;
 }
 
+function isWorkspaceShortcutEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  return (
+    target.isContentEditable
+    || tagName === "input"
+    || tagName === "textarea"
+    || tagName === "select"
+    || target.closest('[contenteditable="true"]') !== null
+  );
+}
+
 function loadRepositoryPanelExpandedState(): Record<string, boolean> {
   if (typeof window === "undefined") {
     return {};
@@ -615,7 +651,7 @@ export function WorkspacePage() {
   const startupState = useWorkspaceStartupState();
   const [startupSelectionFallbackActive, setStartupSelectionFallbackActive] = useState(() => startupState.snapshot != null);
   const { search, updateSearch } = useWorkspaceSearchParams();
-  const desktopApp = isTauriDesktop();
+  const desktopApp = isDesktopShell();
   const restoredSelection = resolveStartupWorkspaceSelection({
     repoId: search.repoId,
     worktreeId: search.worktreeId,
@@ -828,12 +864,36 @@ export function WorkspacePage() {
   const repos = useRepositoryManager(setError, {
     desiredRepoId: restoredRepoId,
     desiredWorktreeId: restoredWorktreeId,
+    preserveMissingDesiredWorktree: search.worktreeId === restoredWorktreeId,
     repositoriesEnabled: enableCriticalWorkspaceData,
     onScriptUpdate: handleScriptUpdate,
     onScriptOutputChunk: handleScriptOutputChunk,
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
         const pendingSelection = pendingWorktreeSearchSelectionRef.current;
+        debugLog("workspace.selection.navigation", "repository.onSelectionChange", {
+          nextRepoId: selection.repoId,
+          nextWorktreeId: selection.worktreeId,
+          previousWorktreeId: prevWorktreeIdRef.current ?? null,
+          routeRepoId: search.repoId ?? null,
+          routeWorktreeId: search.worktreeId ?? null,
+          routeThreadId: search.threadId ?? null,
+          pendingRepoId: pendingSelection?.repoId ?? null,
+          pendingWorktreeId: pendingSelection?.worktreeId ?? null,
+          pendingThreadId: pendingSelection?.threadId ?? null,
+          pendingSelectionMatches: pendingSelection?.repoId === selection.repoId
+            && pendingSelection?.worktreeId === selection.worktreeId,
+        }, { worktreeId: selection.worktreeId, force: true });
+
+        const intendedRepoId = pendingSelection?.repoId ?? search.repoId ?? restoredRepoId ?? null;
+        const intendedWorktreeId = pendingSelection?.worktreeId ?? search.worktreeId ?? restoredWorktreeId ?? null;
+        const selectionLostIntendedWorkspace =
+          (selection.repoId == null && intendedRepoId != null)
+          || (selection.worktreeId == null && intendedWorktreeId != null);
+        if (selectionLostIntendedWorkspace) {
+          return;
+        }
+
         if (
           pendingSelection?.repoId === selection.repoId
           && pendingSelection?.worktreeId === selection.worktreeId
@@ -847,7 +907,21 @@ export function WorkspacePage() {
         const shouldReusePendingThreadId =
           pendingSelection?.worktreeId === selection.worktreeId;
 
-        updateSearch({
+        if (shouldSuppressStartupFallbackSearchUpdate({
+          startupSelectionFallbackActive,
+          routeRepoId: search.repoId ?? null,
+          routeWorktreeId: search.worktreeId ?? null,
+          pendingRepoId: pendingSelection?.repoId ?? null,
+          pendingWorktreeId: pendingSelection?.worktreeId ?? null,
+          restoredRepoId: restoredRepoId ?? null,
+          restoredWorktreeId: restoredWorktreeId ?? null,
+          nextRepoId: selection.repoId,
+          nextWorktreeId: selection.worktreeId,
+        })) {
+          return;
+        }
+
+        const nextSearchPatch = {
           repoId: selection.repoId ?? undefined,
           worktreeId: selection.worktreeId ?? undefined,
           ...(shouldReusePendingThreadId
@@ -855,9 +929,10 @@ export function WorkspacePage() {
             : worktreeChanged
               ? { threadId: undefined }
               : {}),
-        });
+        };
+        updateSearch(nextSearchPatch);
       },
-      [updateSearch],
+      [restoredRepoId, restoredWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
     ),
   });
   const repositoriesLoadError = repos.repositoriesError instanceof Error
@@ -963,6 +1038,13 @@ export function WorkspacePage() {
       return;
     }
 
+    if (
+      nextSelection.repositoryId === repos.selectedRepositoryId
+      && nextSelection.worktreeId === repos.selectedWorktreeId
+    ) {
+      return;
+    }
+
     repos.setSelectedRepositoryId(nextSelection.repositoryId);
     repos.setSelectedWorktreeId(nextSelection.worktreeId);
   }, [
@@ -1058,8 +1140,34 @@ export function WorkspacePage() {
     baseHistory: SessionShortcutTarget[];
     index: number;
   } | null>(null);
+  const openInAppShortcutBusyRef = useRef(false);
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
+  const startupBootstrapSelectionKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!desktopApp || !(restoredRepoId || restoredWorktreeId || restoredThreadId)) {
+      return;
+    }
+
+    const selectionKey = `${restoredRepoId ?? ""}:${restoredWorktreeId ?? ""}:${restoredThreadId ?? ""}`;
+    if (startupBootstrapSelectionKeyRef.current === selectionKey) {
+      return;
+    }
+    startupBootstrapSelectionKeyRef.current = selectionKey;
+
+    void startWorkspaceStartupBootstrap(queryClient, {
+      selection: {
+        repositoryId: restoredRepoId,
+        worktreeId: restoredWorktreeId,
+        threadId: restoredThreadId,
+      },
+    }).catch(() => {});
+  }, [desktopApp, queryClient, restoredRepoId, restoredThreadId, restoredWorktreeId]);
+
+  const installedAppsQuery = useInstalledApps({
+    enabled: enableNonCriticalWorkspaceData,
+  });
 
   const enableSidebarWorktreeStatuses = desktopApp || enableNonCriticalWorkspaceData;
   const backgroundStatusRepositories = enableSidebarWorktreeStatuses
@@ -1072,6 +1180,22 @@ export function WorkspacePage() {
   const backgroundStatusThreadSnapshot = useThreadsByWorktreeIds(backgroundStatusWorktreeIds, {
     enabled: enableSidebarWorktreeStatuses,
   });
+  const activeBackgroundThreadIds = useMemo(() => {
+    return new Set(
+      Object.values(backgroundStatusThreadSnapshot.threadsByWorktreeId)
+        .flatMap((threads) => threads)
+        .filter((thread) => thread.active)
+        .map((thread) => thread.id),
+    );
+  }, [backgroundStatusThreadSnapshot]);
+  const activeBackgroundThreadIdsByWorktreeId = useMemo(() => {
+    return Object.fromEntries(
+      Object.entries(backgroundStatusThreadSnapshot.threadsByWorktreeId).map(([worktreeId, threads]) => [
+        worktreeId,
+        new Set(threads.filter((thread) => thread.active).map((thread) => thread.id)),
+      ]),
+    );
+  }, [backgroundStatusThreadSnapshot]);
   const selectedWorktreeStatus = repos.selectedWorktree?.status ?? null;
   const selectedWorktreeOperational = selectedWorktreeStatus != null && isOperationalWorktreeStatus(selectedWorktreeStatus);
   const selectedWorktreePending = selectedWorktreeStatus != null && isPendingWorktreeStatus(selectedWorktreeStatus);
@@ -1091,6 +1215,9 @@ export function WorkspacePage() {
   const repositoryLiveDataEnabled = (enableNonCriticalWorkspaceData || prioritizeGitPanelData)
     && !selectedWorktreeUnavailable;
   const nonCriticalRepositoryId = enableNonCriticalWorkspaceData && !selectedWorktreeUnavailable
+    ? repos.selectedRepositoryId
+    : null;
+  const targetBranchRepositoryId = selectedWorktreeOperational && !selectedWorktreeUnavailable
     ? repos.selectedRepositoryId
     : null;
   const repositoryReviews = useRepositoryReviews(
@@ -1120,6 +1247,10 @@ export function WorkspacePage() {
   });
   const selectedReviewRef = selectedLatestReviewRef?.state === "open" ? selectedLatestReviewRef : null;
   const reviewKind: ReviewKind = repositoryReviews.data?.kind ?? "pr";
+  const selectedOpenInAppTargetPath = selectedWorktreeOperational ? repos.selectedWorktree?.path ?? null : null;
+  const selectedOpenInApp = selectedOpenInAppTargetPath
+    ? resolvePreferredApp(installedAppsQuery.data ?? [], selectedOpenInAppTargetPath)
+    : null;
   const displayGitBranch = gitChanges.branch || repos.selectedWorktree?.branch || "";
   const activeGitChangeEntry = activeFilePath
     ? gitChanges.entries.find((entry) => entry.path === activeFilePath) ?? null
@@ -1141,14 +1272,118 @@ export function WorkspacePage() {
     timelineEnabled: !reviewTabOpen,
     onThreadChange: useCallback(
       (threadId: string | null) => {
+        debugLog("workspace.selection.navigation", "chat.onThreadChange", {
+          nextThreadId: threadId,
+          routeRepoId: search.repoId ?? null,
+          routeWorktreeId: search.worktreeId ?? null,
+          routeThreadId: search.threadId ?? null,
+          selectedRepositoryId: repos.selectedRepositoryId,
+          selectedWorktreeId: repos.selectedWorktreeId,
+          pendingRepoId: pendingWorktreeSearchSelectionRef.current?.repoId ?? null,
+          pendingWorktreeId: pendingWorktreeSearchSelectionRef.current?.worktreeId ?? null,
+          pendingThreadId: pendingWorktreeSearchSelectionRef.current?.threadId ?? null,
+          startupSelectionFallbackActive,
+        }, {
+          threadId,
+          worktreeId: repos.selectedWorktreeId,
+          force: true,
+        });
         if (startupSelectionFallbackActive) {
           setStartupSelectionFallbackActive(false);
         }
         updateSearch({ threadId: threadId ?? undefined });
       },
-      [startupSelectionFallbackActive, updateSearch],
+      [repos.selectedRepositoryId, repos.selectedWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
     ),
   });
+  const selectionOscillationHistoryRef = useRef<Array<{
+    atMs: number;
+    scopeKey: string;
+    repositoryId: string | null;
+    worktreeId: string | null;
+    threadId: string | null;
+    routeRepoId: string | null;
+    routeWorktreeId: string | null;
+    routeThreadId: string | null;
+    pendingRepoId: string | null;
+    pendingWorktreeId: string | null;
+    pendingThreadId: string | null;
+  }>>([]);
+  const selectionOscillationSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    const pendingSelection = pendingWorktreeSearchSelectionRef.current;
+    const atMs = typeof performance !== "undefined" && typeof performance.now === "function"
+      ? performance.now()
+      : Date.now();
+    const snapshot = {
+      atMs: Math.round(atMs * 10) / 10,
+      scopeKey: `${repos.selectedRepositoryId ?? "null"}:${repos.selectedWorktreeId ?? "null"}:${chat.selectedThreadId ?? "null"}`,
+      repositoryId: repos.selectedRepositoryId,
+      worktreeId: repos.selectedWorktreeId,
+      threadId: chat.selectedThreadId,
+      routeRepoId: search.repoId ?? null,
+      routeWorktreeId: search.worktreeId ?? null,
+      routeThreadId: search.threadId ?? null,
+      pendingRepoId: pendingSelection?.repoId ?? null,
+      pendingWorktreeId: pendingSelection?.worktreeId ?? null,
+      pendingThreadId: pendingSelection?.threadId ?? null,
+    };
+
+    const history = selectionOscillationHistoryRef.current;
+    if (history.at(-1)?.scopeKey === snapshot.scopeKey) {
+      return;
+    }
+
+    history.push(snapshot);
+    selectionOscillationHistoryRef.current = history
+      .filter((entry) => snapshot.atMs - entry.atMs <= 3_000)
+      .slice(-8);
+
+    const recent = selectionOscillationHistoryRef.current;
+    if (recent.length < 4) {
+      return;
+    }
+
+    const lastFour = recent.slice(-4);
+    const oscillating =
+      lastFour[0]?.scopeKey === lastFour[2]?.scopeKey
+      && lastFour[1]?.scopeKey === lastFour[3]?.scopeKey
+      && lastFour[0]?.scopeKey !== lastFour[1]?.scopeKey;
+    if (!oscillating) {
+      return;
+    }
+
+    const signature = lastFour.map((entry) => entry.scopeKey).join("|");
+    if (selectionOscillationSignatureRef.current === signature) {
+      return;
+    }
+    selectionOscillationSignatureRef.current = signature;
+
+    debugLog("workspace.selection.oscillation", "detected", {
+      history: recent,
+      selectedRepositoryName: repos.selectedRepository?.name ?? null,
+      selectedWorktreeBranch: repos.selectedWorktree?.branch ?? null,
+      selectedThreadTitle: chat.threads.find((thread) => thread.id === chat.selectedThreadId)?.title ?? null,
+      messageListEmptyState: chat.messageListEmptyState,
+      selectedThreadUiStatus: chat.selectedThreadUiStatus,
+    }, {
+      threadId: chat.selectedThreadId,
+      worktreeId: repos.selectedWorktreeId,
+      force: true,
+    });
+  }, [
+    chat.messageListEmptyState,
+    chat.selectedThreadId,
+    chat.selectedThreadUiStatus,
+    chat.threads,
+    repos.selectedRepository?.name,
+    repos.selectedRepositoryId,
+    repos.selectedWorktree?.branch,
+    repos.selectedWorktreeId,
+    search.repoId,
+    search.threadId,
+    search.worktreeId,
+  ]);
 
   const [loadAllModelCatalogs, setLoadAllModelCatalogs] = useState(false);
   const claudeModelCatalogEnabled = shouldLoadWorkspaceAgentCatalog({
@@ -1304,7 +1539,10 @@ export function WorkspacePage() {
     setLoadAllSlashCommandCatalogs(true);
   }, [loadAllSlashCommandCatalogs, slashCommandCatalogsEnabled]);
   pushStartupRenderProfileSection("chat-session");
-  const selectedThreadIdForLiveStatus = chat.selectedThreadIdForData ?? chat.selectedThreadId;
+  const selectedThreadIdCandidateForLiveStatus = chat.selectedThreadIdForData ?? chat.selectedThreadId;
+  const selectedThreadIdForLiveStatus = isOptimisticThreadId(selectedThreadIdCandidateForLiveStatus)
+    ? null
+    : selectedThreadIdCandidateForLiveStatus;
   const selectedWorktreeStatusOverride = useMemo(() => {
     if (
       !repos.selectedWorktreeId
@@ -1320,37 +1558,78 @@ export function WorkspacePage() {
     } as const;
   }, [chat.selectedThreadUiStatus, repos.selectedWorktreeId, selectedThreadIdForLiveStatus]);
   const [worktreeStatusOverrides, setWorktreeStatusOverrides] = useState<Record<string, WorktreeStatusSummary>>({});
+  const worktreeStatusOverridesRef = useRef(worktreeStatusOverrides);
+  const applyWorktreeStatusOverrideUpdate = useCallback(
+    (resolveNext: (current: Record<string, WorktreeStatusSummary>) => Record<string, WorktreeStatusSummary>) => {
+      const current = worktreeStatusOverridesRef.current;
+      const next = resolveNext(current);
+      if (next === current) {
+        return;
+      }
+
+      worktreeStatusOverridesRef.current = next;
+      setWorktreeStatusOverrides(next);
+    },
+    [],
+  );
+  const overrideThreadIds = useMemo(
+    () =>
+      [...new Set(
+        Object.values(worktreeStatusOverrides)
+          .map((override) => override.threadId)
+          .filter((threadId): threadId is string => (
+            typeof threadId === "string"
+            && threadId.length > 0
+            && !isOptimisticThreadId(threadId)
+          )),
+      )].sort(),
+    [worktreeStatusOverrides],
+  );
+  const overrideStatusSnapshotResults = useQueries({
+    queries: overrideThreadIds.map((threadId) => ({
+      queryKey: queryKeys.threads.statusSnapshot(threadId),
+      queryFn: () => api.getThreadStatusSnapshot(threadId),
+      enabled: enableSidebarWorktreeStatuses && threadId.length > 0,
+      staleTime: 15_000,
+    })),
+  });
+  const overrideStatusSnapshotsByThreadId = useMemo(() => {
+    const entries = overrideThreadIds.map((threadId, index) => [
+      threadId,
+      overrideStatusSnapshotResults[index]?.data ?? null,
+    ] as const);
+    return Object.fromEntries(entries);
+  }, [overrideStatusSnapshotResults, overrideThreadIds]);
   useEffect(() => {
-    const selectedWorktreeId = repos.selectedWorktreeId;
-    if (!selectedWorktreeId) {
-      return;
-    }
-
-    setWorktreeStatusOverrides((current) => {
-      if (!selectedWorktreeStatusOverride) {
-        if (!(selectedWorktreeId in current)) {
-          return current;
-        }
-
-        const next = { ...current };
-        delete next[selectedWorktreeId];
-        return next;
-      }
-
-      const existing = current[selectedWorktreeId];
-      if (
-        existing?.kind === selectedWorktreeStatusOverride.kind
-        && existing.threadId === selectedWorktreeStatusOverride.threadId
-      ) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [selectedWorktreeId]: selectedWorktreeStatusOverride,
-      };
+    applyWorktreeStatusOverrideUpdate((current) => {
+      return reconcileWorktreeStatusOverrides({
+        current,
+        selectedWorktreeId: repos.selectedWorktreeId,
+        selectedWorktreeStatusOverride,
+        activeThreadIdsByWorktreeId: activeBackgroundThreadIdsByWorktreeId,
+      });
     });
-  }, [repos.selectedWorktreeId, selectedWorktreeStatusOverride]);
+  }, [activeBackgroundThreadIdsByWorktreeId, applyWorktreeStatusOverrideUpdate, repos.selectedWorktreeId, selectedWorktreeStatusOverride]);
+  useEffect(() => {
+    applyWorktreeStatusOverrideUpdate((current) => {
+      return pruneSettledWorktreeStatusOverrides({
+        current,
+        selectedWorktreeId: repos.selectedWorktreeId,
+        statusSnapshotsByThreadId: overrideStatusSnapshotsByThreadId,
+        activeThreadIds: activeBackgroundThreadIds,
+        selectedWorktreeStatusOverride,
+      });
+    });
+  }, [
+    activeBackgroundThreadIds,
+    applyWorktreeStatusOverrideUpdate,
+    overrideStatusSnapshotsByThreadId,
+    repos.selectedWorktreeId,
+    selectedWorktreeStatusOverride,
+  ]);
+  useEffect(() => {
+    worktreeStatusOverridesRef.current = worktreeStatusOverrides;
+  }, [worktreeStatusOverrides]);
   const previousLiveScopeSelectionRef = useRef<WorkspaceLiveScopeSelection | null>(null);
   const [liveScopeSwitch, setLiveScopeSwitch] = useState<WorkspaceLiveScopeSwitch | null>(null);
 
@@ -1829,7 +2108,7 @@ export function WorkspacePage() {
 
   const isThreadHistoryLocallyComplete = chat.isThreadHistoryLocallyComplete;
   const prefetchDisplayThreadSnapshot = useCallback((threadId: string) => {
-    if (isThreadHistoryLocallyComplete(threadId)) {
+    if (isOptimisticThreadId(threadId) || isThreadHistoryLocallyComplete(threadId)) {
       return Promise.resolve();
     }
 
@@ -1888,8 +2167,8 @@ export function WorkspacePage() {
     navigationPrefetchRef.current.set(worktreeId, prefetchTask);
     return prefetchTask;
   }, [prefetchDisplayThreadSnapshot, queryClient]);
-  const repositoryBranches = useRepositoryBranches(nonCriticalRepositoryId, {
-    enabled: repositoryLiveDataEnabled,
+  const repositoryBranches = useRepositoryBranches(targetBranchRepositoryId, {
+    enabled: !!targetBranchRepositoryId,
   });
 
   useEffect(() => {
@@ -2112,6 +2391,7 @@ export function WorkspacePage() {
   });
   pushStartupRenderProfileSection("pending-gates");
   const [activePermissionRequestId, setActivePermissionRequestId] = useState<string | null>(null);
+  const [activeQuestionRequestId, setActiveQuestionRequestId] = useState<string | null>(null);
 
   const activePermissionIndex = useMemo(() => {
     if (gates.pendingPermissionRequests.length === 0) {
@@ -2129,6 +2409,25 @@ export function WorkspacePage() {
     ? gates.pendingPermissionRequests[activePermissionIndex] ?? null
     : null;
   const hasMultiplePendingPermissions = gates.pendingPermissionRequests.length > 1;
+  const activeQuestionIndex = useMemo(() => {
+    if (gates.pendingQuestionRequests.length === 0) {
+      return -1;
+    }
+
+    if (!activeQuestionRequestId) {
+      return 0;
+    }
+
+    return gates.pendingQuestionRequests.findIndex((request) => request.requestId === activeQuestionRequestId);
+  }, [activeQuestionRequestId, gates.pendingQuestionRequests]);
+  const activeQuestionRequest = activeQuestionIndex >= 0
+    ? gates.pendingQuestionRequests[activeQuestionIndex] ?? null
+    : null;
+  const hasMultiplePendingQuestions = gates.pendingQuestionRequests.length > 1;
+  const { showPermissionGate, showQuestionGate } = deriveVisibleUserGates({
+    pendingPermissionRequestCount: gates.pendingPermissionRequests.length,
+    pendingQuestionRequestCount: gates.pendingQuestionRequests.length,
+  });
   const [mobilePanelOpen, setMobilePanelOpen] = useState<MobilePanelState>(null);
   const [mobileReposOrigin, setMobileReposOrigin] = useState<MobileReposOrigin | null>(null);
   const [isDesktopViewport, setIsDesktopViewport] = useState(() => desktopApp || isDesktopViewportNow());
@@ -2327,6 +2626,7 @@ export function WorkspacePage() {
   const {
     activeEditorFileState,
     activeEditorGitBaselineState,
+    activeFileExternal,
     activeFileDirty,
     canDiscardDirtyWorktreeFiles,
     canSaveActiveFile,
@@ -2607,6 +2907,18 @@ export function WorkspacePage() {
       worktreeId,
       threadId: restoredThreadId,
     };
+    debugLog("workspace.selection.navigation", "worktree.select", {
+      repositoryId,
+      worktreeId,
+      preferredThreadId: preferredThreadId ?? null,
+      restoredThreadId: restoredThreadId ?? null,
+      previousRepositoryId: repos.selectedRepositoryId,
+      previousWorktreeId: repos.selectedWorktreeId,
+      previousRouteRepoId: search.repoId ?? null,
+      previousRouteWorktreeId: search.worktreeId ?? null,
+      previousRouteThreadId: search.threadId ?? null,
+      mobilePanelOpen,
+    }, { threadId: restoredThreadId ?? null, worktreeId, force: true });
     void prefetchWorktreeNavigationTarget(worktreeId, restoredThreadId);
 
     repos.setSelectedRepositoryId(repositoryId);
@@ -2623,7 +2935,50 @@ export function WorkspacePage() {
       setMobilePanelOpen(nextMobilePanel);
       setMobileReposOrigin(null);
     }
-  }, [canDiscardDirtyWorktreeFiles, handleCloseMobileRepositories, mobilePanelOpen, mobileReposOrigin, prefetchWorktreeNavigationTarget, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
+  }, [canDiscardDirtyWorktreeFiles, handleCloseMobileRepositories, mobilePanelOpen, mobileReposOrigin, prefetchWorktreeNavigationTarget, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, search.repoId, search.threadId, search.worktreeId, updateSearch]);
+
+  const handleCreateWorktree = useCallback(async (repositoryId: string) => {
+    const worktree = await repos.submitWorktree(repositoryId, { select: false });
+    if (!worktree) {
+      return;
+    }
+
+    pendingWorktreeSearchSelectionRef.current = {
+      repoId: repositoryId,
+      worktreeId: worktree.id,
+    };
+    debugLog("workspace.selection.navigation", "worktree.create.select", {
+      repositoryId,
+      worktreeId: worktree.id,
+      previousRepositoryId: repos.selectedRepositoryId,
+      previousWorktreeId: repos.selectedWorktreeId,
+      previousRouteRepoId: search.repoId ?? null,
+      previousRouteWorktreeId: search.worktreeId ?? null,
+      previousRouteThreadId: search.threadId ?? null,
+    }, { worktreeId: worktree.id, force: true });
+    void prefetchWorktreeNavigationTarget(worktree.id);
+
+    repos.setSelectedRepositoryId(repositoryId);
+    repos.setSelectedWorktreeId(worktree.id);
+    updateSearch({
+      repoId: repositoryId,
+      worktreeId: worktree.id,
+      threadId: undefined,
+      view: undefined,
+      file: undefined,
+    });
+  }, [
+    prefetchWorktreeNavigationTarget,
+    repos.selectedRepositoryId,
+    repos.selectedWorktreeId,
+    repos.setSelectedRepositoryId,
+    repos.setSelectedWorktreeId,
+    repos.submitWorktree,
+    search.repoId,
+    search.threadId,
+    search.worktreeId,
+    updateSearch,
+  ]);
 
   const handleResourceMonitorSelectWorktree = useCallback((repositoryId: string, worktreeId: string) => {
     handleSelectWorktree(repositoryId, worktreeId);
@@ -2776,6 +3131,26 @@ export function WorkspacePage() {
     const fallbackRequest = gates.pendingPermissionRequests[fallbackIndex] ?? gates.pendingPermissionRequests[0];
     setActivePermissionRequestId(fallbackRequest?.requestId ?? null);
   }, [activePermissionIndex, activePermissionRequestId, gates.pendingPermissionRequests]);
+
+  useEffect(() => {
+    if (gates.pendingQuestionRequests.length === 0) {
+      setActiveQuestionRequestId(null);
+      return;
+    }
+
+    if (
+      activeQuestionRequestId
+      && gates.pendingQuestionRequests.some((request) => request.requestId === activeQuestionRequestId)
+    ) {
+      return;
+    }
+
+    const fallbackIndex = activeQuestionIndex >= 0
+      ? Math.min(activeQuestionIndex, gates.pendingQuestionRequests.length - 1)
+      : 0;
+    const fallbackRequest = gates.pendingQuestionRequests[fallbackIndex] ?? gates.pendingQuestionRequests[0];
+    setActiveQuestionRequestId(fallbackRequest?.requestId ?? null);
+  }, [activeQuestionIndex, activeQuestionRequestId, gates.pendingQuestionRequests]);
 
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
@@ -2945,55 +3320,6 @@ export function WorkspacePage() {
     threadlessFallbackSurface,
     updateSearch,
     updateTerminalTabsState,
-  ]);
-
-  useEffect(() => {
-    const lastTimelineItem = chat.timelineItems[chat.timelineItems.length - 1] ?? null;
-    const lastMessage = chat.messages[chat.messages.length - 1] ?? null;
-
-    debugLog("thread.workspace.ui", "[DEBUG-new-thread-send] workspace.renderState", {
-      threadId: chat.selectedThreadId,
-      worktreeId: repos.selectedWorktreeId,
-      selectedThreadUiStatus: chat.selectedThreadUiStatus,
-      sendingMessage: chat.sendingMessage,
-      showStopAction: chat.showStopAction,
-      waitingAssistantThreadId,
-      messageListEmptyState: chat.messageListEmptyState,
-      hasOpenContentTabs,
-      threadlessFallbackSurface,
-      timelineItemsCount: chat.timelineItems.length,
-      messagesCount: chat.messages.length,
-      eventsCount: chat.events.length,
-      showThinkingPlaceholder,
-      showWorkspaceEmptyState,
-      workingStatus,
-      isWaitingForUserGate: gates.isWaitingForUserGate,
-      composerDisabled: chat.composerDisabled,
-      lastTimelineItemKind: lastTimelineItem?.kind ?? null,
-      lastMessageRole: lastMessage?.role ?? null,
-      lastMessageId: lastMessage?.id ?? null,
-    }, {
-      threadId: chat.selectedThreadId,
-      worktreeId: repos.selectedWorktreeId,
-    });
-  }, [
-    chat.composerDisabled,
-    chat.events.length,
-    chat.messageListEmptyState,
-    chat.messages,
-    chat.selectedThreadId,
-    chat.selectedThreadUiStatus,
-    chat.sendingMessage,
-    chat.showStopAction,
-    chat.timelineItems,
-    gates.isWaitingForUserGate,
-    hasOpenContentTabs,
-    repos.selectedWorktreeId,
-    showWorkspaceEmptyState,
-    showThinkingPlaceholder,
-    threadlessFallbackSurface,
-    workingStatus,
-    waitingAssistantThreadId,
   ]);
 
   const handleCreateTerminalTab = useCallback(() => {
@@ -3215,6 +3541,21 @@ export function WorkspacePage() {
     }
   }, [chat, repos.selectedRepository, repos.selectedWorktree, repositoryReviews.data?.provider, reviewKind, selectedReviewBaseBranch, selectedReviewBranch, selectedReviewRef]);
 
+  const handleOpenSelectedWorktreeInApp = useCallback(async () => {
+    if (!selectedOpenInApp || !selectedOpenInAppTargetPath || openInAppShortcutBusyRef.current) {
+      return;
+    }
+
+    openInAppShortcutBusyRef.current = true;
+    try {
+      await api.openInApp({ appId: selectedOpenInApp.id, targetPath: selectedOpenInAppTargetPath });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to open worktree in app");
+    } finally {
+      openInAppShortcutBusyRef.current = false;
+    }
+  }, [selectedOpenInApp, selectedOpenInAppTargetPath]);
+
   const reviewLookupAvailable = !!repositoryReviews.data?.available;
   const prMrActionBusy = !selectedReviewRef && prMrThreadIsActiveOrPending;
   const prMrActionDisabled = (
@@ -3346,6 +3687,28 @@ export function WorkspacePage() {
     }
   }, [activePermissionIndex, gates.pendingPermissionRequests]);
 
+  const handleShowPreviousQuestion = useCallback(() => {
+    if (activeQuestionIndex <= 0) {
+      return;
+    }
+
+    const previousRequest = gates.pendingQuestionRequests[activeQuestionIndex - 1];
+    if (previousRequest) {
+      setActiveQuestionRequestId(previousRequest.requestId);
+    }
+  }, [activeQuestionIndex, gates.pendingQuestionRequests]);
+
+  const handleShowNextQuestion = useCallback(() => {
+    if (activeQuestionIndex < 0 || activeQuestionIndex >= gates.pendingQuestionRequests.length - 1) {
+      return;
+    }
+
+    const nextRequest = gates.pendingQuestionRequests[activeQuestionIndex + 1];
+    if (nextRequest) {
+      setActiveQuestionRequestId(nextRequest.requestId);
+    }
+  }, [activeQuestionIndex, gates.pendingQuestionRequests]);
+
   const handleSelectDiffFile = useCallback((filePath: string) => {
     if (!confirmSwitchAwayFromActiveFile()) {
       return;
@@ -3373,10 +3736,18 @@ export function WorkspacePage() {
       if (threadId != null) {
         setWorkspaceLandingHold(repos.selectedWorktreeId, false);
       }
+      debugLog("workspace.selection.navigation", "thread.select", {
+        nextThreadId: threadId,
+        previousThreadId: chat.selectedThreadId,
+        selectedWorktreeId: repos.selectedWorktreeId,
+        routeRepoId: search.repoId ?? null,
+        routeWorktreeId: search.worktreeId ?? null,
+        routeThreadId: search.threadId ?? null,
+      }, { threadId, worktreeId: repos.selectedWorktreeId, force: true });
       chat.setSelectedThreadId(threadId);
       updateSearch({ view: undefined, file: undefined, threadId: threadId ?? undefined });
     },
-    [chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, setWorkspaceLandingHold, updateSearch],
+    [chat.selectedThreadId, chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, search.repoId, search.threadId, search.worktreeId, setWorkspaceLandingHold, updateSearch],
   );
 
   const handleSelectSessionShortcutTarget = useCallback((target: SessionShortcutTarget) => {
@@ -3562,6 +3933,29 @@ export function WorkspacePage() {
 
       const isMac = isMacLikePlatform();
       const jumpWorktreeIndex = getJumpToWorktreeShortcutIndex(event, isMac);
+      const shortcutTargetEditable = isWorkspaceShortcutEditableTarget(event.target);
+
+      if (matchesOpenInAppShortcut(event, isMac)) {
+        if (shortcutTargetEditable || !selectedOpenInApp || !selectedOpenInAppTargetPath) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        void handleOpenSelectedWorktreeInApp();
+        return;
+      }
+
+      if (matchesOpenPullRequestShortcut(event, isMac)) {
+        if (shortcutTargetEditable || !selectedReviewRef) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        void handlePrMrAction();
+        return;
+      }
 
       if (matchesCreateTerminalShortcut(event, isMac)) {
         event.preventDefault();
@@ -3640,9 +4034,14 @@ export function WorkspacePage() {
     confirmSwitchAwayFromActiveFile,
     handleCreateTerminalTab,
     handleCreateThreadFromHeader,
+    handleOpenSelectedWorktreeInApp,
     handleJumpToWorktree,
     handleMoveSessionTab,
     handleMoveWorktree,
+    handlePrMrAction,
+    selectedOpenInApp,
+    selectedOpenInAppTargetPath,
+    selectedReviewRef,
     settingsOpen,
     workspaceNavigation,
   ]);
@@ -3843,7 +4242,7 @@ export function WorkspacePage() {
                   view: "automations",
                   automationId: undefined,
                   automationCreate: undefined,
-                });
+                }, { replace: false });
               }}
               onOpenSettings={openSettingsDialog}
               onAttachRepository={repos.openFileBrowser}
@@ -3852,7 +4251,7 @@ export function WorkspacePage() {
               onSetRepositoryVisibility={handleSetRepositoryVisibility}
               onShowAllRepositories={handleShowAllRepositories}
               onReorderRepositories={handleReorderRepositories}
-              onCreateWorktree={repos.submitWorktree}
+              onCreateWorktree={handleCreateWorktree}
               onSelectWorktree={handleSelectWorktree}
               onDeleteWorktree={repos.removeWorktree}
               onRenameWorktreeBranch={repos.renameWorktreeBranch}
@@ -3939,15 +4338,12 @@ export function WorkspacePage() {
                     targetBranch={selectedTargetBranch}
                     targetBranchOptions={repositoryBranches.data ?? []}
                     targetBranchLoading={
-                      enableNonCriticalWorkspaceData && (
-                        repositoryBranches.isLoading
-                        || repositoryBranches.isFetching
-                        || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
-                      )
+                      repositoryBranches.isLoading
+                      || repositoryBranches.isFetching
+                      || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
                     }
                     targetBranchDisabled={
-                      !enableNonCriticalWorkspaceData
-                      || !repos.selectedWorktreeId
+                      !repos.selectedWorktreeId
                       || !selectedWorktreeOperational
                       || !repos.selectedRepositoryId
                       || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
@@ -3997,7 +4393,6 @@ export function WorkspacePage() {
                     onCloseReviewTab={handleCloseReview}
                     runScriptRunning={selectedBottomPanelState.runScriptActive}
                     onToggleRunScript={handleToggleRunScript}
-                    onOpenIssueReport={openIssueReportDialog}
                     leftPanelVisible={leftSidebarVisible}
                     onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
                     mergeWithContent={activeView === "file"}
@@ -4173,6 +4568,7 @@ export function WorkspacePage() {
                   <CodeEditorPanel
                     key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
                     filePath={activeFilePath}
+                    externalFile={activeFileExternal}
                     targetLine={activeFileLine ?? undefined}
                     targetColumn={activeFileColumn ?? undefined}
                     fileEntries={fileIndex.entries}
@@ -4309,7 +4705,7 @@ export function WorkspacePage() {
                     </Suspense>
                   </div>
                 </section>
-                {gates.pendingPermissionRequests.length > 0 ? (
+                {showPermissionGate ? (
                   <section className="mx-auto w-full max-w-3xl px-3" data-testid="permission-prompts-container">
                     <div className="space-y-2">
                       {hasMultiplePendingPermissions ? (
@@ -4324,7 +4720,9 @@ export function WorkspacePage() {
                               blockedPath={activePermissionRequest.blockedPath}
                               decisionReason={activePermissionRequest.decisionReason}
                               busy={gates.resolvingPermissionIds.has(activePermissionRequest.requestId)}
-                              canAlwaysAllow={Boolean(activePermissionRequest.command)}
+                              canAlwaysAllow={activePermissionRequest.canAlwaysAllow}
+                              alwaysAllowScope={activePermissionRequest.alwaysAllowScope}
+                              alwaysAllowDescription={activePermissionRequest.alwaysAllowDescription}
                               position={{
                                 current: activePermissionIndex + 1,
                                 total: gates.pendingPermissionRequests.length,
@@ -4350,7 +4748,9 @@ export function WorkspacePage() {
                               blockedPath={request.blockedPath}
                               decisionReason={request.decisionReason}
                               busy={gates.resolvingPermissionIds.has(request.requestId)}
-                              canAlwaysAllow={Boolean(request.command)}
+                              canAlwaysAllow={request.canAlwaysAllow}
+                              alwaysAllowScope={request.alwaysAllowScope}
+                              alwaysAllowDescription={request.alwaysAllowDescription}
                               onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
                               onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
                               onDeny={(requestId) => {
@@ -4363,20 +4763,30 @@ export function WorkspacePage() {
                     </div>
                   </section>
                 ) : null}
-                {gates.pendingQuestionRequests.length > 0 ? (
+                {showQuestionGate ? (
                   <section className="mx-auto w-full max-w-3xl px-3" data-testid="question-prompts-container">
                     <div className="space-y-2">
-                      {gates.pendingQuestionRequests.map((request) => (
-                        <Suspense fallback={null} key={request.requestId}>
+                      {activeQuestionRequest ? (
+                        <Suspense fallback={null} key={activeQuestionRequest.requestId}>
                           <QuestionCard
-                            requestId={request.requestId}
-                            questions={request.questions}
-                            busy={gates.answeringQuestionIds.has(request.requestId) || gates.dismissingQuestionIds.has(request.requestId)}
+                            requestId={activeQuestionRequest.requestId}
+                            agentLabel={AGENT_LABELS[selectedChatThread?.agent ?? "claude"]}
+                            questions={activeQuestionRequest.questions}
+                            busy={
+                              gates.answeringQuestionIds.has(activeQuestionRequest.requestId)
+                              || gates.dismissingQuestionIds.has(activeQuestionRequest.requestId)
+                            }
+                            position={hasMultiplePendingQuestions ? {
+                              current: activeQuestionIndex + 1,
+                              total: gates.pendingQuestionRequests.length,
+                            } : undefined}
+                            onPrevious={handleShowPreviousQuestion}
+                            onNext={handleShowNextQuestion}
                             onAnswer={(requestId, answers) => void gates.answerQuestion(requestId, answers)}
                             onDismiss={(requestId) => void gates.dismissQuestion(requestId)}
                           />
                         </Suspense>
-                      ))}
+                      ) : null}
                     </div>
                   </section>
                 ) : null}
@@ -4433,6 +4843,9 @@ export function WorkspacePage() {
                       }}
                       onDispatchQueuedMessage={(queueMessageId) => {
                         void chat.dispatchQueuedDraft(queueMessageId);
+                      }}
+                      onCancelQueuedMessageDispatch={(queueMessageId) => {
+                        void chat.cancelQueuedDraftDispatch(queueMessageId);
                       }}
                     />
                   </Suspense>
@@ -4617,7 +5030,7 @@ export function WorkspacePage() {
                   onSetRepositoryVisibility={handleSetRepositoryVisibility}
                   onShowAllRepositories={handleShowAllRepositories}
                   onReorderRepositories={handleReorderRepositories}
-                  onCreateWorktree={repos.submitWorktree}
+                  onCreateWorktree={handleCreateWorktree}
                   onSelectWorktree={handleSelectWorktree}
                   onDeleteWorktree={repos.removeWorktree}
                   onRenameWorktreeBranch={repos.renameWorktreeBranch}
@@ -4659,6 +5072,7 @@ export function WorkspacePage() {
             open={repos.fileBrowserOpen}
             onClose={() => repos.setFileBrowserOpen(false)}
             onSelect={(path) => void repos.attachRepositoryFromPath(path)}
+            initialPath={repos.selectedRepository?.rootPath ?? repos.repositories[0]?.rootPath ?? null}
           />
         </Suspense>
       ) : null}
@@ -4704,7 +5118,7 @@ export function WorkspacePage() {
         <BackgroundWorktreeStatusStreamBridge
           repositories={backgroundStatusRepositories}
           selectedWorktreeId={repos.selectedWorktreeId}
-          selectedThreadId={chat.selectedThreadIdForData ?? chat.selectedThreadId}
+          selectedThreadId={selectedThreadIdForLiveStatus}
           threadSnapshot={backgroundStatusThreadSnapshot}
           onCompletionAttentionEvent={handleCompletionAttentionEvent}
         />

@@ -27,6 +27,8 @@ describe("PermissionPromptCard", () => {
     decisionReason: null,
     busy: false,
     canAlwaysAllow: false,
+    alwaysAllowScope: null,
+    alwaysAllowDescription: null,
     onAllowOnce: vi.fn(),
     onAllowAlways: vi.fn(),
     onDeny: vi.fn(),
@@ -87,14 +89,126 @@ describe("PermissionPromptCard", () => {
     });
   });
 
-  it("shows always allow when canAlwaysAllow", () => {
+  it("shows split allow chevron when canAlwaysAllow", () => {
     act(() => {
-      root.render(<PermissionPromptCard {...defaultProps} canAlwaysAllow={true} />);
+      root.render(
+        <PermissionPromptCard
+          {...defaultProps}
+          canAlwaysAllow={true}
+          alwaysAllowScope="session"
+          alwaysAllowDescription="Remembers this approval for the current Codex session only."
+        />
+      );
     });
-    expect(container.textContent).toContain("More options");
+    expect(container.textContent).toContain("Allow once");
+    expect(container.querySelector('[aria-label="Show always allow options req-1"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Always allow");
+    expect(container.textContent).not.toContain("More options");
   });
 
-  it("shows decision reason in details", () => {
+  it("reveals always allow from the split chevron", () => {
+    const onAllowAlways = vi.fn();
+    act(() => {
+      root.render(
+        <PermissionPromptCard
+          {...defaultProps}
+          canAlwaysAllow={true}
+          alwaysAllowScope="session"
+          alwaysAllowDescription="Remembers this approval for the current Codex session only."
+          onAllowAlways={onAllowAlways}
+        />
+      );
+    });
+
+    const chevron = container.querySelector('[aria-label="Show always allow options req-1"]') as HTMLButtonElement;
+    act(() => chevron.click());
+
+    expect(container.querySelector('[role="menu"]')).toBeTruthy();
+    expect(container.textContent).toContain("Always allow");
+    expect(container.textContent).toContain("Remembers this approval for the current Codex session only.");
+    expect(container.textContent).not.toContain(".claude/settings.local.json");
+    expect(container.textContent).not.toContain("Always allow in this workspace");
+
+    const alwaysButton = container.querySelector('[aria-label="Always allow req-1"]') as HTMLButtonElement;
+    act(() => alwaysButton.click());
+    expect(onAllowAlways).toHaveBeenCalledWith("req-1");
+    expect(container.textContent).not.toContain("Always allow");
+  });
+
+  it("renders workspace always allow scope copy", () => {
+    act(() => {
+      root.render(
+        <PermissionPromptCard
+          {...defaultProps}
+          canAlwaysAllow={true}
+          alwaysAllowScope="workspace"
+          alwaysAllowDescription="Persists this approval in the workspace for matching future requests."
+        />
+      );
+    });
+    const chevron = container.querySelector('[aria-label="Show always allow options req-1"]') as HTMLButtonElement;
+    act(() => chevron.click());
+    expect(container.textContent).toContain("Persists this approval in the workspace for matching future requests.");
+  });
+
+  it("renders native always allow scope copy", () => {
+    act(() => {
+      root.render(
+        <PermissionPromptCard
+          {...defaultProps}
+          canAlwaysAllow={true}
+          alwaysAllowScope="native"
+          alwaysAllowDescription="Uses Cursor's native always-allow option for matching future requests."
+        />
+      );
+    });
+    const chevron = container.querySelector('[aria-label="Show always allow options req-1"]') as HTMLButtonElement;
+    act(() => chevron.click());
+    expect(container.textContent).toContain("Uses Cursor's native always-allow option for matching future requests.");
+  });
+
+  it("hides always allow when canAlwaysAllow is false", () => {
+    act(() => {
+      root.render(<PermissionPromptCard {...defaultProps} canAlwaysAllow={false} />);
+    });
+    expect(container.textContent).not.toContain("More options");
+    expect(container.textContent).not.toContain("Always allow");
+    expect(container.querySelector('[aria-label="Show always allow options req-1"]')).toBeNull();
+  });
+
+  it("closes always allow panel when busy", () => {
+    act(() => {
+      root.render(
+        <PermissionPromptCard
+          {...defaultProps}
+          canAlwaysAllow={true}
+          alwaysAllowScope="session"
+          alwaysAllowDescription="Remembers this approval for the current Codex session only."
+        />
+      );
+    });
+    const chevron = container.querySelector('[aria-label="Show always allow options req-1"]') as HTMLButtonElement;
+    act(() => chevron.click());
+    expect(container.textContent).toContain("Always allow");
+
+    act(() => {
+      root.render(
+        <PermissionPromptCard
+          {...defaultProps}
+          busy={true}
+          canAlwaysAllow={true}
+          alwaysAllowScope="session"
+          alwaysAllowDescription="Remembers this approval for the current Codex session only."
+        />
+      );
+    });
+
+    expect(container.textContent).not.toContain("Always allow");
+    const buttons = container.querySelectorAll("button");
+    buttons.forEach((button) => expect(button.disabled).toBe(true));
+  });
+
+  it("does not render more options or decision metadata", () => {
     act(() => {
       root.render(
         <PermissionPromptCard
@@ -103,16 +217,18 @@ describe("PermissionPromptCard", () => {
         />
       );
     });
-    expect(container.textContent).toContain("Requires elevated permissions");
+    expect(container.textContent).not.toContain("More options");
+    expect(container.textContent).not.toContain("Requires elevated permissions");
   });
 
-  it("shows blocked path in details", () => {
+  it("does not render blocked path metadata", () => {
     act(() => {
       root.render(
         <PermissionPromptCard {...defaultProps} blockedPath="/etc/passwd" />
       );
     });
-    expect(container.textContent).toContain("/etc/passwd");
+    expect(container.textContent).not.toContain("More options");
+    expect(container.textContent).not.toContain("/etc/passwd");
   });
 
   it("shows tool name when no command", () => {

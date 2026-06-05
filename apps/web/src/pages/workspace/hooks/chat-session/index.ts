@@ -1,5 +1,6 @@
 export {
   deriveSelectedThreadUiState,
+  applyQueuedDispatchCancellation,
   resolveWorktreeSwitchSeed,
   useChatSession,
 } from "./useChatSession";

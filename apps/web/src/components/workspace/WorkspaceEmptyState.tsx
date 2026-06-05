@@ -12,16 +12,8 @@ import type { ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { useInstalledApps } from "../../hooks/queries/useInstalledApps";
 import { api } from "../../lib/api";
 import { cn } from "../../lib/utils";
+import { getWorkspaceShortcutLabel, WORKSPACE_SHORTCUTS, type WorkspaceShortcutId } from "./keyboardShortcuts";
 import { resolvePreferredApp } from "./openInAppPreferences";
-
-function isMacPlatform(): boolean {
-  if (typeof navigator === "undefined") {
-    return true;
-  }
-
-  const platform = navigator.platform || navigator.userAgent || "";
-  return /mac/i.test(platform);
-}
 
 function CodesymphonyEmptyStateIcon({ className }: { className?: string }) {
   return (
@@ -44,19 +36,17 @@ function KeyboardPill({ children }: { children: string }) {
   );
 }
 
-function KeyboardPillGroup({ display }: { display: string[] }) {
+function KeyboardPillGroup({ label }: { label: string }) {
   return (
     <div className="ml-2 flex shrink-0 items-center gap-1.5">
-      {display.map((key) => (
-        <KeyboardPill key={key}>{key}</KeyboardPill>
-      ))}
+      <KeyboardPill>{label}</KeyboardPill>
     </div>
   );
 }
 
 type ActionButtonProps = {
   label: string;
-  display: string[];
+  shortcutId?: WorkspaceShortcutId;
   icon: LucideIcon;
   onClick: () => void;
   disabled?: boolean;
@@ -64,11 +54,13 @@ type ActionButtonProps = {
 
 function EmptyStateActionButton({
   label,
-  display,
+  shortcutId,
   icon: Icon,
   onClick,
   disabled = false,
 }: ActionButtonProps) {
+  const shortcutLabel = shortcutId ? getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS[shortcutId]) : null;
+
   return (
     <button
       type="button"
@@ -87,7 +79,7 @@ function EmptyStateActionButton({
         <span className="truncate">{label}</span>
       </span>
 
-      <KeyboardPillGroup display={display} />
+      {shortcutLabel ? <KeyboardPillGroup label={shortcutLabel} /> : null}
     </button>
   );
 }
@@ -142,8 +134,6 @@ export function WorkspaceEmptyState({
     enabled: enableInstalledAppsQuery,
   });
   const [openingApp, setOpeningApp] = useState(false);
-  const fileShortcut = isMacPlatform() ? ["Cmd", "Shift", "O"] : ["Ctrl", "Shift", "O"];
-  const reviewShortcut = reviewKind === "mr" ? ["MR"] : ["PR"];
   const workspaceReady = hasWorktree && worktreeReady;
   const selectedApp = worktreePath ? resolvePreferredApp(installedApps, worktreePath) : null;
   const openInAppLabel = selectedApp ? `Open in ${selectedApp.name}` : "Open in App";
@@ -151,7 +141,6 @@ export function WorkspaceEmptyState({
   const gitActionLabel = reviewRef
     ? reviewKind === "mr" ? "Open Merge Request" : "Open Pull Request"
     : "Commit Changes";
-  const gitActionDisplay = reviewRef ? (reviewKind === "mr" ? ["MR"] : ["PR"]) : ["GIT"];
 
   async function handleOpenInApp() {
     if (!selectedApp || !worktreePath || openingApp) {
@@ -176,7 +165,7 @@ export function WorkspaceEmptyState({
         <div className="mx-auto grid w-full max-w-md gap-0.5">
           <EmptyStateActionButton
             label="New Thread"
-            display={["THREAD"]}
+            shortcutId="create_thread"
             icon={MessageSquarePlus}
             onClick={onCreateThread}
             disabled={!workspaceReady || !canCreateThread}
@@ -184,7 +173,7 @@ export function WorkspaceEmptyState({
 
           <EmptyStateActionButton
             label="New Terminal"
-            display={["TERM"]}
+            shortcutId="create_terminal"
             icon={SquareTerminal}
             onClick={onCreateTerminal}
             disabled={!workspaceReady || !canCreateTerminal}
@@ -192,7 +181,7 @@ export function WorkspaceEmptyState({
 
           <EmptyStateActionButton
             label="Search Files"
-            display={fileShortcut}
+            shortcutId="quick_file_picker"
             icon={Search}
             onClick={onOpenFilePicker}
             disabled={!workspaceReady || !canOpenFiles}
@@ -200,7 +189,7 @@ export function WorkspaceEmptyState({
 
           <EmptyStateActionButton
             label={openInAppLabel}
-            display={["APP"]}
+            shortcutId="open_in_app"
             icon={ExternalLink}
             onClick={() => {
               void handleOpenInApp();
@@ -211,7 +200,7 @@ export function WorkspaceEmptyState({
           {showGitAction ? (
             <EmptyStateActionButton
               label={gitActionLabel}
-              display={gitActionDisplay}
+              shortcutId={reviewRef ? "open_pull_request" : undefined}
               icon={GitPullRequestArrow}
               onClick={reviewRef ? onOpenPullRequest : onOpenCommitChanges}
             />

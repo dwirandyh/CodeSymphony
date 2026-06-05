@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type {
@@ -41,6 +41,7 @@ import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { ScrollArea } from "../../components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+import { Dialog, DialogContent } from "../../components/ui/dialog";
 import { api } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { queryKeys } from "../../lib/queryKeys";
@@ -465,6 +466,27 @@ function toFormState(
   };
 }
 
+function getCreateDialogPrefills(params: {
+  repositories: Repository[];
+  repositoryFilter: string;
+  prefills?: AutomationListPageProps["prefills"];
+}): AutomationListPageProps["prefills"] {
+  const { repositories, repositoryFilter, prefills } = params;
+  const filteredRepository = repositoryFilter
+    ? findRepositoryById(repositories, repositoryFilter) ?? null
+    : null;
+
+  if (!filteredRepository) {
+    return prefills;
+  }
+
+  return {
+    ...prefills,
+    repositoryId: filteredRepository.id,
+    worktreeId: undefined,
+  };
+}
+
 function sanitizeFormState(form: AutomationFormState): AutomationFormState {
   return {
     ...form,
@@ -804,33 +826,39 @@ function describeAutomationTarget(repository: Repository | undefined, targetMode
   return `Creates a fresh worktree from ${repository.defaultBranch} for every run.`;
 }
 
-function WorkspaceHeaderStylePickerTrigger({
-  icon: Icon,
-  children,
-  className,
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  icon?: React.ComponentType<{ className?: string }>;
-}) {
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      className={cn(
-        "h-8 min-w-0 shrink-0 justify-between gap-1 rounded-md px-2 text-[12px] font-medium text-foreground/80 hover:bg-secondary/35 hover:text-foreground",
-        className,
-      )}
-      {...props}
-    >
-      <span className="min-w-0 flex items-center gap-1.5">
-        {Icon ? <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" /> : null}
-        <span className="truncate">{children}</span>
-      </span>
-      <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-    </Button>
-  );
-}
+const WorkspaceHeaderStylePickerTrigger = forwardRef<
+  HTMLButtonElement,
+  React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    icon?: React.ComponentType<{ className?: string }>;
+  }
+>(
+  function WorkspaceHeaderStylePickerTrigger({
+    icon: Icon,
+    children,
+    className,
+    ...props
+  }, ref) {
+    return (
+      <Button
+        ref={ref}
+        type="button"
+        variant="ghost"
+        size="sm"
+        className={cn(
+          "h-8 min-w-0 shrink-0 justify-between gap-1 rounded-md px-2 text-[12px] font-medium text-foreground/80 hover:bg-secondary/35 hover:text-foreground",
+          className,
+        )}
+        {...props}
+      >
+        <span className="min-w-0 flex items-center gap-1.5">
+          {Icon ? <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" /> : null}
+          <span className="truncate">{children}</span>
+        </span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+      </Button>
+    );
+  },
+);
 
 function AutomationInlinePicker({
   icon,
@@ -1224,24 +1252,27 @@ function VersionHistoryList({
   );
 }
 
-function AutomationRowActionButton({
-  children,
-  className,
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  return (
-    <button
-      type="button"
-      {...props}
-      className={cn(
-        "inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50",
-        className,
-      )}
-    >
-      {children}
-    </button>
-  );
-}
+const AutomationRowActionButton = forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement>>(
+  function AutomationRowActionButton({
+    children,
+    className,
+    ...props
+  }, ref) {
+    return (
+      <button
+        ref={ref}
+        type="button"
+        {...props}
+        className={cn(
+          "inline-flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50",
+          className,
+        )}
+      >
+        {children}
+      </button>
+    );
+  },
+);
 
 function AutomationListItem({
   automation,
@@ -1433,12 +1464,32 @@ export function AutomationsListPage({
   const [createError, setCreateError] = useState<string | null>(null);
   const [createValidationErrors, setCreateValidationErrors] = useState<AutomationFormValidationErrors>({});
   const [actionError, setActionError] = useState<string | null>(null);
-  const [createForm, setCreateForm] = useState<AutomationFormState>(() => toFormState(repositories, providers, null, prefills));
+  const [createForm, setCreateForm] = useState<AutomationFormState>(() => toFormState(
+    repositories,
+    providers,
+    null,
+    getCreateDialogPrefills({
+      repositories,
+      repositoryFilter: rememberedAutomationListState.repositoryFilter ?? "",
+      prefills,
+    }),
+  ));
   const [createDialogPopoverHost, setCreateDialogPopoverHost] = useState<HTMLDivElement | null>(null);
   const compactLayout = layout === "panel";
   const repositoryFilter = repositoryFilterState;
   const repositoryFilterLabel = repositoryFilterLabelState;
   const enabledFilter = enabledFilterState;
+  const externalCreateRequested = prefills?.create === true;
+  const createDialogPrefills = useMemo(() => getCreateDialogPrefills({
+    repositories,
+    repositoryFilter,
+    prefills,
+  }), [prefills, repositories, repositoryFilter]);
+  const previousExternalCreateRequestedRef = useRef(externalCreateRequested);
+
+  const resetCreateFormFromContext = useCallback(() => {
+    setCreateForm(toFormState(repositories, providers, null, createDialogPrefills));
+  }, [createDialogPrefills, providers, repositories]);
 
   const setRepositoryFilter = useCallback((value: string) => {
     const matchedRepository = value ? findRepositoryById(repositories, value) : null;
@@ -1456,12 +1507,27 @@ export function AutomationsListPage({
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     setCreateDialogOpen(open);
-    if (!open) {
-      setCreateError(null);
-      setCreateValidationErrors({});
+    setCreateError(null);
+    setCreateValidationErrors({});
+    if (open) {
+      resetCreateFormFromContext();
     }
     onCreateDialogOpenChange?.(open);
-  }, [onCreateDialogOpenChange]);
+  }, [onCreateDialogOpenChange, resetCreateFormFromContext]);
+
+  useEffect(() => {
+    if (previousExternalCreateRequestedRef.current === externalCreateRequested) {
+      return;
+    }
+
+    previousExternalCreateRequestedRef.current = externalCreateRequested;
+    setCreateDialogOpen(externalCreateRequested);
+    setCreateError(null);
+    setCreateValidationErrors({});
+    if (externalCreateRequested) {
+      resetCreateFormFromContext();
+    }
+  }, [externalCreateRequested, resetCreateFormFromContext]);
 
   useEffect(() => {
     if (repositories.length === 0) {
@@ -1472,9 +1538,9 @@ export function AutomationsListPage({
       if (current.repositoryId && current.targetWorktreeId) {
         return current;
       }
-      return toFormState(repositories, providers, null, prefills);
+      return toFormState(repositories, providers, null, createDialogPrefills);
     });
-  }, [repositories, providers, prefills]);
+  }, [createDialogPrefills, providers, repositories]);
 
   useEffect(() => {
     if (!repositoryFilter) {
@@ -1534,13 +1600,18 @@ export function AutomationsListPage({
       handleCreateDialogOpenChange(false);
       setCreateError(null);
       setCreateValidationErrors({});
-      setCreateForm(toFormState(repositories, providers, null, prefills));
+      setCreateForm(toFormState(repositories, providers, null, createDialogPrefills));
       openAutomationDetail(automation.id);
     },
     onError: (error) => {
       setCreateError(error instanceof Error ? error.message : "Unable to create automation");
     },
   });
+  const createFormValidationErrors = useMemo(
+    () => getAutomationFormValidationErrors(createForm, repositories),
+    [createForm, repositories],
+  );
+  const createSubmitDisabled = createMutation.isPending || Object.keys(createFormValidationErrors).length > 0;
 
   const runMutation = useMutation({
     mutationFn: api.runAutomationNow,
@@ -1649,7 +1720,7 @@ export function AutomationsListPage({
     }
   }, [createError]);
   const handleCreateSubmit = useCallback(() => {
-    const validationErrors = getAutomationFormValidationErrors(createForm, repositories);
+    const validationErrors = createFormValidationErrors;
     if (Object.keys(validationErrors).length > 0) {
       setCreateValidationErrors(validationErrors);
       setCreateError(null);
@@ -1657,7 +1728,7 @@ export function AutomationsListPage({
     }
 
     createMutation.mutate(formToPayload(createForm));
-  }, [createForm, createMutation, repositories]);
+  }, [createForm, createFormValidationErrors, createMutation]);
 
   return (
     <AutomationPageShell layout={layout}>
@@ -1750,14 +1821,13 @@ export function AutomationsListPage({
           )}
         </section>
 
-      {createDialogOpen ? (
-        <div
-          role="dialog"
-          aria-modal="true"
+      <Dialog open={createDialogOpen} onOpenChange={handleCreateDialogOpenChange}>
+        <DialogContent
           aria-label="Create automation"
-          className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/60 px-4 py-4 backdrop-blur-sm"
+          className="z-[70] max-w-none border-0 bg-transparent p-0 shadow-none sm:rounded-none"
         >
-          <div
+          <div className="flex max-h-[calc(100vh-32px)] items-center justify-center overflow-y-auto px-4 py-4">
+            <div
             className={cn(
               "relative my-auto w-full overflow-visible rounded-xl border border-border/50 bg-background p-0 text-foreground shadow-xl",
               compactLayout
@@ -1916,7 +1986,7 @@ export function AutomationsListPage({
                     <Button
                       type="button"
                       className="h-8 px-5 md:min-w-[104px]"
-                      disabled={createMutation.isPending || repositories.length === 0}
+                      disabled={createSubmitDisabled}
                       onClick={handleCreateSubmit}
                     >
                       {createMutation.isPending ? "Creating..." : "Create"}
@@ -1930,9 +2000,10 @@ export function AutomationsListPage({
                 </div>
               </div>
             </div>
+            </div>
           </div>
-        </div>
-      ) : null}
+        </DialogContent>
+      </Dialog>
       </div>
     </AutomationPageShell>
   );
@@ -2481,7 +2552,6 @@ export function WorkspaceAutomationsPanel({
 
   return (
     <AutomationsListPage
-      key={create ? "create" : "browse"}
       prefills={{ ...prefills, create }}
       layout="panel"
       onOpenAutomation={onOpenAutomation}
