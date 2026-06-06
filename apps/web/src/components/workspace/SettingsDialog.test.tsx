@@ -283,6 +283,21 @@ async function openModelsTab() {
   await flushEffects();
 }
 
+async function expandProviderRow(providerName: string) {
+  const toggle = document.body.querySelector(
+    `button[aria-label="Expand provider ${providerName}"], button[aria-label="Collapse provider ${providerName}"]`,
+  );
+  if (!(toggle instanceof HTMLElement)) {
+    throw new Error(`Provider row toggle for ${providerName} not found`);
+  }
+  if (toggle.getAttribute("aria-label")?.startsWith("Expand")) {
+    await act(async () => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+  }
+}
+
 async function openGeneralTab() {
   const generalButton = Array.from(document.body.querySelectorAll("button")).find(
     (button) => button.textContent?.trim() === "General",
@@ -1144,6 +1159,7 @@ describe("SettingsDialog", () => {
     await openModelsTab();
 
     expect(onProvidersChanged).toHaveBeenLastCalledWith(providers);
+    await expandProviderRow("Custom");
     expect(document.body.textContent).toContain("claude-custom");
   });
 
@@ -1308,6 +1324,7 @@ describe("SettingsDialog", () => {
       models: [{ modelId: "sumo/deepseek-v4-pro" }],
     });
     expect(document.body.textContent).toContain("9Router");
+    await expandProviderRow("9Router");
     expect(document.body.textContent).toContain("sumo/deepseek-v4-pro");
   });
 
@@ -1385,6 +1402,7 @@ describe("SettingsDialog", () => {
 
     renderDialog([makeRepo()]);
     await openModelsTab();
+    await expandProviderRow("9Router");
 
     const createProviderCallsBefore = apiMocks.createModelProvider.mock.calls.length;
     const addModelButton = Array.from(document.body.querySelectorAll("button")).find(
@@ -1589,18 +1607,17 @@ describe("SettingsDialog", () => {
     ];
     apiMocks.listModelProviders.mockResolvedValueOnce([provider]);
 
+    apiMocks.testModelProvider.mockResolvedValueOnce({ success: true });
+
     renderDialog([makeRepo()]);
     await openModelsTab();
+    await expandProviderRow("9Router");
 
-    expect(document.body.textContent).toContain("Test selected model");
-    await setRadixSelectValue("Test model for 9Router", "sumo/kimi-k2.6");
-    await flushEffects();
-
-    const testButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Test selected model",
-    ) as HTMLButtonElement | undefined;
+    const testButton = document.body.querySelector(
+      'button[aria-label="Test model sumo/kimi-k2.6"]',
+    ) as HTMLButtonElement | null;
     if (!testButton) {
-      throw new Error("Saved provider test button not found");
+      throw new Error("Per-model test button not found");
     }
 
     await act(async () => {

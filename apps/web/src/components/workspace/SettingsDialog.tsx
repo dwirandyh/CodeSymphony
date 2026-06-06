@@ -3,7 +3,10 @@ import {
   ArrowLeft,
   Bot,
   Bug,
+  Check,
+  ChevronDown,
   ChevronRight,
+  CircleAlert,
   FolderGit2,
   Keyboard,
   Loader2,
@@ -21,7 +24,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Slider } from "../ui/slider";
@@ -109,6 +111,8 @@ const PROVIDER_COMPATIBILITY_LABELS: Record<ModelProviderCompatibility, string> 
   anthropic: "Anthropic",
   openai: "OpenAI",
 };
+
+const PROVIDER_COMPATIBILITY_ORDER: ModelProviderCompatibility[] = ["anthropic", "openai"];
 
 const PROVIDER_VISIBLE_AGENT_LABELS: Record<CliAgent, string> = {
   claude: "Claude Code",
@@ -653,7 +657,10 @@ export function SettingsDialog({
   const [testingProvider, setTestingProvider] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
   const [providerFormError, setProviderFormError] = useState<string | null>(null);
-  const [providerTestModelIds, setProviderTestModelIds] = useState<Record<string, string>>({});
+  const [expandedProviderIds, setExpandedProviderIds] = useState<Set<string>>(() => new Set());
+  const [modelTestStatus, setModelTestStatus] = useState<
+    Record<string, { state: "testing" | "success" | "error"; error?: string }>
+  >({});
   const [addModelDialogProvider, setAddModelDialogProvider] = useState<ModelProvider | null>(null);
   const [addModelId, setAddModelId] = useState("");
   const [addModelError, setAddModelError] = useState<string | null>(null);
@@ -1108,35 +1115,54 @@ export function SettingsDialog({
 
   const handleDeleteProviderModel = useCallback(async (provider: ModelProvider, modelRowId: string) => {
     try {
-      const deletedModelId = (provider.models ?? []).find((model) => model.id === modelRowId)?.modelId ?? null;
       await api.deleteModelProviderModel(modelRowId);
       upsertProviderInList({
         ...provider,
         models: (provider.models ?? []).filter((model) => model.id !== modelRowId),
       });
-      if (deletedModelId) {
-        setProviderTestModelIds((current) => {
-          const next = { ...current };
-          if (next[provider.id] === deletedModelId) {
-            delete next[provider.id];
-          }
-          return next;
-        });
-      }
+      setModelTestStatus((current) => {
+        if (!(modelRowId in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[modelRowId];
+        return next;
+      });
     } catch {}
   }, [upsertProviderInList]);
 
-  const handleTestSavedProvider = useCallback(async (providerId: string, modelId: string) => {
-    setTestingProvider(true);
-    setTestResult(null);
+  const handleTestProviderModel = useCallback(async (
+    providerId: string,
+    modelRowId: string,
+    modelId: string,
+  ) => {
+    setModelTestStatus((current) => ({ ...current, [modelRowId]: { state: "testing" } }));
     try {
       const result = await api.testModelProvider({ providerId, modelId });
-      setTestResult(result);
+      setModelTestStatus((current) => ({
+        ...current,
+        [modelRowId]: result.success
+          ? { state: "success" }
+          : { state: "error", error: result.error },
+      }));
     } catch {
-      setTestResult({ success: false, error: "Network error — could not reach the runtime" });
-    } finally {
-      setTestingProvider(false);
+      setModelTestStatus((current) => ({
+        ...current,
+        [modelRowId]: { state: "error", error: "Network error — could not reach the runtime" },
+      }));
     }
+  }, []);
+
+  const toggleProviderExpanded = useCallback((providerId: string) => {
+    setExpandedProviderIds((current) => {
+      const next = new Set(current);
+      if (next.has(providerId)) {
+        next.delete(providerId);
+      } else {
+        next.add(providerId);
+      }
+      return next;
+    });
   }, []);
 
   const handleEditProvider = useCallback((provider: ModelProvider) => {
@@ -1985,156 +2011,165 @@ export function SettingsDialog({
                         <p className="text-[11px] leading-5 text-muted-foreground">
                           No compatibility-based providers configured yet. Add OpenAI or Anthropic entries here.
                         </p>
-                      ) : null}
-
-                      {providers.length > 0 ? (
-                        <div className="space-y-3">
-                          {providers.map((provider) => {
-                            const providerModels = provider.models ?? [];
-                            const selectedModelId = providerTestModelIds[provider.id] ?? providerModels[0]?.modelId ?? "";
+                      ) : (
+                        <div className="space-y-5">
+                          {PROVIDER_COMPATIBILITY_ORDER.map((compatibility) => {
+                            const groupProviders = providers.filter(
+                              (provider) => (provider.compatibility ?? "anthropic") === compatibility,
+                            );
+                            if (groupProviders.length === 0) {
+                              return null;
+                            }
 
                             return (
-                              <Card
-                                key={provider.id}
-                                className="overflow-hidden border-border/60 bg-background/20 shadow-none"
-                              >
-                                <CardHeader className="flex flex-row items-start justify-between space-y-0 p-4 pb-3">
-                                  <div className="min-w-0 flex-1 pr-3">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <CardTitle className="text-[13px] font-medium">{provider.name}</CardTitle>
-                                      <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
-                                        {getProviderCompatibilityLabel(provider.compatibility)}
-                                      </Badge>
-                                      <Badge variant="secondary" className="text-[10px]">
-                                        {providerModels.length} model{providerModels.length === 1 ? "" : "s"}
-                                      </Badge>
-                                    </div>
-                                    <CardDescription className="mt-2 space-y-1 text-[11px] leading-5">
-                                      <div>Works with: {formatSupportedAgentsForCompatibility(provider.compatibility)}</div>
-                                      <div className="break-all">Endpoint: {provider.baseUrl || "Not stored"}</div>
-                                      <div>
-                                        API Key:{" "}
-                                        {provider.apiKeyMasked
-                                          ? <span className="font-mono">{provider.apiKeyMasked}</span>
-                                          : "Not stored"}
-                                      </div>
-                                    </CardDescription>
-                                  </div>
-                                  <div className="flex shrink-0 items-center gap-1">
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-8 w-8 text-muted-foreground"
-                                      aria-label={`Edit provider ${provider.name}`}
-                                      title={`Edit ${provider.name}`}
-                                      onClick={() => handleEditProvider(provider)}
-                                    >
-                                      <Pencil className="h-3.5 w-3.5" />
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                                      aria-label={`Delete provider ${provider.name}`}
-                                      title={`Delete ${provider.name}`}
-                                      onClick={() => void handleDeleteProvider(provider.id)}
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </Button>
-                                  </div>
-                                </CardHeader>
+                              <div key={compatibility} className="space-y-2">
+                                <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                                  {getProviderCompatibilityLabel(compatibility)}-compatible
+                                </p>
+                                <div className="overflow-hidden rounded-xl border border-border/60 bg-background/20">
+                                  {groupProviders.map((provider, index) => {
+                                    const providerModels = provider.models ?? [];
+                                    const expanded = expandedProviderIds.has(provider.id);
 
-                                <CardContent className="space-y-4 p-4 pt-0">
-                                  <div className="space-y-2">
-                                    <p className="text-[11px] font-medium text-muted-foreground">Models</p>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      {providerModels.map((model) => (
-                                        <Badge
-                                          key={model.id}
-                                          variant="secondary"
-                                          className="max-w-full gap-1 pr-1 font-mono text-[11px] font-normal"
-                                        >
-                                          <span className="max-w-[220px] truncate">{model.modelId}</span>
+                                    return (
+                                      <div
+                                        key={provider.id}
+                                        className={cn(
+                                          "group/provider",
+                                          index > 0 ? "border-t border-border/40" : null,
+                                        )}
+                                      >
+                                        <div className="flex items-center gap-2 px-3 py-2.5">
                                           <button
                                             type="button"
-                                            className="rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-                                            aria-label={`Delete model ${model.modelId}`}
-                                            title={`Delete ${model.modelId}`}
-                                            onClick={() => void handleDeleteProviderModel(provider, model.id)}
+                                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                            aria-expanded={expanded}
+                                            aria-label={`${expanded ? "Collapse" : "Expand"} provider ${provider.name}`}
+                                            onClick={() => toggleProviderExpanded(provider.id)}
                                           >
-                                            <X className="h-3 w-3" />
+                                            <ChevronDown
+                                              className={cn(
+                                                "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                                                expanded ? null : "-rotate-90",
+                                              )}
+                                            />
+                                            <span className="truncate text-[13px] font-medium text-foreground">
+                                              {provider.name}
+                                            </span>
+                                            <Badge variant="secondary" className="shrink-0 text-[10px]">
+                                              {providerModels.length} model{providerModels.length === 1 ? "" : "s"}
+                                            </Badge>
                                           </button>
-                                        </Badge>
-                                      ))}
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        className="h-7 gap-1 border-dashed px-2.5 text-[11px]"
-                                        onClick={() => openAddModelDialog(provider)}
-                                      >
-                                        <Plus className="h-3 w-3" />
-                                        Add model
-                                      </Button>
-                                    </div>
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    <p className="text-[11px] font-medium text-muted-foreground">Test connection</p>
-                                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                                      <Select
-                                        value={selectedModelId}
-                                        onValueChange={(modelId) => {
-                                          setProviderTestModelIds((current) => ({
-                                            ...current,
-                                            [provider.id]: modelId,
-                                          }));
-                                        }}
-                                        disabled={providerModels.length === 0}
-                                      >
-                                        <SelectTrigger
-                                          aria-label={`Test model for ${provider.name}`}
-                                          className="h-9 w-full bg-background/50 sm:max-w-xs"
-                                        >
-                                          <SelectValue placeholder="Select model" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                          {providerModels.map((model) => (
-                                            <SelectItem
-                                              key={model.id}
-                                              value={model.modelId}
-                                              className="font-mono text-xs"
+                                          <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover/provider:opacity-100 focus-within:opacity-100">
+                                            <Button
+                                              type="button"
+                                              variant="ghost"
+                                              size="icon"
+                                              className="h-7 w-7 text-muted-foreground"
+                                              aria-label={`Edit provider ${provider.name}`}
+                                              title={`Edit ${provider.name}`}
+                                              onClick={() => handleEditProvider(provider)}
                                             >
-                                              {model.modelId}
-                                            </SelectItem>
-                                          ))}
-                                        </SelectContent>
-                                      </Select>
-                                      <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        className="h-9 gap-1.5 shrink-0"
-                                        disabled={testingProvider || !selectedModelId}
-                                        onClick={() => void handleTestSavedProvider(provider.id, selectedModelId)}
-                                      >
-                                        {testingProvider ? (
-                                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                        ) : (
-                                          <Play className="h-3.5 w-3.5" />
-                                        )}
-                                        Test selected model
-                                      </Button>
-                                    </div>
-                                  </div>
-                                </CardContent>
-                              </Card>
+                                              <Pencil className="h-3.5 w-3.5" />
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              variant="ghost"
+                                              size="icon"
+                                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                                              aria-label={`Delete provider ${provider.name}`}
+                                              title={`Delete ${provider.name}`}
+                                              onClick={() => void handleDeleteProvider(provider.id)}
+                                            >
+                                              <Trash2 className="h-3.5 w-3.5" />
+                                            </Button>
+                                          </div>
+                                        </div>
+
+                                        {expanded ? (
+                                          <div className="space-y-4 px-3 pb-4 pl-9">
+                                            <div className="space-y-1 text-[11px] leading-5 text-muted-foreground">
+                                              <div>Works with: {formatSupportedAgentsForCompatibility(provider.compatibility)}</div>
+                                              <div className="break-all">Endpoint: {provider.baseUrl || "Not stored"}</div>
+                                              <div>
+                                                API Key:{" "}
+                                                {provider.apiKeyMasked
+                                                  ? <span className="font-mono">{provider.apiKeyMasked}</span>
+                                                  : "Not stored"}
+                                              </div>
+                                            </div>
+
+                                            <div className="space-y-2">
+                                              <p className="text-[11px] font-medium text-muted-foreground">Models</p>
+                                              <div className="flex flex-wrap items-center gap-2">
+                                                {providerModels.map((model) => {
+                                                  const status = modelTestStatus[model.id];
+                                                  return (
+                                                    <Badge
+                                                      key={model.id}
+                                                      variant="secondary"
+                                                      className="group/model max-w-full gap-1 pr-1 font-mono text-[11px] font-normal"
+                                                      title={status?.state === "error" ? status.error : undefined}
+                                                    >
+                                                      <span className="max-w-[220px] truncate">{model.modelId}</span>
+                                                      {status?.state === "success" ? (
+                                                        <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                                                      ) : status?.state === "error" ? (
+                                                        <CircleAlert className="h-3 w-3 shrink-0 text-destructive" />
+                                                      ) : null}
+                                                      {status?.state === "testing" ? (
+                                                        <span className="p-0.5" aria-label={`Testing model ${model.modelId}`}>
+                                                          <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+                                                        </span>
+                                                      ) : (
+                                                        <button
+                                                          type="button"
+                                                          className={cn(
+                                                            "rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground",
+                                                            "opacity-0 group-hover/model:opacity-100 focus-visible:opacity-100",
+                                                          )}
+                                                          aria-label={`Test model ${model.modelId}`}
+                                                          title={`Test ${model.modelId}`}
+                                                          onClick={() => void handleTestProviderModel(provider.id, model.id, model.modelId)}
+                                                        >
+                                                          <Play className="h-3 w-3" />
+                                                        </button>
+                                                      )}
+                                                      <button
+                                                        type="button"
+                                                        className="rounded-full p-0.5 text-muted-foreground opacity-0 transition-colors hover:bg-destructive/15 hover:text-destructive focus-visible:opacity-100 group-hover/model:opacity-100"
+                                                        aria-label={`Delete model ${model.modelId}`}
+                                                        title={`Delete ${model.modelId}`}
+                                                        onClick={() => void handleDeleteProviderModel(provider, model.id)}
+                                                      >
+                                                        <X className="h-3 w-3" />
+                                                      </button>
+                                                    </Badge>
+                                                  );
+                                                })}
+                                                <Button
+                                                  type="button"
+                                                  variant="outline"
+                                                  size="sm"
+                                                  className="h-7 gap-1 border-dashed px-2.5 text-[11px]"
+                                                  onClick={() => openAddModelDialog(provider)}
+                                                >
+                                                  <Plus className="h-3 w-3" />
+                                                  Add model
+                                                </Button>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
                             );
                           })}
                         </div>
-                      ) : null}
+                      )}
 
                       <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
                         {providerFootnote}
