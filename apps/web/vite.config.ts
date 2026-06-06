@@ -50,6 +50,7 @@ export default defineConfig(({ mode }) => {
     server: {
       port: parseInt(getConfiguredWebDevPort(runtimeConfigEnv), 10),
       host: true,
+      allowedHosts: ["macbook.arowana-tiyanki.ts.net", ".ts.net"],
       proxy: {
         "/api": {
           target: getConfiguredRuntimeProxyTarget(runtimeConfigEnv),
