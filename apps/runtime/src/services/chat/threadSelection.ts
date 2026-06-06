@@ -20,7 +20,6 @@ export type ThreadSelectionInput = {
   agent?: CliAgent | null;
   model?: string | null;
   modelProviderId?: string | null;
-  preferActiveProvider?: boolean;
 };
 
 export type ResolvedThreadSelection = {
@@ -97,14 +96,15 @@ function toActiveModelProvider(provider: {
 
 export async function resolvePersistedThreadProvider(
   deps: RuntimeDeps,
-  thread: { modelProviderId?: string | null },
+  thread: { modelProviderId?: string | null; model?: string | null },
 ): Promise<ActiveModelProvider | null> {
   const providerId = normalizeOptionalModelId(thread.modelProviderId);
-  if (!providerId) {
+  const modelId = normalizeOptionalModelId(thread.model);
+  if (!providerId || !modelId) {
     return null;
   }
 
-  const provider = await deps.modelProviderService.getProviderById(providerId);
+  const provider = await deps.modelProviderService.resolveProviderSelection(providerId, modelId);
   return provider ? toActiveModelProvider(provider) : null;
 }
 
@@ -121,9 +121,13 @@ export async function resolveThreadSelection(
 ): Promise<ResolvedThreadSelection> {
   const agent = normalizeAgent(input.agent);
   const requestedProviderId = normalizeOptionalModelId(input.modelProviderId);
+  const explicitModel = normalizeOptionalModelId(input.model);
 
   if (requestedProviderId) {
-    const provider = await deps.modelProviderService.getProviderById(requestedProviderId);
+    if (!explicitModel) {
+      throw new Error("Selected model provider requires a model");
+    }
+    const provider = await deps.modelProviderService.resolveProviderSelection(requestedProviderId, explicitModel);
     if (!provider) {
       throw new Error("Selected model provider not found");
     }
@@ -139,7 +143,7 @@ export async function resolveThreadSelection(
     };
   }
 
-  const explicitModel = normalizeOptionalModelId(input.model);
+
   if (explicitModel) {
     return {
       agent,
@@ -149,17 +153,6 @@ export async function resolveThreadSelection(
     };
   }
 
-  if (input.preferActiveProvider) {
-    const activeProvider = await deps.modelProviderService.getActiveProvider(agent);
-    if (activeProvider) {
-      return {
-        agent,
-        model: activeProvider.modelId,
-        modelProviderId: activeProvider.id,
-        provider: toActiveModelProvider(activeProvider),
-      };
-    }
-  }
 
   return {
     agent,
@@ -279,22 +272,28 @@ export async function prepareThreadSelectionUpdate(params: {
       throw new Error("Cannot change model for provider-backed Claude threads");
     }
 
-    if (!shouldPreserveThreadSelectionSessionIds({
-      threadKind: params.thread.kind,
-      currentAgent: params.thread.agent,
-      currentModelProviderId: params.thread.modelProviderId,
-      nextAgent: selection.agent,
-      nextModelProviderId: selection.modelProviderId,
-    })) {
+    const currentProviderId = normalizeOptionalModelId(params.thread.modelProviderId);
+    const nextProviderId = normalizeOptionalModelId(selection.modelProviderId);
+    if (currentProviderId !== nextProviderId) {
       throw new Error("Cannot change provider source after the thread has messages");
     }
   }
+
+  const preserveSessionIds = shouldPreserveThreadSelectionSessionIds({
+    threadKind: params.thread.kind,
+    currentAgent: params.thread.agent,
+    currentModel: params.thread.model,
+    currentModelProviderId: params.thread.modelProviderId,
+    nextAgent: selection.agent,
+    nextModel: selection.model,
+    nextModelProviderId: selection.modelProviderId,
+  });
 
   return {
     selection,
     selectionChanged,
     selectionUpdate: buildSelectionUpdate(selection, {
-      resetSessionIds: params.messageCount === 0,
+      resetSessionIds: params.messageCount === 0 || !preserveSessionIds,
     }),
   };
 }

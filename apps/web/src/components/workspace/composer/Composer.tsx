@@ -395,7 +395,11 @@ function ComposerContent({
     codexBuiltinModelOverride,
   }), [claudeModels, codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
   const currentProvider = useMemo(
-    () => (modelProviderId ? providers.find((provider) => provider.id === modelProviderId) ?? null : null),
+    () => (
+      modelProviderId
+        ? providers.find((provider) => provider.id === modelProviderId) ?? null
+        : null
+    ),
     [modelProviderId, providers],
   );
   const selectionBlockedReason = useMemo(() => getModelSelectionBlockedReason({

@@ -17,8 +17,9 @@ describe("model provider routes", () => {
     createProvider: vi.fn(),
     updateProvider: vi.fn(),
     deleteProvider: vi.fn(),
-    activateProvider: vi.fn(),
-    deactivateAll: vi.fn(),
+    createModel: vi.fn(),
+    deleteModel: vi.fn(),
+    resolveProviderSelection: vi.fn(),
   };
 
   async function createTestApp(): Promise<FastifyInstance> {
@@ -240,11 +241,11 @@ describe("model provider routes", () => {
       method: "POST",
       url: "/api/model-providers",
       payload: {
-        compatibility: "openai",
         name: "New",
-        modelId: "m1",
+        compatibility: "openai",
         baseUrl: "http://localhost",
         apiKey: "key",
+        models: [{ modelId: "m1" }],
       },
     });
     expect(res.statusCode).toBe(200);
@@ -268,15 +269,20 @@ describe("model provider routes", () => {
     expect(res.statusCode).toBe(204);
   });
 
-  it("POST /api/model-providers/:id/activate activates provider", async () => {
-    mockService.activateProvider.mockResolvedValue({ id: "p1", isActive: true });
-    const res = await app.inject({ method: "POST", url: "/api/model-providers/p1/activate" });
+  it("POST /api/model-providers/:id/models creates model", async () => {
+    mockService.createModel.mockResolvedValue({ id: "p1", name: "Provider" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/model-providers/p1/models",
+      payload: { modelId: "m2" },
+    });
     expect(res.statusCode).toBe(200);
+    expect(mockService.createModel).toHaveBeenCalledWith("p1", { modelId: "m2" });
   });
 
-  it("POST /api/model-providers/deactivate deactivates all", async () => {
-    mockService.deactivateAll.mockResolvedValue(undefined);
-    const res = await app.inject({ method: "POST", url: "/api/model-providers/deactivate" });
+  it("DELETE /api/model-provider-models/:id deletes model", async () => {
+    mockService.deleteModel.mockResolvedValue(undefined);
+    const res = await app.inject({ method: "DELETE", url: "/api/model-provider-models/m1" });
     expect(res.statusCode).toBe(204);
   });
 
@@ -295,6 +301,55 @@ describe("model provider routes", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().data.success).toBe(false);
     expect(res.json().data.error).toContain("Connection refused");
+    vi.unstubAllGlobals();
+  });
+
+  it("POST /api/model-providers/test resolves a saved provider", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    mockService.resolveProviderSelection.mockResolvedValue({
+      id: "p1",
+      compatibility: "anthropic",
+      baseUrl: "http://localhost:9999/",
+      apiKey: "key",
+      name: "Provider",
+      modelId: "model",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/model-providers/test",
+      payload: {
+        providerId: "p1",
+        modelId: "model",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.success).toBe(true);
+    expect(mockService.resolveProviderSelection).toHaveBeenCalledWith("p1", "model");
+    expect(fetchMock).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("POST /api/model-providers/test fails when the saved provider model is missing", async () => {
+    const fetchMock = vi.fn();
+    mockService.resolveProviderSelection.mockRejectedValue(new Error("Selected model is no longer available in this provider"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/model-providers/test",
+      payload: {
+        providerId: "p1",
+        modelId: "deleted-model",
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data).toEqual({
+      success: false,
+      error: "Selected model is no longer available in this provider",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 

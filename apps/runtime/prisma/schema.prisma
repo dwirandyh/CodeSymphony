@@ -156,7 +156,7 @@ model ChatThread {
   titleEditedManually Boolean                     @default(false)
   agent               CliAgent                    @default(claude)
   model               String                      @default("claude-sonnet-4-6")
-  modelProviderId     String?
+  modelProviderId String?
   pendingPlanEventId  String?
   pendingPlanFilePath String?
   pendingPlanContent  String?
@@ -170,7 +170,6 @@ model ChatThread {
   updatedAt           DateTime                    @updatedAt
 
   worktree      Worktree       @relation(fields: [worktreeId], references: [id], onDelete: Cascade)
-  modelProvider ModelProvider? @relation(fields: [modelProviderId], references: [id], onDelete: SetNull)
   messages      ChatMessage[]
   events        ChatEvent[]
   queuedMessages ChatQueuedMessage[]
@@ -261,19 +260,29 @@ model ChatEvent {
 
 model ModelProvider {
   id            String                     @id @default(cuid())
-  compatibility ModelProviderCompatibility
   name          String
-  modelId       String                     @default("")
+  compatibility ModelProviderCompatibility
   baseUrl       String?
   apiKey        String?
-  isActive      Boolean                    @default(false)
   createdAt     DateTime                   @default(now())
   updatedAt     DateTime                   @updatedAt
 
-  threads ChatThread[]
-  automations Automation[]
+  models ModelProviderModel[]
 
-  @@index([compatibility, isActive])
+  @@index([compatibility])
+}
+
+model ModelProviderModel {
+  id         String   @id @default(cuid())
+  providerId String
+  modelId    String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  provider ModelProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, modelId])
+  @@index([providerId])
 }
 
 model AppSettings {
@@ -305,7 +314,6 @@ model Automation {
 
   repository     Repository            @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   targetWorktree Worktree              @relation(fields: [targetWorktreeId], references: [id], onDelete: Cascade)
-  modelProvider  ModelProvider?        @relation(fields: [modelProviderId], references: [id], onDelete: SetNull)
   runs           AutomationRun[]
   promptVersions AutomationPromptVersion[]
 

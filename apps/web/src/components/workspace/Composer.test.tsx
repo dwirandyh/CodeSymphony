@@ -74,6 +74,37 @@ const sampleQueuedMessages: ChatQueuedMessage[] = [
   },
 ];
 
+function makeModelProvider(
+  overrides: {
+    id?: string;
+    name?: string;
+    compatibility?: "anthropic" | "openai";
+    modelId?: string;
+    baseUrl?: string | null;
+    apiKeyMasked?: string;
+  } = {},
+): ModelProvider {
+  const providerId = overrides.id ?? "provider-1";
+  const modelId = overrides.modelId ?? "claude-custom";
+  const compatibility = overrides.compatibility ?? "anthropic";
+  return {
+    id: providerId,
+    name: overrides.name ?? "Custom",
+    compatibility,
+    baseUrl: overrides.baseUrl ?? "https://example.com",
+    apiKeyMasked: overrides.apiKeyMasked ?? "",
+    models: [{
+      id: `${providerId}-model-1`,
+      providerId,
+      modelId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 const defaultProps = {
   disabled: false,
   sending: false,
@@ -854,17 +885,13 @@ describe("Composer", () => {
 
   it("keeps the built-in model selector active after history and hides agent switching", () => {
     const providers: ModelProvider[] = [
-      {
+      makeModelProvider({
         id: "provider-claude-1",
-        compatibility: "anthropic",
         name: "Team Claude",
+        compatibility: "anthropic",
         modelId: "claude-opus-4-6",
         baseUrl: "https://api.example.com/v1",
-        apiKeyMasked: "",
-        isActive: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
+      }),
     ];
 
     renderComposer({
@@ -901,17 +928,13 @@ describe("Composer", () => {
 
   it("blocks provider-backed Claude model switching after the first message", () => {
     const providers: ModelProvider[] = [
-      {
+      makeModelProvider({
         id: "provider-claude-1",
-        compatibility: "anthropic",
         name: "Anthropic Proxy",
+        compatibility: "anthropic",
         modelId: "claude-sonnet-4-6",
         baseUrl: "https://api.example.com/v1",
-        apiKeyMasked: "",
-        isActive: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
+      }),
     ];
 
     renderComposer({
@@ -927,17 +950,13 @@ describe("Composer", () => {
 
   it("blocks custom-provider model switching after the first message", () => {
     const providers: ModelProvider[] = [
-      {
+      makeModelProvider({
         id: "provider-codex-1",
-        compatibility: "openai",
         name: "Team Codex",
+        compatibility: "openai",
         modelId: "gpt-5.4-enterprise",
         baseUrl: null,
-        apiKeyMasked: "",
-        isActive: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
+      }),
     ];
 
     renderComposer({
@@ -1008,17 +1027,13 @@ describe("Composer", () => {
   it("shows agent-specific model options and emits thread agent selection updates", () => {
     const onAgentSelectionChange = vi.fn();
     const providers: ModelProvider[] = [
-      {
+      makeModelProvider({
         id: "provider-codex-1",
-        compatibility: "openai",
         name: "Team Codex",
+        compatibility: "openai",
         modelId: "gpt-5.3-codex-enterprise",
         baseUrl: null,
-        apiKeyMasked: "",
-        isActive: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
+      }),
     ];
 
     renderComposer({
@@ -1176,17 +1191,13 @@ describe("Composer", () => {
   it("shows OpenCode model options and emits thread agent selection updates", () => {
     const onAgentSelectionChange = vi.fn();
     const providers: ModelProvider[] = [
-      {
+      makeModelProvider({
         id: "provider-opencode-1",
-        compatibility: "openai",
         name: "OpenCode QA",
+        compatibility: "openai",
         modelId: "gpt-5-custom",
         baseUrl: "https://api.openai.com/v1",
-        apiKeyMasked: "",
-        isActive: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
+      }),
     ];
 
     renderComposer({
@@ -1268,39 +1279,27 @@ describe("Composer", () => {
 
   it("switches the model preview list when moving between CLI agents", () => {
     const providers: ModelProvider[] = [
-      {
+      makeModelProvider({
         id: "provider-claude-1",
-        compatibility: "anthropic",
         name: "z.ai",
+        compatibility: "anthropic",
         modelId: "glm-4.7",
         baseUrl: null,
-        apiKeyMasked: "",
-        isActive: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      {
+      }),
+      makeModelProvider({
         id: "provider-codex-1",
-        compatibility: "openai",
         name: "OpenAI QA",
+        compatibility: "openai",
         modelId: "gpt-5.4-custom",
         baseUrl: null,
-        apiKeyMasked: "",
-        isActive: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      {
+      }),
+      makeModelProvider({
         id: "provider-opencode-1",
-        compatibility: "openai",
         name: "OpenCode QA",
+        compatibility: "openai",
         modelId: "gpt-5-custom",
         baseUrl: "https://api.openai.com/v1",
-        apiKeyMasked: "",
-        isActive: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
+      }),
     ];
 
     renderComposer({

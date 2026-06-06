@@ -11,12 +11,11 @@ function compareProviders(left: ModelProvider, right: ModelProvider) {
 export function toPlainModelProvider(provider: ModelProvider): ModelProvider {
   return {
     id: provider.id,
-    compatibility: provider.compatibility,
     name: provider.name,
-    modelId: provider.modelId,
+    compatibility: provider.compatibility,
     baseUrl: provider.baseUrl ?? null,
     apiKeyMasked: provider.apiKeyMasked,
-    isActive: provider.isActive,
+    models: (provider.models ?? []).map((model) => ({ ...model })),
     createdAt: provider.createdAt,
     updatedAt: provider.updatedAt,
   };

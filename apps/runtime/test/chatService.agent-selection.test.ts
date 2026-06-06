@@ -23,8 +23,7 @@ const prisma = new PrismaClient({
 });
 
 const stubModelProviderService = {
-  getActiveProvider: async () => null,
-  getProviderById: async () => null,
+  resolveProviderSelection: async () => null,
 };
 
 let originalCodexHome: string | undefined;
@@ -34,17 +33,27 @@ let slashCommandCacheDir: string | null = null;
 function createStubModelProviderService(
   providersById: Record<string, {
     id: string;
+    providerId?: string;
     compatibility: ModelProviderCompatibility;
     apiKey: string | null;
     baseUrl: string | null;
     name: string;
     modelId: string;
-    isActive?: boolean;
   }> = {},
 ) {
   return {
-    getActiveProvider: async () => null,
-    getProviderById: async (id: string) => providersById[id] ?? null,
+    resolveProviderSelection: async (providerId: string, modelId: string) => {
+      const provider = providersById[providerId] ?? null;
+      if (!provider) {
+        return null;
+      }
+      if (provider.modelId !== modelId) {
+        throw new Error("Selected model is no longer available in this provider");
+      }
+      return {
+        ...provider,
+      };
+    },
   };
 }
 
@@ -598,7 +607,7 @@ describe("chatService agent selection", () => {
       sessionField: "opencodeSessionId" as const,
       sessionId: "opencode-session-1",
     },
-  ])("preserves $sessionField on same-agent built-in model switches after messages", async ({
+  ])("resets $sessionField on same-agent built-in model switches after messages", async ({
     agent,
     initialModel,
     nextModel,
@@ -645,10 +654,10 @@ describe("chatService agent selection", () => {
 
     expect(updatedThread.agent).toBe(agent);
     expect(updatedThread.model).toBe(nextModel);
-    expect(updatedThread[sessionField]).toBe(sessionId);
+    expect(updatedThread[sessionField]).toBeNull();
 
     const persistedThread = await chatService.getThreadById(thread.id);
-    expect(persistedThread?.[sessionField]).toBe(sessionId);
+    expect(persistedThread?.[sessionField]).toBeNull();
   });
 
   it("approves a pending plan with a same-thread execution switch for valid same-agent targets", async () => {
@@ -1157,11 +1166,15 @@ describe("chatService agent selection", () => {
     await prisma.modelProvider.create({
       data: {
         id: "provider-claude-remote",
-        compatibility: "anthropic",
         name: "Remote Claude",
-        modelId: "glm-4.7",
+        compatibility: "anthropic",
         baseUrl: "https://provider.example.com/v1",
         apiKey: "provider-key",
+        models: {
+          create: {
+            modelId: "glm-4.7",
+          },
+        },
       },
     });
 
@@ -1316,11 +1329,15 @@ describe("chatService agent selection", () => {
     await prisma.modelProvider.create({
       data: {
         id: "provider-claude-remote",
-        compatibility: "anthropic",
         name: "Remote Claude",
-        modelId: "glm-4.7",
+        compatibility: "anthropic",
         baseUrl: "https://provider.example.com/v1",
         apiKey: "provider-key",
+        models: {
+          create: {
+            modelId: "glm-4.7",
+          },
+        },
       },
     });
 
@@ -1506,11 +1523,15 @@ describe("chatService agent selection", () => {
     await prisma.modelProvider.create({
       data: {
         id: "provider-claude-remote",
-        compatibility: "anthropic",
         name: "Remote Claude",
-        modelId: "glm-4.7",
+        compatibility: "anthropic",
         baseUrl: "https://provider.example.com/v1",
         apiKey: "provider-key",
+        models: {
+          create: {
+            modelId: "glm-4.7",
+          },
+        },
       },
     });
 

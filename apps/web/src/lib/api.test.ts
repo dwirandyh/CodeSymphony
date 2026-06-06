@@ -810,17 +810,17 @@ describe("api", () => {
     it("creates provider", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "p1" }));
       await api.createModelProvider({
-        compatibility: "openai",
         name: "test",
-        modelId: "m1",
+        compatibility: "openai",
         baseUrl: "http://localhost",
         apiKey: "key",
+        models: [{ modelId: "m1" }],
       });
     });
 
     it("updates provider", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "p1" }));
-      await api.updateModelProvider("p1", { name: "updated" });
+      await api.updateModelProvider("p1", { name: "updated", baseUrl: "http://localhost/v2" });
     });
 
     it("deletes provider", async () => {
@@ -833,19 +833,14 @@ describe("api", () => {
       await expect(api.deleteModelProvider("p1")).rejects.toThrow("fail");
     });
 
-    it("activates provider", async () => {
+    it("creates provider model", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "p1" }));
-      await api.activateModelProvider("p1");
+      await api.createModelProviderModel("p1", { modelId: "m2" });
     });
 
-    it("deactivates all providers", async () => {
+    it("deletes provider model", async () => {
       mockFetch.mockReturnValueOnce(mock204());
-      await api.deactivateAllProviders();
-    });
-
-    it("deactivate throws on error", async () => {
-      mockFetch.mockReturnValueOnce(mockError(500, "fail"));
-      await expect(api.deactivateAllProviders()).rejects.toThrow("fail");
+      await api.deleteModelProviderModel("m1");
     });
 
     it("tests provider", async () => {

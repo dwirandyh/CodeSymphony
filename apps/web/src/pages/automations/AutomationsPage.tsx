@@ -440,8 +440,6 @@ function toFormState(
     minute: 0,
     daysOfWeek: [],
   };
-  const activeProvider = providers.find((provider) => provider.id === automation?.modelProviderId) ?? null;
-
   return {
     repositoryId: automation?.repositoryId ?? repository?.id ?? "",
     targetWorktreeId: getAutomationContextWorktreeId({
@@ -456,7 +454,7 @@ function toFormState(
     prompt: automation?.prompt ?? "",
     agent: automation?.agent ?? prefills?.agent ?? "claude",
     model: automation?.model ?? prefills?.model ?? defaultModelForAgent(prefills?.agent ?? "claude"),
-    modelProviderId: activeProvider?.id ?? null,
+    modelProviderId: automation?.modelProviderId ?? null,
     chatMode: "default",
     timezone: normalizeTimezone(automation?.timezone),
     frequency: schedule.frequency,
@@ -535,7 +533,9 @@ function isAutomationNotFoundError(error: unknown) {
 }
 
 function getProvidersForAgent(providers: ModelProvider[], agent: CliAgent) {
-  return providers.filter((provider) => supportsModelProviderCompatibility(agent, provider.compatibility));
+  return providers.filter((provider) =>
+    supportsModelProviderCompatibility(agent, provider.compatibility)
+  );
 }
 
 function buildWorkspaceSearch(run: AutomationRun, repositoryId: string) {

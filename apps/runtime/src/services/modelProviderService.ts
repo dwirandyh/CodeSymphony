@@ -1,11 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
 import {
-  MODEL_PROVIDER_COMPATIBILITIES_BY_AGENT,
-  type CliAgent,
   type CreateModelProviderInput,
-  type UpdateModelProviderInput,
+  type CreateModelProviderModelInput,
   type ModelProvider,
   type ModelProviderCompatibility,
+  type UpdateModelProviderInput,
 } from "@codesymphony/shared-types";
 
 function maskApiKey(apiKey: string): string {
@@ -21,48 +20,94 @@ function normalizeOptionalSecret(value: string | null | undefined): string | nul
   return normalized.length > 0 ? normalized : null;
 }
 
-function mapProvider(provider: {
+function normalizeRequired(value: string): string {
+  return value.trim();
+}
+
+type ProviderWithChildren = {
   id: string;
-  compatibility: ModelProviderCompatibility;
   name: string;
-  modelId: string;
+  compatibility: ModelProviderCompatibility;
   baseUrl: string | null;
   apiKey: string | null;
-  isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
-}): ModelProvider {
+  models: Array<{
+    id: string;
+    providerId: string;
+    modelId: string;
+    createdAt: Date;
+    updatedAt: Date;
+  }>;
+};
+
+function mapProvider(provider: ProviderWithChildren): ModelProvider {
   return {
     id: provider.id,
-    compatibility: provider.compatibility,
     name: provider.name,
-    modelId: provider.modelId,
+    compatibility: provider.compatibility,
     baseUrl: provider.baseUrl,
     apiKeyMasked: provider.apiKey ? maskApiKey(provider.apiKey) : "",
-    isActive: provider.isActive,
+    models: provider.models.map((model) => ({
+      id: model.id,
+      providerId: model.providerId,
+      modelId: model.modelId,
+      createdAt: model.createdAt.toISOString(),
+      updatedAt: model.updatedAt.toISOString(),
+    })),
     createdAt: provider.createdAt.toISOString(),
     updatedAt: provider.updatedAt.toISOString(),
   };
+}
+
+const providerInclude = {
+  models: {
+    orderBy: [
+      { createdAt: "asc" as const },
+      { id: "asc" as const },
+    ],
+  },
+};
+
+function ensureUniqueModelIds(models: readonly { modelId: string }[]): void {
+  const seen = new Set<string>();
+  for (const model of models) {
+    const normalized = normalizeRequired(model.modelId);
+    if (seen.has(normalized)) {
+      throw new Error("Model IDs must be unique within a provider");
+    }
+    seen.add(normalized);
+  }
 }
 
 export function createModelProviderService(prisma: PrismaClient) {
   return {
     async listProviders(): Promise<ModelProvider[]> {
       const providers = await prisma.modelProvider.findMany({
-        orderBy: { createdAt: "asc" },
+        include: providerInclude,
+        orderBy: [
+          { createdAt: "asc" },
+          { id: "asc" },
+        ],
       });
       return providers.map(mapProvider);
     },
 
     async createProvider(input: CreateModelProviderInput): Promise<ModelProvider> {
+      ensureUniqueModelIds(input.models);
       const provider = await prisma.modelProvider.create({
         data: {
+          name: normalizeRequired(input.name),
           compatibility: input.compatibility,
-          name: input.name,
-          modelId: input.modelId,
           baseUrl: normalizeOptionalSecret(input.baseUrl),
           apiKey: normalizeOptionalSecret(input.apiKey),
+          models: {
+            create: input.models.map((model) => ({
+              modelId: normalizeRequired(model.modelId),
+            })),
+          },
         },
+        include: providerInclude,
       });
       return mapProvider(provider);
     },
@@ -71,12 +116,12 @@ export function createModelProviderService(prisma: PrismaClient) {
       const provider = await prisma.modelProvider.update({
         where: { id },
         data: {
+          ...(input.name !== undefined ? { name: normalizeRequired(input.name) } : {}),
           ...(input.compatibility !== undefined ? { compatibility: input.compatibility } : {}),
-          ...(input.name !== undefined ? { name: input.name } : {}),
-          ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
           ...(input.baseUrl !== undefined ? { baseUrl: normalizeOptionalSecret(input.baseUrl) } : {}),
           ...(input.apiKey !== undefined ? { apiKey: normalizeOptionalSecret(input.apiKey) } : {}),
         },
+        include: providerInclude,
       });
       return mapProvider(provider);
     },
@@ -85,102 +130,56 @@ export function createModelProviderService(prisma: PrismaClient) {
       await prisma.modelProvider.delete({ where: { id } });
     },
 
-    async activateProvider(id: string): Promise<ModelProvider> {
-      return await prisma.$transaction(async (tx) => {
-        const selected = await tx.modelProvider.findUniqueOrThrow({
-          where: { id },
-          select: { compatibility: true },
-        });
-        await tx.modelProvider.updateMany({
-          where: {
-            isActive: true,
-            compatibility: selected.compatibility,
-          },
-          data: { isActive: false },
-        });
-        const provider = await tx.modelProvider.update({
-          where: { id },
-          data: { isActive: true },
-        });
-        return mapProvider(provider);
+    async createModel(providerId: string, input: CreateModelProviderModelInput): Promise<ModelProvider> {
+      const modelId = normalizeRequired(input.modelId);
+      const existing = await prisma.modelProviderModel.findFirst({
+        where: { providerId, modelId },
+        select: { id: true },
       });
+      if (existing) {
+        throw new Error("Model ID already exists for this provider");
+      }
+      await prisma.modelProviderModel.create({
+        data: { providerId, modelId },
+      });
+      const provider = await prisma.modelProvider.findUniqueOrThrow({
+        where: { id: providerId },
+        include: providerInclude,
+      });
+      return mapProvider(provider);
     },
 
-    async deactivateAll(): Promise<void> {
-      await prisma.modelProvider.updateMany({
-        where: { isActive: true },
-        data: { isActive: false },
-      });
+    async deleteModel(modelRowId: string): Promise<void> {
+      await prisma.modelProviderModel.delete({ where: { id: modelRowId } });
     },
 
-    async getActiveProvider(agent: CliAgent = "claude"): Promise<{
+    async resolveProviderSelection(providerId: string, modelId: string): Promise<{
       id: string;
       compatibility: ModelProviderCompatibility;
       apiKey: string | null;
       baseUrl: string | null;
       name: string;
       modelId: string;
-    } | null> {
-      const compatibilities = MODEL_PROVIDER_COMPATIBILITIES_BY_AGENT[agent];
-      if (compatibilities.length === 0) {
-        return null;
-      }
-
-      const providers = await prisma.modelProvider.findMany({
-        where: {
-          isActive: true,
-          compatibility: {
-            in: [...compatibilities],
-          },
-        },
-        orderBy: [
-          { createdAt: "asc" },
-          { id: "asc" },
-        ],
-      });
-
-      if (providers.length === 0) {
-        return null;
-      }
-
-      if (compatibilities.length > 1 && providers.length !== 1) {
-        return null;
-      }
-
-      const provider = providers[0]!;
-      return {
-        id: provider.id,
-        compatibility: provider.compatibility,
-        apiKey: provider.apiKey,
-        baseUrl: provider.baseUrl,
-        name: provider.name,
-        modelId: provider.modelId,
-      };
-    },
-
-    async getProviderById(id: string): Promise<{
-      id: string;
-      compatibility: ModelProviderCompatibility;
-      apiKey: string | null;
-      baseUrl: string | null;
-      name: string;
-      modelId: string;
-      isActive: boolean;
     } | null> {
       const provider = await prisma.modelProvider.findUnique({
-        where: { id },
+        where: { id: providerId },
+        include: { models: true },
       });
       if (!provider) {
         return null;
       }
+      const normalizedModelId = normalizeRequired(modelId);
+      const hasModel = provider.models.some((model) => model.modelId === normalizedModelId);
+      if (!hasModel) {
+        throw new Error("Selected model is no longer available in this provider");
+      }
       return {
         id: provider.id,
         compatibility: provider.compatibility,
         apiKey: provider.apiKey,
         baseUrl: provider.baseUrl,
         name: provider.name,
-        modelId: provider.modelId,
-        isActive: provider.isActive,
+        modelId: normalizedModelId,
       };
     },
   };

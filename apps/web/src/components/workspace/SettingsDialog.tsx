@@ -14,11 +14,14 @@ import {
   Search,
   SlidersHorizontal,
   Trash2,
+  X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Slider } from "../ui/slider";
@@ -649,6 +652,12 @@ export function SettingsDialog({
   const [savingProvider, setSavingProvider] = useState(false);
   const [testingProvider, setTestingProvider] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
+  const [providerFormError, setProviderFormError] = useState<string | null>(null);
+  const [providerTestModelIds, setProviderTestModelIds] = useState<Record<string, string>>({});
+  const [addModelDialogProvider, setAddModelDialogProvider] = useState<ModelProvider | null>(null);
+  const [addModelId, setAddModelId] = useState("");
+  const [addModelError, setAddModelError] = useState<string | null>(null);
+  const [savingAddModel, setSavingAddModel] = useState(false);
   const [agentDefaults, setAgentDefaults] = useState<AgentDefaults>(() => loadAgentDefaults());
   const providerProtocol = getProviderProtocol(providerCompatibility);
   const trimmedProviderName = providerName.trim();
@@ -658,14 +667,11 @@ export function SettingsDialog({
   const providerBaseUrlError = getProviderBaseUrlError(trimmedProviderBaseUrl);
   const hasValidProviderBaseUrl = trimmedProviderBaseUrl.length > 0 && providerBaseUrlError === null;
   const canSaveProvider = trimmedProviderName.length > 0
-    && trimmedProviderModelId.length > 0
     && hasValidProviderBaseUrl
-    && (
-      editingProviderId !== null
-        ? true
-        : trimmedProviderApiKey.length > 0
-    );
-  const canTestProvider = hasValidProviderBaseUrl
+    && (editingProviderId !== null || trimmedProviderModelId.length > 0)
+    && (editingProviderId !== null || trimmedProviderApiKey.length > 0);
+  const canTestProvider = editingProviderId === null
+    && hasValidProviderBaseUrl
     && trimmedProviderApiKey.length > 0
     && trimmedProviderModelId.length > 0;
   const providerModelPlaceholder = providerCompatibility === "anthropic"
@@ -678,12 +684,12 @@ export function SettingsDialog({
     ? "Leave empty to keep current"
     : "API Key";
   const providerInlineHelp = providerCompatibility === "anthropic"
-    ? "Anthropic-compatible providers are available in Claude Code and OpenCode. Base URL and API key are required so the saved entry is runnable in both agents."
-    : "OpenAI-compatible providers are available in Codex and OpenCode. For Codex, the endpoint must implement the OpenAI Responses API. Chat-completions-only endpoints can still work in OpenCode.";
-  const providerFootnote = "Add compatibility-based provider entries here, then choose them per thread anywhere the matching agents are available.";
+    ? "This provider will be available in Claude Code and OpenCode."
+    : "This provider will be available in Codex and OpenCode. For Codex, the endpoint must implement the OpenAI Responses API. Chat-completions-only endpoints can still work in OpenCode.";
+  const providerFootnote = "One provider has one API compatibility and endpoint. Add another provider entry for the same vendor when it also supports another compatibility.";
   const providerTestSuccessMessage = providerProtocol === "anthropic"
-    ? "Connection successful — provider is Anthropic-compatible."
-    : "Connection successful — provider supports the OpenAI Responses API.";
+    ? "Provider test successful — Anthropic-compatible."
+    : "Provider test successful — OpenAI Responses API is available.";
   const agentSelectionOptions = useMemo(
     () => buildAgentSelectionOptions({
       providers,
@@ -749,22 +755,28 @@ export function SettingsDialog({
       return;
     }
 
+    hydratedRepoIdRef.current = null;
     setSelectedRepoId(resolveInitialRepositoryId(repositories, selectedRepositoryId));
   }, [open, repositories, selectedRepoId, selectedRepositoryId]);
 
   // ── Workspace: Load scripts ──
   useEffect(() => {
-    if (!open || !selectedRepoId) return;
+    if (!open) return;
 
-    const repo = repositories.find((candidate) => candidate.id === selectedRepoId);
+    const effectiveSelectedRepoId = repositories.some((candidate) => candidate.id === selectedRepoId)
+      ? selectedRepoId
+      : resolveInitialRepositoryId(repositories, selectedRepositoryId);
+    if (!effectiveSelectedRepoId) return;
+
+    const repo = repositories.find((candidate) => candidate.id === effectiveSelectedRepoId);
     if (!repo) return;
 
-    const repoChanged = hydratedRepoIdRef.current !== selectedRepoId;
+    const repoChanged = hydratedRepoIdRef.current !== effectiveSelectedRepoId;
     if (!repoChanged && dirty) {
       return;
     }
 
-    const nextState = buildRepositoryFormState(repo, savedScriptsRef.current[selectedRepoId]);
+    const nextState = buildRepositoryFormState(repo, savedScriptsRef.current[effectiveSelectedRepoId]);
     setRunScriptText(nextState.runScriptText);
     setSetupText(nextState.setupText);
     setTeardownText(nextState.teardownText);
@@ -773,10 +785,10 @@ export function SettingsDialog({
     setSaveAutomationTemplate(nextState.saveAutomationTemplate);
     setSaveAutomationFilePatternsText(nextState.saveAutomationFilePatternsText);
     setSaveAutomationPayload(nextState.saveAutomationPayload);
-    hydratedRepoIdRef.current = selectedRepoId;
+    hydratedRepoIdRef.current = effectiveSelectedRepoId;
     setDirty(false);
     setShowRemoveDialog(false);
-  }, [dirty, open, repositories, selectedRepoId]);
+  }, [dirty, open, repositories, selectedRepoId, selectedRepositoryId]);
 
   // ── Workspace: Fetch branches ──
   useEffect(() => {
@@ -887,6 +899,7 @@ export function SettingsDialog({
     setProviderApiKey("");
     setShowProviderDialog(false);
     setTestResult(null);
+    setProviderFormError(null);
   }, []);
 
   const parseScriptLines = useCallback((scriptText: string): string[] | null => {
@@ -999,32 +1012,33 @@ export function SettingsDialog({
   const handleSaveProvider = useCallback(async () => {
     if (!canSaveProvider) return;
     setSavingProvider(true);
+    setProviderFormError(null);
     try {
       let nextProvider: ModelProvider;
       if (editingProviderId) {
         nextProvider = await api.updateModelProvider(editingProviderId, {
-          compatibility: providerCompatibility,
           name: trimmedProviderName,
-          modelId: trimmedProviderModelId,
+          compatibility: providerCompatibility,
           baseUrl: trimmedProviderBaseUrl,
-          ...(trimmedProviderApiKey ? { apiKey: trimmedProviderApiKey } : {}),
+          ...(trimmedProviderApiKey.length > 0 ? { apiKey: trimmedProviderApiKey } : {}),
         });
       } else {
         nextProvider = await api.createModelProvider({
-          compatibility: providerCompatibility,
           name: trimmedProviderName,
-          modelId: trimmedProviderModelId,
+          compatibility: providerCompatibility,
           baseUrl: trimmedProviderBaseUrl,
           apiKey: trimmedProviderApiKey,
+          models: [{ modelId: trimmedProviderModelId }],
         });
       }
-      resetProviderForm(providerCompatibility);
       replaceProviders([
         ...providers.filter((provider) => provider.id !== nextProvider.id),
         nextProvider,
       ]);
-    } catch {
-      // non-critical
+      void refreshProviders().catch(() => {});
+      resetProviderForm(providerCompatibility);
+    } catch (error) {
+      setProviderFormError(error instanceof Error ? error.message : "Failed to save provider");
     } finally {
       setSavingProvider(false);
     }
@@ -1033,6 +1047,7 @@ export function SettingsDialog({
     editingProviderId,
     providerCompatibility,
     providers,
+    refreshProviders,
     replaceProviders,
     resetProviderForm,
     trimmedProviderApiKey,
@@ -1048,11 +1063,87 @@ export function SettingsDialog({
     } catch {}
   }, [providers, replaceProviders]);
 
+  const upsertProviderInList = useCallback((nextProvider: ModelProvider) => {
+    replaceProviders([
+      ...providers.filter((provider) => provider.id !== nextProvider.id),
+      nextProvider,
+    ]);
+  }, [providers, replaceProviders]);
+
+  const closeAddModelDialog = useCallback(() => {
+    setAddModelDialogProvider(null);
+    setAddModelId("");
+    setAddModelError(null);
+  }, []);
+
+  const openAddModelDialog = useCallback((provider: ModelProvider) => {
+    setAddModelDialogProvider(provider);
+    setAddModelId("");
+    setAddModelError(null);
+  }, []);
+
+  const handleAddProviderModel = useCallback(async () => {
+    if (!addModelDialogProvider) {
+      return;
+    }
+
+    const modelId = addModelId.trim();
+    if (!modelId) {
+      setAddModelError("Model ID is required.");
+      return;
+    }
+
+    setSavingAddModel(true);
+    setAddModelError(null);
+    try {
+      const nextProvider = await api.createModelProviderModel(addModelDialogProvider.id, { modelId });
+      upsertProviderInList(nextProvider);
+      closeAddModelDialog();
+    } catch (error) {
+      setAddModelError(error instanceof Error ? error.message : "Failed to add model.");
+    } finally {
+      setSavingAddModel(false);
+    }
+  }, [addModelDialogProvider, addModelId, closeAddModelDialog, upsertProviderInList]);
+
+  const handleDeleteProviderModel = useCallback(async (provider: ModelProvider, modelRowId: string) => {
+    try {
+      const deletedModelId = (provider.models ?? []).find((model) => model.id === modelRowId)?.modelId ?? null;
+      await api.deleteModelProviderModel(modelRowId);
+      upsertProviderInList({
+        ...provider,
+        models: (provider.models ?? []).filter((model) => model.id !== modelRowId),
+      });
+      if (deletedModelId) {
+        setProviderTestModelIds((current) => {
+          const next = { ...current };
+          if (next[provider.id] === deletedModelId) {
+            delete next[provider.id];
+          }
+          return next;
+        });
+      }
+    } catch {}
+  }, [upsertProviderInList]);
+
+  const handleTestSavedProvider = useCallback(async (providerId: string, modelId: string) => {
+    setTestingProvider(true);
+    setTestResult(null);
+    try {
+      const result = await api.testModelProvider({ providerId, modelId });
+      setTestResult(result);
+    } catch {
+      setTestResult({ success: false, error: "Network error — could not reach the runtime" });
+    } finally {
+      setTestingProvider(false);
+    }
+  }, []);
+
   const handleEditProvider = useCallback((provider: ModelProvider) => {
     setEditingProviderId(provider.id);
     setProviderCompatibility(provider.compatibility);
     setProviderName(provider.name);
-    setProviderModelId(provider.modelId);
+    setProviderModelId("");
     setProviderBaseUrl(provider.baseUrl ?? "");
     setProviderApiKey("");
     setShowProviderDialog(true);
@@ -1897,71 +1988,227 @@ export function SettingsDialog({
                       ) : null}
 
                       {providers.length > 0 ? (
-                        <div className="space-y-0">
-                          {providers.map((provider) => (
-                            <div
-                              key={provider.id}
-                              className="border-t border-border/30 py-4 first:border-t-0 first:pt-0 last:pb-0"
-                            >
-                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                <div className="min-w-0">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="rounded-full border border-border/50 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                                      {getProviderCompatibilityLabel(provider.compatibility)}
-                                    </span>
-                                    <span className="text-[13px] font-medium text-foreground">{provider.name}</span>
-                                    <span className="text-muted-foreground/50">·</span>
-                                    <span className="font-mono text-[11px] text-muted-foreground">{provider.modelId}</span>
-                                  </div>
-                                  <div className="mt-2 space-y-1 text-[11px] leading-5 text-muted-foreground">
-                                    <div>Works with: {formatSupportedAgentsForCompatibility(provider.compatibility)}</div>
-                                    <div>
-                                      Endpoint:{" "}
-                                      {provider.baseUrl ? (
-                                        <span className="break-all">{provider.baseUrl}</span>
-                                      ) : (
-                                        <span>Not stored</span>
-                                      )}
+                        <div className="space-y-3">
+                          {providers.map((provider) => {
+                            const providerModels = provider.models ?? [];
+                            const selectedModelId = providerTestModelIds[provider.id] ?? providerModels[0]?.modelId ?? "";
+
+                            return (
+                              <Card
+                                key={provider.id}
+                                className="overflow-hidden border-border/60 bg-background/20 shadow-none"
+                              >
+                                <CardHeader className="flex flex-row items-start justify-between space-y-0 p-4 pb-3">
+                                  <div className="min-w-0 flex-1 pr-3">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <CardTitle className="text-[13px] font-medium">{provider.name}</CardTitle>
+                                      <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                                        {getProviderCompatibilityLabel(provider.compatibility)}
+                                      </Badge>
+                                      <Badge variant="secondary" className="text-[10px]">
+                                        {providerModels.length} model{providerModels.length === 1 ? "" : "s"}
+                                      </Badge>
                                     </div>
-                                    <div>
-                                      API Key:{" "}
-                                      {provider.apiKeyMasked ? (
-                                        <span className="font-mono">{provider.apiKeyMasked}</span>
-                                      ) : (
-                                        <span>Not stored</span>
-                                      )}
+                                    <CardDescription className="mt-2 space-y-1 text-[11px] leading-5">
+                                      <div>Works with: {formatSupportedAgentsForCompatibility(provider.compatibility)}</div>
+                                      <div className="break-all">Endpoint: {provider.baseUrl || "Not stored"}</div>
+                                      <div>
+                                        API Key:{" "}
+                                        {provider.apiKeyMasked
+                                          ? <span className="font-mono">{provider.apiKeyMasked}</span>
+                                          : "Not stored"}
+                                      </div>
+                                    </CardDescription>
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1">
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8 text-muted-foreground"
+                                      aria-label={`Edit provider ${provider.name}`}
+                                      title={`Edit ${provider.name}`}
+                                      onClick={() => handleEditProvider(provider)}
+                                    >
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                      aria-label={`Delete provider ${provider.name}`}
+                                      title={`Delete ${provider.name}`}
+                                      onClick={() => void handleDeleteProvider(provider.id)}
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                </CardHeader>
+
+                                <CardContent className="space-y-4 p-4 pt-0">
+                                  <div className="space-y-2">
+                                    <p className="text-[11px] font-medium text-muted-foreground">Models</p>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      {providerModels.map((model) => (
+                                        <Badge
+                                          key={model.id}
+                                          variant="secondary"
+                                          className="max-w-full gap-1 pr-1 font-mono text-[11px] font-normal"
+                                        >
+                                          <span className="max-w-[220px] truncate">{model.modelId}</span>
+                                          <button
+                                            type="button"
+                                            className="rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+                                            aria-label={`Delete model ${model.modelId}`}
+                                            title={`Delete ${model.modelId}`}
+                                            onClick={() => void handleDeleteProviderModel(provider, model.id)}
+                                          >
+                                            <X className="h-3 w-3" />
+                                          </button>
+                                        </Badge>
+                                      ))}
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 gap-1 border-dashed px-2.5 text-[11px]"
+                                        onClick={() => openAddModelDialog(provider)}
+                                      >
+                                        <Plus className="h-3 w-3" />
+                                        Add model
+                                      </Button>
                                     </div>
                                   </div>
-                                </div>
-                                <div className="flex items-center gap-1 self-start">
-                                  <button
-                                    type="button"
-                                    className="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                                    aria-label={`Edit ${getProviderCompatibilityLabel(provider.compatibility)} provider ${provider.name} (${provider.modelId})`}
-                                    title={`Edit ${provider.name}`}
-                                    onClick={() => handleEditProvider(provider)}
-                                  >
-                                    <Pencil className="h-3.5 w-3.5" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                                    aria-label={`Delete ${getProviderCompatibilityLabel(provider.compatibility)} provider ${provider.name} (${provider.modelId})`}
-                                    title={`Delete ${provider.name}`}
-                                    onClick={() => void handleDeleteProvider(provider.id)}
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
+
+                                  <div className="space-y-2">
+                                    <p className="text-[11px] font-medium text-muted-foreground">Test connection</p>
+                                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                      <Select
+                                        value={selectedModelId}
+                                        onValueChange={(modelId) => {
+                                          setProviderTestModelIds((current) => ({
+                                            ...current,
+                                            [provider.id]: modelId,
+                                          }));
+                                        }}
+                                        disabled={providerModels.length === 0}
+                                      >
+                                        <SelectTrigger
+                                          aria-label={`Test model for ${provider.name}`}
+                                          className="h-9 w-full bg-background/50 sm:max-w-xs"
+                                        >
+                                          <SelectValue placeholder="Select model" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          {providerModels.map((model) => (
+                                            <SelectItem
+                                              key={model.id}
+                                              value={model.modelId}
+                                              className="font-mono text-xs"
+                                            >
+                                              {model.modelId}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-9 gap-1.5 shrink-0"
+                                        disabled={testingProvider || !selectedModelId}
+                                        onClick={() => void handleTestSavedProvider(provider.id, selectedModelId)}
+                                      >
+                                        {testingProvider ? (
+                                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                          <Play className="h-3.5 w-3.5" />
+                                        )}
+                                        Test selected model
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            );
+                          })}
                         </div>
                       ) : null}
 
                       <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
                         {providerFootnote}
                       </p>
+
+                      <Dialog
+                        open={addModelDialogProvider !== null}
+                        onOpenChange={(nextOpen) => {
+                          if (!nextOpen) {
+                            closeAddModelDialog();
+                          }
+                        }}
+                      >
+                        <DialogContent className="sm:max-w-[440px]">
+                          <DialogHeader>
+                            <DialogTitle>Add model</DialogTitle>
+                            <DialogDescription>
+                              {addModelDialogProvider
+                                ? `Add a model ID for ${addModelDialogProvider.name}.`
+                                : "Add a model ID to this provider."}
+                            </DialogDescription>
+                          </DialogHeader>
+
+                          <div className="space-y-2">
+                            <label className="text-[11px] font-medium text-foreground" htmlFor="provider-add-model-id">
+                              Model ID
+                            </label>
+                            <Input
+                              id="provider-add-model-id"
+                              aria-label="Model ID"
+                              type="text"
+                              placeholder='e.g. "claude-sonnet-4-6", "gpt-5.4"'
+                              value={addModelId}
+                              onChange={(event) => {
+                                setAddModelId(event.target.value);
+                                setAddModelError(null);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" && !savingAddModel) {
+                                  event.preventDefault();
+                                  void handleAddProviderModel();
+                                }
+                              }}
+                              autoFocus
+                            />
+                            {addModelError ? (
+                              <p className="text-[11px] leading-5 text-destructive">{addModelError}</p>
+                            ) : null}
+                          </div>
+
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 text-[13px]"
+                              disabled={savingAddModel}
+                              onClick={closeAddModelDialog}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="h-8 gap-1.5 text-[13px]"
+                              disabled={savingAddModel || addModelId.trim().length === 0}
+                              onClick={() => void handleAddProviderModel()}
+                            >
+                              {savingAddModel ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                              Add model
+                            </Button>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
 
                       <Dialog
                         open={showProviderDialog}
@@ -1978,19 +2225,22 @@ export function SettingsDialog({
                           <DialogHeader>
                             <DialogTitle>{editingProviderId ? "Edit Provider" : "Add Provider"}</DialogTitle>
                             <DialogDescription>
-                              Configure a compatibility-based model provider with a stored endpoint and credentials.
+                              {editingProviderId
+                                ? "Update this provider endpoint. Models stay under this provider."
+                                : "Create one provider endpoint with one initial model."}
                             </DialogDescription>
                           </DialogHeader>
 
                           <div className="grid gap-3 md:grid-cols-2">
                             <div className="space-y-1.5">
-                              <label className="block text-[11px] font-medium text-foreground">API Compatibility</label>
+                              <label className="block text-[11px] font-medium text-foreground">Provider Compatibility</label>
                               <SettingsSelect
-                                ariaLabel="Provider API Compatibility"
+                                ariaLabel="Provider Compatibility"
                                 value={providerCompatibility}
                                 onValueChange={(value) => {
                                   setProviderCompatibility(value as ModelProviderCompatibility);
                                   setTestResult(null);
+                                  setProviderFormError(null);
                                 }}
                                 className="rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
                                 itemClassName="text-[13px]"
@@ -2011,25 +2261,29 @@ export function SettingsDialog({
                                 onChange={(e) => {
                                   setProviderName(e.target.value);
                                   setTestResult(null);
+                                  setProviderFormError(null);
                                 }}
                               />
                             </div>
+                            {editingProviderId ? null : (
+                              <div className="space-y-1.5">
+                                <label className="block text-[11px] font-medium text-foreground">Initial Model ID</label>
+                                <input
+                                  aria-label="Initial Model ID"
+                                  type="text"
+                                  className={SETTINGS_INPUT_CLASS_NAME}
+                                  placeholder={providerModelPlaceholder}
+                                  value={providerModelId}
+                                  onChange={(e) => {
+                                    setProviderModelId(e.target.value);
+                                    setTestResult(null);
+                                    setProviderFormError(null);
+                                  }}
+                                />
+                              </div>
+                            )}
                             <div className="space-y-1.5">
-                              <label className="block text-[11px] font-medium text-foreground">Model ID</label>
-                              <input
-                                aria-label="Provider Model ID"
-                                type="text"
-                                className={SETTINGS_INPUT_CLASS_NAME}
-                                placeholder={providerModelPlaceholder}
-                                value={providerModelId}
-                                onChange={(e) => {
-                                  setProviderModelId(e.target.value);
-                                  setTestResult(null);
-                                }}
-                              />
-                            </div>
-                            <div className="space-y-1.5">
-                              <label className="block text-[11px] font-medium text-foreground">Base URL</label>
+                              <label className="block text-[11px] font-medium text-foreground">Provider Base URL</label>
                               <input
                                 aria-label="Provider Base URL"
                                 type="url"
@@ -2040,6 +2294,7 @@ export function SettingsDialog({
                                 onChange={(e) => {
                                   setProviderBaseUrl(e.target.value);
                                   setTestResult(null);
+                                  setProviderFormError(null);
                                 }}
                               />
                               {providerBaseUrlError ? (
@@ -2047,7 +2302,7 @@ export function SettingsDialog({
                               ) : null}
                             </div>
                             <div className="space-y-1.5 md:col-span-2">
-                              <label className="block text-[11px] font-medium text-foreground">API Key</label>
+                              <label className="block text-[11px] font-medium text-foreground">Provider API Key</label>
                               <input
                                 aria-label="Provider API Key"
                                 type="password"
@@ -2057,6 +2312,7 @@ export function SettingsDialog({
                                 onChange={(e) => {
                                   setProviderApiKey(e.target.value);
                                   setTestResult(null);
+                                  setProviderFormError(null);
                                 }}
                               />
                             </div>
@@ -2074,6 +2330,11 @@ export function SettingsDialog({
                               {testResult.success ? providerTestSuccessMessage : testResult.error}
                             </div>
                           ) : null}
+                          {providerFormError ? (
+                            <div className="rounded-lg bg-destructive/10 px-3 py-2 text-[13px] text-destructive">
+                              {providerFormError}
+                            </div>
+                          ) : null}
 
                           <div className="flex justify-end gap-2">
                             <Button
@@ -2084,15 +2345,17 @@ export function SettingsDialog({
                             >
                               Cancel
                             </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 text-[13px]"
-                              disabled={!canTestProvider || testingProvider}
-                              onClick={() => void handleTestProvider()}
-                            >
-                              {testingProvider ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Test"}
-                            </Button>
+                            {editingProviderId ? null : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-8 text-[13px]"
+                                disabled={!canTestProvider || testingProvider}
+                                onClick={() => void handleTestProvider()}
+                              >
+                                {testingProvider ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Test"}
+                              </Button>
+                            )}
                             <Button
                               size="sm"
                               className="h-8 text-[13px]"

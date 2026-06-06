@@ -13,6 +13,17 @@ const prisma = new PrismaClient({
 
 const service = createModelProviderService(prisma);
 
+function providerInput(overrides: Partial<Parameters<typeof service.createProvider>[0]> = {}) {
+  return {
+    name: "Test Provider",
+    compatibility: "openai" as const,
+    baseUrl: "https://api.example.com",
+    apiKey: "sk-test-key-1234567890",
+    models: [{ modelId: "gpt-4" }],
+    ...overrides,
+  };
+}
+
 beforeEach(async () => {
   await prisma.modelProvider.deleteMany();
 });
@@ -23,161 +34,113 @@ afterAll(async () => {
 });
 
 describe("modelProviderService", () => {
-  describe("createProvider", () => {
-    it("creates a new provider", async () => {
-      const provider = await service.createProvider({
-        compatibility: "openai",
-        name: "Test Provider",
-        modelId: "gpt-4",
-        baseUrl: "https://api.example.com",
-        apiKey: "sk-test-key-1234567890",
-      });
-      expect(provider.compatibility).toBe("openai");
-      expect(provider.name).toBe("Test Provider");
-      expect(provider.modelId).toBe("gpt-4");
-      expect(provider.baseUrl).toBe("https://api.example.com");
-      expect(provider.apiKeyMasked).toBe("sk-test...7890");
-      expect(provider.isActive).toBe(false);
-    });
+  it("creates a provider with endpoint metadata and an initial model", async () => {
+    const provider = await service.createProvider(providerInput());
 
-    it("masks short API keys", async () => {
-      const provider = await service.createProvider({
-        compatibility: "openai",
-        name: "Short",
-        modelId: "gpt-4",
-        baseUrl: "https://api.example.com",
-        apiKey: "short",
-      });
-      expect(provider.apiKeyMasked).toBe("••••");
+    expect(provider.name).toBe("Test Provider");
+    expect(provider).toMatchObject({
+      compatibility: "openai",
+      baseUrl: "https://api.example.com",
+      apiKeyMasked: "sk-test...7890",
+    });
+    expect(provider.models).toHaveLength(1);
+    expect(provider.models[0].modelId).toBe("gpt-4");
+  });
+
+  it("masks short API keys", async () => {
+    const provider = await service.createProvider(providerInput({
+      name: "Short",
+      apiKey: "short",
+    }));
+
+    expect(provider.apiKeyMasked).toBe("••••");
+  });
+
+  it("returns providers ordered by creation", async () => {
+    await service.createProvider(providerInput({ name: "A", models: [{ modelId: "m1" }] }));
+    await service.createProvider(providerInput({ name: "B", models: [{ modelId: "m2" }] }));
+
+    const providers = await service.listProviders();
+
+    expect(providers.map((provider) => provider.name)).toEqual(["A", "B"]);
+  });
+
+  it("updates provider metadata and preserves the API key when omitted", async () => {
+    const created = await service.createProvider(providerInput({ name: "Original" }));
+
+    const updated = await service.updateProvider(created.id, {
+      name: "Updated",
+      baseUrl: "https://api.updated.example.com",
+    });
+    const resolved = await service.resolveProviderSelection(created.id, "gpt-4");
+
+    expect(updated.name).toBe("Updated");
+    expect(updated.baseUrl).toBe("https://api.updated.example.com");
+    expect(resolved?.apiKey).toBe("sk-test-key-1234567890");
+    expect(updated.models[0].modelId).toBe("gpt-4");
+  });
+
+  it("deletes provider and nested rows", async () => {
+    const created = await service.createProvider(providerInput({ name: "ToDelete" }));
+
+    await service.deleteProvider(created.id);
+
+    expect(await service.listProviders()).toEqual([]);
+    expect(await prisma.modelProviderModel.count()).toBe(0);
+  });
+
+  it("adds a second model without creating another provider", async () => {
+    const created = await service.createProvider(providerInput());
+
+    const updated = await service.createModel(created.id, { modelId: "gpt-4.1" });
+
+    expect(updated.id).toBe(created.id);
+    expect(updated.models.map((model) => model.modelId)).toEqual(["gpt-4", "gpt-4.1"]);
+  });
+
+  it("rejects duplicate model IDs inside one provider", async () => {
+    await expect(service.createProvider(providerInput({
+      models: [{ modelId: "gpt-4" }, { modelId: "gpt-4" }],
+    }))).rejects.toThrow("Model IDs must be unique within a provider");
+
+    const created = await service.createProvider(providerInput());
+
+    await expect(service.createModel(created.id, { modelId: "gpt-4" }))
+      .rejects.toThrow("Model ID already exists for this provider");
+  });
+
+  it("allows the same model ID in different providers", async () => {
+    const first = await service.createProvider(providerInput({ name: "First" }));
+    const second = await service.createProvider(providerInput({ name: "Second" }));
+
+    expect(first.models[0].modelId).toBe("gpt-4");
+    expect(second.models[0].modelId).toBe("gpt-4");
+  });
+
+  it("resolves a selected provider and model", async () => {
+    const created = await service.createProvider(providerInput());
+
+    const resolved = await service.resolveProviderSelection(created.id, "gpt-4");
+
+    expect(resolved).toMatchObject({
+      id: created.id,
+      compatibility: "openai",
+      apiKey: "sk-test-key-1234567890",
+      baseUrl: "https://api.example.com",
+      name: "Test Provider",
+      modelId: "gpt-4",
     });
   });
 
-  describe("listProviders", () => {
-    it("returns all providers ordered by creation", async () => {
-      await service.createProvider({ compatibility: "anthropic", name: "A", modelId: "m1", baseUrl: "http://a", apiKey: "key-a-1234567890123" });
-      await service.createProvider({ compatibility: "openai", name: "B", modelId: "m2", baseUrl: "http://b", apiKey: "key-b-1234567890123" });
-      const providers = await service.listProviders();
-      expect(providers.length).toBe(2);
-      expect(providers[0].name).toBe("A");
-      expect(providers[1].name).toBe("B");
-    });
-  });
+  it("surfaces deleted provider or model selections as broken", async () => {
+    const created = await service.createProvider(providerInput());
+    const modelRowId = created.models[0].id;
 
-  describe("updateProvider", () => {
-    it("updates provider fields", async () => {
-      const created = await service.createProvider({
-        compatibility: "openai",
-        name: "Original",
-        modelId: "m1",
-        baseUrl: "http://old",
-        apiKey: "key-original-12345678",
-      });
-      const updated = await service.updateProvider(created.id, { name: "Updated" });
-      expect(updated.name).toBe("Updated");
-      expect(updated.modelId).toBe("m1");
-    });
-  });
+    await service.deleteModel(modelRowId);
+    await expect(service.resolveProviderSelection(created.id, "gpt-4"))
+      .rejects.toThrow("Selected model is no longer available in this provider");
 
-  describe("deleteProvider", () => {
-    it("removes provider", async () => {
-      const created = await service.createProvider({
-        compatibility: "openai",
-        name: "ToDelete",
-        modelId: "m1",
-        baseUrl: "http://x",
-        apiKey: "key-delete-1234567890",
-      });
-      await service.deleteProvider(created.id);
-      const all = await service.listProviders();
-      expect(all.length).toBe(0);
-    });
-  });
-
-  describe("activateProvider", () => {
-    it("activates provider and deactivates others", async () => {
-      const a = await service.createProvider({ compatibility: "openai", name: "A", modelId: "m1", baseUrl: "http://a", apiKey: "key-a-1234567890123" });
-      const b = await service.createProvider({ compatibility: "openai", name: "B", modelId: "m2", baseUrl: "http://b", apiKey: "key-b-1234567890123" });
-      await service.activateProvider(a.id);
-      await service.activateProvider(b.id);
-      const providers = await service.listProviders();
-      expect(providers.find(p => p.id === a.id)?.isActive).toBe(false);
-      expect(providers.find(p => p.id === b.id)?.isActive).toBe(true);
-    });
-
-    it("keeps separate active providers for different compatibilities", async () => {
-      const anthropic = await service.createProvider({
-        compatibility: "anthropic",
-        name: "Anthropic",
-        modelId: "claude-sonnet-4-6",
-        baseUrl: "http://anthropic",
-        apiKey: "key-anthropic-1234567890123",
-      });
-      const openai = await service.createProvider({
-        compatibility: "openai",
-        name: "OpenAI",
-        modelId: "gpt-5.4",
-        baseUrl: "http://openai",
-        apiKey: "key-openai-1234567890123",
-      });
-
-      await service.activateProvider(anthropic.id);
-      await service.activateProvider(openai.id);
-
-      const providers = await service.listProviders();
-      expect(providers.find((provider) => provider.id === anthropic.id)?.isActive).toBe(true);
-      expect(providers.find((provider) => provider.id === openai.id)?.isActive).toBe(true);
-    });
-  });
-
-  describe("deactivateAll", () => {
-    it("deactivates all providers", async () => {
-      const a = await service.createProvider({ compatibility: "openai", name: "A", modelId: "m1", baseUrl: "http://a", apiKey: "key-a-1234567890123" });
-      await service.activateProvider(a.id);
-      await service.deactivateAll();
-      const providers = await service.listProviders();
-      expect(providers.every(p => !p.isActive)).toBe(true);
-    });
-  });
-
-  describe("getActiveProvider", () => {
-    it("returns null when none active", async () => {
-      expect(await service.getActiveProvider()).toBeNull();
-    });
-
-    it("returns active provider with raw apiKey", async () => {
-      const created = await service.createProvider({
-        compatibility: "anthropic",
-        name: "Active",
-        modelId: "m1",
-        baseUrl: "http://api",
-        apiKey: "sk-secret-1234567890",
-      });
-      await service.activateProvider(created.id);
-      const active = await service.getActiveProvider();
-      expect(active).not.toBeNull();
-      expect(active!.apiKey).toBe("sk-secret-1234567890");
-      expect(active!.name).toBe("Active");
-    });
-
-    it("returns null for OpenCode when multiple compatibilities are active", async () => {
-      const anthropic = await service.createProvider({
-        compatibility: "anthropic",
-        name: "Anthropic",
-        modelId: "claude-sonnet-4-6",
-        baseUrl: "http://anthropic",
-        apiKey: "key-anthropic-1234567890123",
-      });
-      const openai = await service.createProvider({
-        compatibility: "openai",
-        name: "OpenAI",
-        modelId: "gpt-5.4",
-        baseUrl: "http://openai",
-        apiKey: "key-openai-1234567890123",
-      });
-      await service.activateProvider(anthropic.id);
-      await service.activateProvider(openai.id);
-
-      expect(await service.getActiveProvider("opencode")).toBeNull();
-    });
+    await service.deleteProvider(created.id);
+    expect(await service.resolveProviderSelection(created.id, "gpt-4")).toBeNull();
   });
 });

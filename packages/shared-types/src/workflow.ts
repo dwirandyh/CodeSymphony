@@ -890,12 +890,15 @@ export function hasSameThreadSelection(
 export function shouldPreserveThreadSelectionSessionIds(params: {
   threadKind: ChatThreadKind;
   currentAgent: CliAgent | null | undefined;
+  currentModel: string | null | undefined;
   currentModelProviderId?: string | null;
   nextAgent: CliAgent;
+  nextModel: string;
   nextModelProviderId?: string | null;
 }): boolean {
   return params.threadKind === "default"
     && params.currentAgent === params.nextAgent
+    && params.currentModel === params.nextModel
     && normalizeThreadSelectionProviderId(params.currentModelProviderId)
       === normalizeThreadSelectionProviderId(params.nextModelProviderId);
 }
@@ -1322,43 +1325,77 @@ export type OpenPathInput = z.infer<typeof OpenPathInputSchema>;
 
 // ── Model Provider Types ──
 
-export const ModelProviderSchema = z.object({
+export const ModelProviderModelSchema = z.object({
   id: z.string(),
-  compatibility: ModelProviderCompatibilitySchema,
-  name: z.string(),
+  providerId: z.string(),
   modelId: z.string(),
-  baseUrl: z.string().nullable().optional(),
-  apiKeyMasked: z.string(),
-  isActive: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
-export type ModelProvider = z.infer<typeof ModelProviderSchema>;
+export type ModelProviderModel = z.infer<typeof ModelProviderModelSchema>;
+
+export const ModelProviderSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  compatibility: ModelProviderCompatibilitySchema,
+  baseUrl: z.string().nullable().optional(),
+  apiKeyMasked: z.string(),
+  models: z.array(ModelProviderModelSchema).default([]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type ModelProvider = z.input<typeof ModelProviderSchema>;
+
+const ModelProviderModelInputSchema = z.object({
+  modelId: z.string().trim().min(1),
+});
 
 export const CreateModelProviderInputSchema = z.object({
-  compatibility: ModelProviderCompatibilitySchema,
   name: z.string().trim().min(1),
-  modelId: z.string().trim().min(1),
+  compatibility: ModelProviderCompatibilitySchema,
   baseUrl: z.string().trim().min(1),
   apiKey: z.string().trim().min(1),
+  models: z.array(ModelProviderModelInputSchema).min(1),
+}).superRefine((input, ctx) => {
+  const seen = new Set<string>();
+  input.models.forEach((model, index) => {
+    const normalized = model.modelId.trim();
+    if (seen.has(normalized)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Model IDs must be unique within a provider",
+        path: ["models", index, "modelId"],
+      });
+      return;
+    }
+    seen.add(normalized);
+  });
 });
 export type CreateModelProviderInput = z.input<typeof CreateModelProviderInputSchema>;
 
 export const UpdateModelProviderInputSchema = z.object({
-  compatibility: ModelProviderCompatibilitySchema.optional(),
   name: z.string().trim().min(1).optional(),
-  modelId: z.string().trim().min(1).optional(),
+  compatibility: ModelProviderCompatibilitySchema.optional(),
   baseUrl: z.string().trim().min(1).optional(),
   apiKey: z.string().trim().min(1).optional(),
 });
 export type UpdateModelProviderInput = z.input<typeof UpdateModelProviderInputSchema>;
 
-export const TestModelProviderInputSchema = z.object({
-  compatibility: ModelProviderCompatibilitySchema,
-  baseUrl: z.string().trim().min(1),
-  apiKey: z.string().trim().min(1),
-  modelId: z.string().trim().min(1),
-});
+export const CreateModelProviderModelInputSchema = ModelProviderModelInputSchema;
+export type CreateModelProviderModelInput = z.input<typeof CreateModelProviderModelInputSchema>;
+
+export const TestModelProviderInputSchema = z.union([
+  z.object({
+    providerId: z.string().trim().min(1),
+    modelId: z.string().trim().min(1),
+  }),
+  z.object({
+    compatibility: ModelProviderCompatibilitySchema,
+    baseUrl: z.string().trim().min(1),
+    apiKey: z.string().trim().min(1),
+    modelId: z.string().trim().min(1),
+  }),
+]);
 export type TestModelProviderInput = z.input<typeof TestModelProviderInputSchema>;
 
 export const CodexModelCatalogEntrySchema = z.object({

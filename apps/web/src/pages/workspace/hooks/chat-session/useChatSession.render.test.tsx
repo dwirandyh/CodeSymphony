@@ -2063,7 +2063,7 @@ describe("useChatSession", () => {
     expect(hookResult.composerModel).toBe("gpt-5.4");
   });
 
-  it("optimistically preserves cursorSessionId for an in-thread Cursor model switch", async () => {
+  it("optimistically resets cursorSessionId for an in-thread Cursor model switch", async () => {
     const selectionDeferred = createDeferred<ChatThread>();
     threadsState.data = [{
       ...makeThread("thread-a", true),
@@ -2087,7 +2087,7 @@ describe("useChatSession", () => {
     expect(hookResult.threads.find((thread) => thread.id === "thread-a")).toMatchObject({
       agent: "cursor",
       model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
-      cursorSessionId: "cursor-session-1",
+      cursorSessionId: null,
     });
 
     await act(async () => {
@@ -2095,7 +2095,7 @@ describe("useChatSession", () => {
         ...makeThread("thread-a", true),
         agent: "cursor",
         model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
-        cursorSessionId: "cursor-session-1",
+        cursorSessionId: null,
       });
       await Promise.resolve();
     });

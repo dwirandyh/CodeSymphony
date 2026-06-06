@@ -20,6 +20,7 @@ import type {
   CreateAutomationInput,
   CreateIssueReportInput,
   CreateModelProviderInput,
+  CreateModelProviderModelInput,
   CreateRepositoryInput,
   CreateWorktreeResult,
   CreateWorktreeInput,
@@ -1134,17 +1135,18 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to delete provider");
     }
   },
-  activateModelProvider: (id: string) =>
-    request<ModelProvider>(`/model-providers/${id}/activate`, {
+  createModelProviderModel: (providerId: string, input: CreateModelProviderModelInput) =>
+    request<ModelProvider>(`/model-providers/${providerId}/models`, {
       method: "POST",
+      body: JSON.stringify(input),
     }),
-  deactivateAllProviders: async () => {
-    const response = await runtimeFetch("/model-providers/deactivate", {
-      method: "POST",
+  deleteModelProviderModel: async (modelRowId: string) => {
+    const response = await runtimeFetch(`/model-provider-models/${modelRowId}`, {
+      method: "DELETE",
     });
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
-      throw new Error(payload?.error ?? "Failed to deactivate providers");
+      throw new Error(payload?.error ?? "Failed to delete provider model");
     }
   },
   testModelProvider: (input: TestModelProviderInput) =>

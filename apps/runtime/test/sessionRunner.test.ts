@@ -3298,7 +3298,7 @@ describe("thinking_delta", () => {
     const options = (mockQuery.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
     const env = options.env as NodeJS.ProcessEnv;
 
-    expect(options.settingSources).toEqual(["local", "project", "user"]);
+    expect(options.settingSources).toEqual(["local", "project"]);
     expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
     expect(env.ANTHROPIC_API_KEY).toBe("provider-key");
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("provider-key");

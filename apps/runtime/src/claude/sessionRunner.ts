@@ -193,7 +193,7 @@ function assertSupportedBuiltinClaudeModelWithoutProvider(params: {
   throw new Error([
     `Selected Claude model "${normalizedModel}" requires an explicit model provider in CodeSymphony.`,
     "Built-in Claude runs only support native Claude CLI aliases and Claude model ids unless the thread is bound to a configured provider.",
-    "Switch to a native Claude CLI model such as default, sonnet, opus, opus[1m], or a claude-* model id, or activate a provider for this model in Settings -> Models.",
+    "Switch to a native Claude CLI model such as default, sonnet, opus, opus[1m], or a claude-* model id, or configure a provider and model in Settings -> Models.",
   ].join("\n"));
 }
 
@@ -594,7 +594,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           },
           pathToClaudeCodeExecutable: claudeExecutable,
           spawnClaudeCodeProcess,
-          settingSources: ["local", "project", "user"],
+          settingSources: providerApiKey && providerBaseUrl ? ["local", "project"] : ["local", "project", "user"],
           cwd,
           env: runtimeEnv,
           stderr: (data: string) => {

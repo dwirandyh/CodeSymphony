@@ -16,6 +16,18 @@ _Avoid_: custom provider, remote endpoint
 A model selection that routes a thread through a stored provider endpoint and credentials.
 _Avoid_: built-in model, alias-only model
 
+**Provider**:
+A runnable vendor/account endpoint with exactly one API compatibility, one base URL, one API key, and many provider models. If the same vendor supports both OpenAI-compatible and Anthropic-compatible APIs, represent it as two Providers.
+_Avoid_: connection, provider group, active provider
+
+**Provider Model**:
+A model identifier offered by one Provider. It stores the runtime `modelId` and model metadata, not endpoint or credential data.
+_Avoid_: endpoint, credential
+
+**Custom selection**:
+A provider-backed model selection that chooses exactly one Provider plus exactly one Provider Model.
+_Avoid_: active provider, provider connection, default provider
+
 **Provider-backed Claude selection**:
 A Claude thread selection that uses a provider-backed model selection instead of local Claude Code auth.
 _Avoid_: custom Claude model
@@ -45,6 +57,10 @@ _Avoid_: CodeSymphony permission rule, forced workspace approval
 - A **Thread selection** chooses exactly one agent and one model
 - A **Thread selection** persists across turns until explicitly changed
 - A **Thread selection** may also choose one **Provider-backed model selection**
+- A **Provider** has exactly one compatibility, one base URL, and one API key
+- A **Provider** may have many **Provider Models**
+- A **Custom selection** chooses one **Provider** and one **Provider Model** from that Provider
+- A vendor that exposes both OpenAI-compatible and Anthropic-compatible APIs is represented by two **Providers**
 - A **Provider-backed Claude selection** is a Claude-flavoured **Provider-backed model selection**
 - An **Alias-only model selection** and a **Provider-backed model selection** are distinct kinds of model selection
 - An **In-thread model switch** preserves the existing provider session

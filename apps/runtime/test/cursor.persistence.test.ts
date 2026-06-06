@@ -19,8 +19,7 @@ const prisma = new PrismaClient({
 });
 
 const stubModelProviderService = {
-  getActiveProvider: async () => null,
-  getProviderById: async () => null,
+  resolveProviderSelection: async () => null,
 };
 
 function uniqueSuffix(): string {

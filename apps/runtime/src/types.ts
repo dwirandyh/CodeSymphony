@@ -309,22 +309,13 @@ export type RuntimeDeps = {
   workspaceEventHub?: WorkspaceSyncEventHub;
   resourceMonitorSessionTracker?: ResourceMonitorSessionTracker;
   modelProviderService: {
-    getActiveProvider: (agent?: CliAgent) => Promise<{
+    resolveProviderSelection: (providerId: string, modelId: string) => Promise<{
       id: string;
       compatibility: ModelProviderCompatibility;
       apiKey: string | null;
       baseUrl: string | null;
       name: string;
       modelId: string;
-    } | null>;
-    getProviderById: (id: string) => Promise<{
-      id: string;
-      compatibility: ModelProviderCompatibility;
-      apiKey: string | null;
-      baseUrl: string | null;
-      name: string;
-      modelId: string;
-      isActive: boolean;
     } | null>;
   };
 };

@@ -5,6 +5,7 @@ import {
   ClaudeModelCatalogSchema,
   CodexModelCatalogSchema,
   CreateModelProviderInputSchema,
+  CreateModelProviderModelInputSchema,
   CursorModelCatalogSchema,
   OpencodeModelCatalogSchema,
   TestModelProviderInputSchema,
@@ -275,25 +276,49 @@ export async function registerModelRoutes(app: FastifyInstance) {
     return reply.code(204).send();
   });
 
-  app.post("/model-providers/:id/activate", async (request, reply) => {
+  app.post("/model-providers/:id/models", async (request, reply) => {
     try {
       const { id } = request.params as { id: string };
-      const provider = await app.modelProviderService.activateProvider(id);
+      const input = CreateModelProviderModelInputSchema.parse(request.body);
+      const provider = await app.modelProviderService.createModel(id, input);
       return { data: provider };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to activate model provider";
+      const message = error instanceof Error ? error.message : "Unable to create model provider model";
       return reply.code(400).send({ error: message });
     }
   });
 
-  app.post("/model-providers/deactivate", async (_request, reply) => {
-    await app.modelProviderService.deactivateAll();
+  app.delete("/model-provider-models/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    await app.modelProviderService.deleteModel(id);
     return reply.code(204).send();
   });
 
-  app.post("/model-providers/test", async (request, reply) => {
+  app.post("/model-providers/test", async (request) => {
     const input = TestModelProviderInputSchema.parse(request.body);
-    const { compatibility, baseUrl, apiKey, modelId } = input;
+    let compatibility: ModelProviderCompatibility;
+    let baseUrl: string;
+    let apiKey: string;
+    const { modelId } = input;
+
+    if ("providerId" in input) {
+      try {
+        const provider = await app.modelProviderService.resolveProviderSelection(input.providerId, modelId);
+        if (!provider) {
+          return { data: { success: false, error: "Selected model provider not found" } };
+        }
+        compatibility = provider.compatibility;
+        baseUrl = provider.baseUrl ?? "";
+        apiKey = provider.apiKey ?? "";
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Selected provider model not found";
+        return { data: { success: false, error: message } };
+      }
+    } else {
+      compatibility = input.compatibility;
+      baseUrl = input.baseUrl;
+      apiKey = input.apiKey;
+    }
 
     try {
       if (compatibility === "openai") {

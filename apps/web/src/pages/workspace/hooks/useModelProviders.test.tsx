@@ -8,27 +8,32 @@ import { useModelProviders } from "./useModelProviders";
 
 const apiMocks = vi.hoisted(() => ({
   listModelProviders: vi.fn(),
-  activateModelProvider: vi.fn(),
-  deactivateAllProviders: vi.fn(),
 }));
 
 vi.mock("../../../lib/api", () => ({
   api: {
     listModelProviders: apiMocks.listModelProviders,
-    activateModelProvider: apiMocks.activateModelProvider,
-    deactivateAllProviders: apiMocks.deactivateAllProviders,
   },
 }));
 
-function makeProvider(overrides: Partial<ModelProvider> = {}): ModelProvider {
+function makeProvider(overrides: Partial<ModelProvider> & { modelId?: string } = {}): ModelProvider {
+  const providerId = overrides.id ?? "provider-1";
+  const modelId = "modelId" in overrides && typeof overrides.modelId === "string"
+    ? overrides.modelId
+    : "claude-custom";
   return {
-    id: "provider-1",
-    compatibility: "anthropic",
+    id: providerId,
     name: "Custom",
-    modelId: "claude-custom",
+    compatibility: "anthropic",
     baseUrl: "https://example.com",
     apiKeyMasked: "••••",
-    isActive: false,
+    models: [{
+      id: `${providerId}-model`,
+      providerId,
+      modelId,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }],
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -46,7 +51,7 @@ function HookHarness({ enabled = true }: { enabled?: boolean }) {
     <div>
       {latestHook.providers.length === 0
         ? "empty"
-        : latestHook.providers.map((provider) => `${provider.modelId}:${provider.isActive ? "active" : "idle"}`).join(",")}
+        : latestHook.providers.map((provider) => provider.models?.[0]?.modelId ?? "missing-model").join(",")}
     </div>
   );
 }
@@ -59,8 +64,6 @@ beforeEach(() => {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   latestHook = null;
   apiMocks.listModelProviders.mockReset();
-  apiMocks.activateModelProvider.mockReset();
-  apiMocks.deactivateAllProviders.mockReset();
 });
 
 afterEach(() => {
@@ -102,7 +105,7 @@ describe("useModelProviders", () => {
     renderHarness();
     await flushEffects();
 
-    expect(container.textContent).toContain("claude-initial:idle");
+    expect(container.textContent).toContain("claude-initial");
   });
 
   it("replaces the shared provider collection locally", async () => {
@@ -116,7 +119,7 @@ describe("useModelProviders", () => {
       latestHook?.replaceProviders([makeProvider({ id: "fresh", modelId: "claude-fresh" })]);
     });
 
-    expect(container.textContent).toContain("claude-fresh:idle");
+    expect(container.textContent).toContain("claude-fresh");
   });
 
   it("refreshes providers from the server on demand", async () => {
@@ -132,34 +135,21 @@ describe("useModelProviders", () => {
       await latestHook?.refreshProviders();
     });
 
-    expect(container.textContent).toContain("claude-latest:idle");
+    expect(container.textContent).toContain("claude-latest");
   });
 
-  it("updates active provider flags when activating and deactivating", async () => {
-    apiMocks.listModelProviders.mockResolvedValueOnce([
-      makeProvider({ id: "old", modelId: "claude-old" }),
-      makeProvider({ id: "active", modelId: "claude-active" }),
-    ]);
+  it("refreshes providers through the legacy selectProvider wrapper", async () => {
+    apiMocks.listModelProviders
+      .mockResolvedValueOnce([makeProvider({ id: "old", modelId: "claude-old" })])
+      .mockResolvedValueOnce([makeProvider({ id: "fresh", modelId: "claude-fresh" })]);
 
     renderHarness();
     await flushEffects();
+    expect(container.textContent).toContain("claude-old");
 
-    apiMocks.activateModelProvider.mockResolvedValue(
-      makeProvider({ id: "active", modelId: "claude-active", isActive: true }),
-    );
     await act(async () => {
-      await latestHook?.selectProvider("active");
+      await latestHook?.selectProvider("fresh");
     });
-    expect(apiMocks.activateModelProvider).toHaveBeenCalledWith("active");
-    expect(container.textContent).toContain("claude-active:active");
-    expect(container.textContent).toContain("claude-old:idle");
-
-    apiMocks.deactivateAllProviders.mockResolvedValue(undefined);
-    await act(async () => {
-      await latestHook?.selectProvider(null);
-    });
-    expect(apiMocks.deactivateAllProviders).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain("claude-active:idle");
-    expect(container.textContent).toContain("claude-old:idle");
+    expect(container.textContent).toContain("claude-fresh");
   });
 });

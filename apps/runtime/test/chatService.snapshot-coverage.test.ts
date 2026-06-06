@@ -8,7 +8,7 @@ import { createChatService } from "../src/services/chat";
 import { buildTimelineFromSeed } from "../src/services/chat/chatTimelineAssembler";
 
 const stubModelProviderService = {
-  getActiveProvider: async () => null,
+  resolveProviderSelection: async () => null,
 };
 
 const TEST_DATABASE_URL =

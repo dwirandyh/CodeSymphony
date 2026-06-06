@@ -37,8 +37,8 @@ const apiMocks = vi.hoisted(() => ({
   createModelProvider: vi.fn(),
   updateModelProvider: vi.fn(),
   deleteModelProvider: vi.fn(),
-  activateModelProvider: vi.fn(),
-  deactivateAllProviders: vi.fn(),
+  createModelProviderModel: vi.fn(),
+  deleteModelProviderModel: vi.fn(),
   testModelProvider: vi.fn(),
 }));
 
@@ -50,8 +50,8 @@ vi.mock("../../lib/api", () => ({
     createModelProvider: apiMocks.createModelProvider,
     updateModelProvider: apiMocks.updateModelProvider,
     deleteModelProvider: apiMocks.deleteModelProvider,
-    activateModelProvider: apiMocks.activateModelProvider,
-    deactivateAllProviders: apiMocks.deactivateAllProviders,
+    createModelProviderModel: apiMocks.createModelProviderModel,
+    deleteModelProviderModel: apiMocks.deleteModelProviderModel,
     testModelProvider: apiMocks.testModelProvider,
   },
 }));
@@ -160,8 +160,8 @@ beforeEach(() => {
   apiMocks.createModelProvider.mockResolvedValue({});
   apiMocks.updateModelProvider.mockResolvedValue({});
   apiMocks.deleteModelProvider.mockResolvedValue(undefined);
-  apiMocks.activateModelProvider.mockResolvedValue({});
-  apiMocks.deactivateAllProviders.mockResolvedValue(undefined);
+  apiMocks.createModelProviderModel.mockResolvedValue({});
+  apiMocks.deleteModelProviderModel.mockResolvedValue(undefined);
   apiMocks.testModelProvider.mockResolvedValue({ success: true });
 });
 
@@ -193,6 +193,37 @@ function makeRepo(overrides: Partial<Repository> = {}): Repository {
     updatedAt: "2026-01-01T00:00:00Z",
     worktrees: [],
     ...overrides,
+  };
+}
+
+function makeModelProvider(
+  overrides: {
+    id?: string;
+    name?: string;
+    compatibility?: "anthropic" | "openai";
+    modelId?: string;
+    baseUrl?: string | null;
+    apiKeyMasked?: string;
+  } = {},
+): ModelProvider {
+  const providerId = overrides.id ?? "provider-1";
+  const modelId = overrides.modelId ?? "claude-custom";
+  const compatibility = overrides.compatibility ?? "anthropic";
+  return {
+    id: providerId,
+    name: overrides.name ?? "Custom",
+    compatibility,
+    baseUrl: overrides.baseUrl ?? "https://example.com",
+    apiKeyMasked: overrides.apiKeyMasked ?? "••••",
+    models: [{
+      id: `${providerId}-model-1`,
+      providerId,
+      modelId,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }],
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
   };
 }
 
@@ -758,17 +789,15 @@ describe("SettingsDialog", () => {
   });
 
   it("separates custom provider models from built-in models in the settings picker", async () => {
-    apiMocks.listModelProviders.mockResolvedValue([{
-      id: "provider-openai-1",
-      compatibility: "openai" as const,
-      name: "OpenAI QA",
-      modelId: "gpt-5-custom",
-      baseUrl: "https://api.openai.com/v1",
-      apiKeyMasked: "••••",
-      isActive: true,
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:00:00Z",
-    }]);
+    apiMocks.listModelProviders.mockResolvedValue([
+      makeModelProvider({
+        id: "provider-openai-1",
+        name: "OpenAI QA",
+        compatibility: "openai",
+        modelId: "gpt-5-custom",
+        baseUrl: "https://api.openai.com/v1",
+      }),
+    ]);
 
     renderDialog([makeRepo()]);
     await flushEffects();
@@ -1107,17 +1136,7 @@ describe("SettingsDialog", () => {
   });
 
   it("syncs fetched model providers back to the parent when the Models tab opens", async () => {
-    const providers = [{
-      id: "provider-1",
-      compatibility: "anthropic" as const,
-      name: "Custom",
-      modelId: "claude-custom",
-      baseUrl: "https://example.com",
-      apiKeyMasked: "••••",
-      isActive: true,
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:00:00Z",
-    }];
+    const providers = [makeModelProvider()];
     apiMocks.listModelProviders.mockResolvedValueOnce(providers);
     const onProvidersChanged = vi.fn();
 
@@ -1129,17 +1148,7 @@ describe("SettingsDialog", () => {
   });
 
   it("does not show active or inactive controls in the Models tab", async () => {
-    const providers = [{
-      id: "provider-1",
-      compatibility: "anthropic" as const,
-      name: "Custom",
-      modelId: "claude-custom",
-      baseUrl: "https://example.com",
-      apiKeyMasked: "••••",
-      isActive: true,
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:00:00Z",
-    }];
+    const providers = [makeModelProvider()];
     apiMocks.listModelProviders.mockResolvedValueOnce(providers);
 
     renderDialog([makeRepo()]);
@@ -1147,7 +1156,7 @@ describe("SettingsDialog", () => {
 
     expect(document.body.textContent).not.toContain("Active");
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.title === "Activate" || button.title === "Deactivate")).toBe(false);
-    expect(document.body.textContent).toContain("matching agents are available");
+    expect(document.body.textContent).toContain("One provider has one API compatibility and endpoint");
   });
 
   it("opens the provider dialog and switches placeholders based on API compatibility", async () => {
@@ -1166,11 +1175,11 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    expect(document.body.textContent).toContain("API Compatibility");
+    expect(document.body.textContent).toContain("Provider Compatibility");
     expect(document.body.querySelector('input[placeholder=\'e.g. "claude-sonnet-4-6", "glm-4.7"\']')).not.toBeNull();
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
 
-    await setRadixSelectValue("Provider API Compatibility", "OpenAI");
+    await setRadixSelectValue("Provider Compatibility", "OpenAI");
     await flushEffects();
 
     expect(document.body.querySelector('input[placeholder=\'e.g. "gpt-5.4", "gpt-5.3-codex"\']')).not.toBeNull();
@@ -1201,10 +1210,10 @@ describe("SettingsDialog", () => {
       throw new Error("Provider form fields not found");
     }
 
-    await setRadixSelectValue("Provider API Compatibility", "OpenAI");
+    await setRadixSelectValue("Provider Compatibility", "OpenAI");
     await flushEffects();
 
-    const modelIdInput = document.body.querySelector('input[aria-label="Provider Model ID"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[aria-label="Initial Model ID"]') as HTMLInputElement | null;
     const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
     const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
     if (!modelIdInput || !baseUrlInput || !apiKeyInput) {
@@ -1237,6 +1246,192 @@ describe("SettingsDialog", () => {
     });
   });
 
+  it("saves a new provider and renders it in the provider list", async () => {
+    const createdProvider = makeModelProvider({
+      id: "provider-created",
+      name: "9Router",
+      compatibility: "anthropic",
+      modelId: "sumo/deepseek-v4-pro",
+      baseUrl: "http://43.134.228.167:20128/v1",
+      apiKeyMasked: "sk-c0f5...e1d1",
+    });
+    apiMocks.createModelProvider.mockResolvedValueOnce(createdProvider);
+    apiMocks.listModelProviders.mockResolvedValueOnce([]);
+    apiMocks.listModelProviders.mockResolvedValueOnce([createdProvider]);
+
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    const addButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add",
+    );
+    if (!addButton) {
+      throw new Error("Add provider button not found");
+    }
+
+    await act(async () => {
+      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[aria-label="Initial Model ID"]') as HTMLInputElement | null;
+    const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
+    const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
+    if (!providerNameInput || !modelIdInput || !baseUrlInput || !apiKeyInput) {
+      throw new Error("Provider form fields not found");
+    }
+
+    await setInputValue(providerNameInput, "9Router");
+    await setInputValue(modelIdInput, "sumo/deepseek-v4-pro");
+    await setInputValue(baseUrlInput, "http://43.134.228.167:20128/v1");
+    await setInputValue(apiKeyInput, "sk-test");
+    await flushEffects();
+
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Save",
+    ) as HTMLButtonElement | undefined;
+    if (!saveButton) {
+      throw new Error("Save button not found");
+    }
+
+    await act(async () => {
+      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(apiMocks.createModelProvider).toHaveBeenCalledWith({
+      name: "9Router",
+      compatibility: "anthropic",
+      baseUrl: "http://43.134.228.167:20128/v1",
+      apiKey: "sk-test",
+      models: [{ modelId: "sumo/deepseek-v4-pro" }],
+    });
+    expect(document.body.textContent).toContain("9Router");
+    expect(document.body.textContent).toContain("sumo/deepseek-v4-pro");
+  });
+
+  it("keeps the provider dialog open and shows the save error when creation fails", async () => {
+    apiMocks.createModelProvider.mockRejectedValueOnce(new Error("Duplicate model ID"));
+
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    const addButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add",
+    );
+    if (!addButton) {
+      throw new Error("Add provider button not found");
+    }
+
+    await act(async () => {
+      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[aria-label="Initial Model ID"]') as HTMLInputElement | null;
+    const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
+    const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
+    if (!providerNameInput || !modelIdInput || !baseUrlInput || !apiKeyInput) {
+      throw new Error("Provider form fields not found");
+    }
+
+    await setInputValue(providerNameInput, "9Router");
+    await setInputValue(modelIdInput, "sumo/deepseek-v4-pro");
+    await setInputValue(baseUrlInput, "http://43.134.228.167:20128/v1");
+    await setInputValue(apiKeyInput, "sk-test");
+    await flushEffects();
+
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Save",
+    ) as HTMLButtonElement | undefined;
+    if (!saveButton) {
+      throw new Error("Save button not found");
+    }
+
+    await act(async () => {
+      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Add Provider");
+    expect(document.body.textContent).toContain("Duplicate model ID");
+  });
+
+  it("adds a model to an existing provider without asking for provider details", async () => {
+    const provider = makeModelProvider({
+      id: "provider-1",
+      name: "9Router",
+      compatibility: "anthropic",
+      modelId: "sumo/deepseek-v4-pro",
+      baseUrl: "http://43.134.228.167:20128/v1",
+    });
+    const updatedProvider: ModelProvider = {
+      ...provider,
+      models: [
+        ...(provider.models ?? []),
+        {
+          id: "provider-1-model-2",
+          providerId: provider.id,
+          modelId: "sumo/kimi-k2.6",
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    };
+    apiMocks.listModelProviders.mockResolvedValueOnce([provider]);
+    apiMocks.createModelProviderModel.mockResolvedValueOnce(updatedProvider);
+
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    const createProviderCallsBefore = apiMocks.createModelProvider.mock.calls.length;
+    const addModelButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.replace(/\s+/g, " ").trim() === "Add model",
+    );
+    if (!addModelButton) {
+      throw new Error("Add model button not found");
+    }
+
+    await act(async () => {
+      addModelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Add a model ID for 9Router.");
+
+    const modelIdInput = document.body.querySelector('input[aria-label="Model ID"]') as HTMLInputElement | null;
+    if (!modelIdInput) {
+      throw new Error("Add model dialog input not found");
+    }
+
+    await setInputValue(modelIdInput, "sumo/kimi-k2.6");
+    await flushEffects();
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    const confirmAddModelButton = dialog
+      ? Array.from(dialog.querySelectorAll("button")).find(
+        (button) => normalizeText(button.textContent) === "Add model",
+      )
+      : undefined;
+    if (!confirmAddModelButton) {
+      throw new Error("Add model dialog confirm button not found");
+    }
+
+    await act(async () => {
+      confirmAddModelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(apiMocks.createModelProviderModel).toHaveBeenCalledWith("provider-1", {
+      modelId: "sumo/kimi-k2.6",
+    });
+    expect(apiMocks.createModelProvider.mock.calls.length).toBe(createProviderCallsBefore);
+    expect(document.body.textContent).toContain("sumo/deepseek-v4-pro");
+    expect(document.body.textContent).toContain("sumo/kimi-k2.6");
+  });
+
   it("disables provider testing and saving until the base URL is valid", async () => {
     renderDialog([makeRepo()]);
     await openModelsTab();
@@ -1254,7 +1449,7 @@ describe("SettingsDialog", () => {
     await flushEffects();
 
     const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
-    const modelIdInput = document.body.querySelector('input[aria-label="Provider Model ID"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[aria-label="Initial Model ID"]') as HTMLInputElement | null;
     const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
     const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
     if (!providerNameInput || !modelIdInput || !baseUrlInput || !apiKeyInput) {
@@ -1312,7 +1507,7 @@ describe("SettingsDialog", () => {
     await flushEffects();
 
     const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
-    const modelIdInput = document.body.querySelector('input[aria-label="Provider Model ID"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[aria-label="Initial Model ID"]') as HTMLInputElement | null;
     const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
     const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
     if (!providerNameInput || !modelIdInput || !baseUrlInput || !apiKeyInput) {
@@ -1346,35 +1541,76 @@ describe("SettingsDialog", () => {
   });
 
   it("adds explicit labels to provider edit and delete actions", async () => {
-    const providers = [{
-      id: "provider-1",
-      compatibility: "openai" as const,
-      name: "OpenAI",
-      modelId: "gpt-5.4",
-      baseUrl: null,
-      apiKeyMasked: null,
-      isActive: false,
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:00:00Z",
-    }, {
-      id: "provider-2",
-      compatibility: "anthropic" as const,
-      name: "Anthropic QA",
-      modelId: "claude-sonnet-4-6",
-      baseUrl: "https://api.anthropic.com/v1",
-      apiKeyMasked: null,
-      isActive: false,
-      createdAt: "2026-01-01T00:00:00Z",
-      updatedAt: "2026-01-01T00:00:00Z",
-    }];
+    const providers = [
+      makeModelProvider({
+        id: "provider-1",
+        name: "OpenAI",
+        compatibility: "openai",
+        modelId: "gpt-5.4",
+        baseUrl: null,
+        apiKeyMasked: "",
+      }),
+      makeModelProvider({
+        id: "provider-2",
+        name: "Anthropic QA",
+        compatibility: "anthropic",
+        modelId: "claude-sonnet-4-6",
+        baseUrl: "https://api.anthropic.com/v1",
+        apiKeyMasked: "",
+      }),
+    ];
     apiMocks.listModelProviders.mockResolvedValueOnce(providers);
 
     renderDialog([makeRepo()]);
     await openModelsTab();
 
-    expect(document.body.querySelector('button[aria-label="Edit OpenAI provider OpenAI (gpt-5.4)"]')).not.toBeNull();
-    expect(document.body.querySelector('button[aria-label="Delete OpenAI provider OpenAI (gpt-5.4)"]')).not.toBeNull();
-    expect(document.body.querySelector('button[aria-label="Edit Anthropic provider Anthropic QA (claude-sonnet-4-6)"]')).not.toBeNull();
-    expect(document.body.querySelector('button[aria-label="Delete Anthropic provider Anthropic QA (claude-sonnet-4-6)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Edit provider OpenAI"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Delete provider OpenAI"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Edit provider Anthropic QA"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Delete provider Anthropic QA"]')).not.toBeNull();
+  });
+
+  it("tests the selected model for a saved provider", async () => {
+    const provider = makeModelProvider({
+      id: "provider-1",
+      name: "9Router",
+      compatibility: "anthropic",
+      modelId: "sumo/deepseek-v4-pro",
+    });
+    provider.models = [
+      ...(provider.models ?? []),
+      {
+      id: "provider-1-model-2",
+      providerId: provider.id,
+      modelId: "sumo/kimi-k2.6",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    apiMocks.listModelProviders.mockResolvedValueOnce([provider]);
+
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    expect(document.body.textContent).toContain("Test selected model");
+    await setRadixSelectValue("Test model for 9Router", "sumo/kimi-k2.6");
+    await flushEffects();
+
+    const testButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test selected model",
+    ) as HTMLButtonElement | undefined;
+    if (!testButton) {
+      throw new Error("Saved provider test button not found");
+    }
+
+    await act(async () => {
+      testButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(apiMocks.testModelProvider).toHaveBeenCalledWith({
+      providerId: "provider-1",
+      modelId: "sumo/kimi-k2.6",
+    });
   });
 });

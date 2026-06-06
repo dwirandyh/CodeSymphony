@@ -772,7 +772,7 @@ describe("chat routes", () => {
         prisma,
         eventHub: hub,
         claudeRunner: vi.fn(),
-        modelProviderService: { getActiveProvider: async () => null },
+        modelProviderService: { resolveProviderSelection: async () => null },
       });
       app.chatService = realChatService as never;
 
@@ -923,7 +923,7 @@ describe("chat routes", () => {
         prisma,
         eventHub: hub,
         claudeRunner: vi.fn(),
-        modelProviderService: { getActiveProvider: async () => null },
+        modelProviderService: { resolveProviderSelection: async () => null },
       });
       app.chatService = realChatService as never;
 
@@ -1036,7 +1036,7 @@ describe("chat routes", () => {
         prisma,
         eventHub: hub,
         claudeRunner: vi.fn(),
-        modelProviderService: { getActiveProvider: async () => null },
+        modelProviderService: { resolveProviderSelection: async () => null },
       });
       app.chatService = realChatService as never;
 

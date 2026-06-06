@@ -133,11 +133,19 @@ const DEFAULT_THREAD_TITLE = "New Thread";
 const NON_WORKTREE_DIFF_PATH_PREFIX = ".claude/plans";
 
 function getAttachmentStorageDir(worktreeId: string, messageId: string): string {
-  return join(homedir(), ATTACHMENT_DIR_NAME, worktreeId, messageId);
+  const configuredBaseDir = process.env.CODESYMPHONY_ATTACHMENT_STORAGE_DIR?.trim();
+  const baseDir = configuredBaseDir && configuredBaseDir.length > 0
+    ? configuredBaseDir
+    : join(homedir(), ATTACHMENT_DIR_NAME);
+  return join(baseDir, worktreeId, messageId);
 }
 
 function getQueuedAttachmentStorageDir(worktreeId: string, queuedMessageId: string): string {
-  return join(homedir(), ATTACHMENT_DIR_NAME, worktreeId, "queued", queuedMessageId);
+  const configuredBaseDir = process.env.CODESYMPHONY_ATTACHMENT_STORAGE_DIR?.trim();
+  const baseDir = configuredBaseDir && configuredBaseDir.length > 0
+    ? configuredBaseDir
+    : join(homedir(), ATTACHMENT_DIR_NAME);
+  return join(baseDir, worktreeId, "queued", queuedMessageId);
 }
 
 function normalizeThreadKind(kind: ChatThreadKind | undefined): ChatThreadKind {
@@ -2397,7 +2405,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       if (!wasCancelled && selection.provider) {
         const providerLocation = selection.provider.baseUrl ?? "default endpoint";
-        errorMessage += `\n\nSelected ${selection.agent} model provider: "${selection.provider.name}" (${selection.provider.modelId}) via ${providerLocation}.\nTry switching the thread to a built-in model or deactivating the provider in Settings → Models to isolate provider issues.`;
+        errorMessage += `\n\nSelected ${selection.agent} model provider: "${selection.provider.name}" (${selection.provider.modelId}) via ${providerLocation}.\nTry switching the thread to a built-in model or testing the provider in Settings -> Models to isolate provider issues.`;
       } else if (!wasCancelled) {
         errorMessage += `\n\nSelected ${selection.agent} model: "${selection.model}".`;
         if (selection.agent === "codex") {
@@ -2580,7 +2588,6 @@ export function createChatService(deps: RuntimeDeps) {
         agent: input.agent,
         model: input.model,
         modelProviderId: input.modelProviderId,
-        preferActiveProvider: input.model == null && input.modelProviderId == null,
       });
 
       const existingCandidates = await deps.prisma.chatThread.findMany({
@@ -2677,7 +2684,6 @@ export function createChatService(deps: RuntimeDeps) {
         agent: input.agent,
         model: input.model,
         modelProviderId: input.modelProviderId,
-        preferActiveProvider: input.model == null && input.modelProviderId == null,
       });
 
       const createThreadOperation = async (): Promise<ChatThread> => {
@@ -3536,7 +3542,6 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
           agent: input?.agent,
           model: input?.model,
           modelProviderId: input?.modelProviderId,
-          preferActiveProvider: true,
         });
         const runner = getRunnerForAgent(deps, selection.agent);
         const result = await runner({

@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import type { ChatEvent, ChatThreadPermissionProfile } from "@codesymphony/shared-types";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
@@ -11,8 +11,9 @@ import * as gitService from "../src/services/git.js";
 import { buildPromptWithAttachments } from "../src/services/chat/chatAttachmentUtils";
 
 const stubModelProviderService = {
-  getActiveProvider: async () => null,
+  resolveProviderSelection: async () => null,
 };
+const TEST_ATTACHMENT_DIR = join("/tmp", "codesymphony-test-attachments", ".codesymphony", "attachments");
 
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
@@ -119,10 +120,13 @@ async function waitForEvent(
 describe("chatService permission flow", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
+    process.env.CODESYMPHONY_ATTACHMENT_STORAGE_DIR = TEST_ATTACHMENT_DIR;
     await resetDatabase();
   });
 
   afterAll(async () => {
+    delete process.env.CODESYMPHONY_ATTACHMENT_STORAGE_DIR;
+    rmSync(join("/tmp", "codesymphony-test-attachments"), { recursive: true, force: true });
     await prisma.$disconnect();
   });
 
@@ -408,22 +412,13 @@ describe("chatService permission flow", () => {
       eventHub: createEventHub(prisma),
       claudeRunner,
       modelProviderService: {
-        getActiveProvider: async () => ({
+        resolveProviderSelection: async () => ({
           id: "provider-1",
           compatibility: "anthropic",
           apiKey: "provider-key",
           baseUrl: "https://provider.example.com/v1",
           name: "Custom Provider",
           modelId: "claude-3-7-sonnet",
-        }),
-        getProviderById: async () => ({
-          id: "provider-1",
-          compatibility: "anthropic",
-          apiKey: "provider-key",
-          baseUrl: "https://provider.example.com/v1",
-          name: "Custom Provider",
-          modelId: "claude-3-7-sonnet",
-          isActive: true,
         }),
       },
     });
@@ -431,12 +426,15 @@ describe("chatService permission flow", () => {
     await prisma.modelProvider.create({
       data: {
         id: "provider-1",
-        compatibility: "anthropic",
         name: "Custom Provider",
-        modelId: "claude-3-7-sonnet",
+        compatibility: "anthropic",
         baseUrl: "https://provider.example.com/v1",
         apiKey: "provider-key",
-        isActive: true,
+        models: {
+          create: {
+            modelId: "claude-3-7-sonnet",
+          },
+        },
       },
     });
     await prisma.chatThread.update({

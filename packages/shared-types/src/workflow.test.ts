@@ -78,36 +78,42 @@ describe("Cursor shared workflow schemas", () => {
   it("accepts compatibility-based provider schemas", () => {
     expect(ModelProviderSchema.parse({
       id: "provider-1",
-      compatibility: "openai",
       name: "OpenAI",
-      modelId: "gpt-5.4",
+      compatibility: "openai",
       baseUrl: "https://api.openai.com/v1",
       apiKeyMasked: "••••",
-      isActive: false,
+      models: [{
+        id: "model-1",
+        providerId: "provider-1",
+        modelId: "gpt-5.4",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }],
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     })).toMatchObject({
       compatibility: "openai",
-      modelId: "gpt-5.4",
+      models: [{ modelId: "gpt-5.4" }],
     });
 
     expect(CreateModelProviderInputSchema.parse({
-      compatibility: "anthropic",
       name: "Anthropic",
-      modelId: "claude-sonnet-4-6",
+      compatibility: "anthropic",
       baseUrl: "https://api.anthropic.com/v1",
       apiKey: "sk-ant-test",
+      models: [{ modelId: "claude-sonnet-4-6" }],
     })).toMatchObject({
       compatibility: "anthropic",
-      modelId: "claude-sonnet-4-6",
+      models: [{ modelId: "claude-sonnet-4-6" }],
     });
 
     expect(UpdateModelProviderInputSchema.parse({
+      name: "OpenAI Gateway",
       compatibility: "openai",
-      modelId: "gpt-5.5",
+      baseUrl: "https://gateway.example/v1",
     })).toMatchObject({
+      name: "OpenAI Gateway",
       compatibility: "openai",
-      modelId: "gpt-5.5",
     });
 
     expect(TestModelProviderInputSchema.parse({
@@ -303,16 +309,20 @@ describe("Cursor shared workflow schemas", () => {
     expect(shouldPreserveThreadSelectionSessionIds({
       threadKind: "default",
       currentAgent: "codex",
+      currentModel: "gpt-5.4",
       currentModelProviderId: "provider-1",
       nextAgent: "codex",
+      nextModel: "gpt-5.4",
       nextModelProviderId: "provider-1",
     })).toBe(true);
 
     expect(shouldPreserveThreadSelectionSessionIds({
       threadKind: "default",
       currentAgent: "codex",
+      currentModel: "gpt-5.4",
       currentModelProviderId: "provider-1",
       nextAgent: "codex",
+      nextModel: "gpt-5.4",
       nextModelProviderId: null,
     })).toBe(false);
   });

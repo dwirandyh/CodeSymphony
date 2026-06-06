@@ -37,12 +37,17 @@ describe("PlanDecisionComposer", () => {
   ] as const;
   const providers: ModelProvider[] = [{
     id: "provider-codex-1",
-    compatibility: "openai",
     name: "Team Codex",
-    modelId: "gpt-5-custom",
+    compatibility: "openai",
     baseUrl: "https://example.invalid/v1",
     apiKeyMasked: "sk-***",
-    isActive: false,
+    models: [{
+      id: "provider-codex-1-model-1",
+      providerId: "provider-codex-1",
+      modelId: "gpt-5-custom",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }],
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   }];

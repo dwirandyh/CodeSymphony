@@ -4,7 +4,7 @@ import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
 
 const stubModelProviderService = {
-  getActiveProvider: async () => null,
+  resolveProviderSelection: async () => null,
 };
 
 const TEST_DATABASE_URL =

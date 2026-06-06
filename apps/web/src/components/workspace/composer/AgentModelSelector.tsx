@@ -219,6 +219,32 @@ function buildCodexBuiltinOptionSeeds(params: {
   }));
 }
 
+function formatProviderDetail(provider: ModelProvider): string {
+  try {
+    const host = provider.baseUrl ? new URL(provider.baseUrl).host : "custom endpoint";
+    return `${provider.name} · ${host}`;
+  } catch {
+    return provider.name;
+  }
+}
+
+function buildCustomAgentOptions(agent: CliAgent, providers: readonly ModelProvider[]): AgentSelectionOption[] {
+  return providers.flatMap((provider) => {
+    if (!supportsModelProviderCompatibility(agent, provider.compatibility)) {
+      return [];
+    }
+    return (provider.models ?? []).map((model) => ({
+      id: `custom:${agent}:${provider.id}:${model.modelId}`,
+      agent,
+      model: model.modelId,
+      modelProviderId: provider.id,
+      label: agent === "opencode" ? model.modelId : formatFriendlyModelName(agent, model.modelId),
+      detail: formatProviderDetail(provider),
+      source: "custom" as const,
+    }));
+  });
+}
+
 export function buildAgentSelectionOptions(params: {
   providers: ModelProvider[];
   claudeModels?: readonly ClaudeModelCatalogEntry[];
@@ -245,17 +271,7 @@ export function buildAgentSelectionOptions(params: {
         detail: "Built-in",
         source: "builtin" as const,
       })),
-      ...params.providers
-        .filter((provider) => supportsModelProviderCompatibility("claude", provider.compatibility))
-        .map((provider) => ({
-          id: provider.id,
-          agent: "claude" as const,
-          model: provider.modelId,
-          modelProviderId: provider.id,
-          label: formatFriendlyModelName("claude", provider.modelId),
-          detail: provider.name,
-          source: "custom" as const,
-        })),
+      ...buildCustomAgentOptions("claude", params.providers),
     ],
     codex: [
       ...codexBuiltinModels.map((entry) => ({
@@ -267,17 +283,7 @@ export function buildAgentSelectionOptions(params: {
         detail: entry.detail,
         source: "builtin" as const,
       })),
-      ...params.providers
-        .filter((provider) => supportsModelProviderCompatibility("codex", provider.compatibility))
-        .map((provider) => ({
-          id: provider.id,
-          agent: "codex" as const,
-          model: provider.modelId,
-          modelProviderId: provider.id,
-          label: formatFriendlyModelName("codex", provider.modelId),
-          detail: provider.name,
-          source: "custom" as const,
-        })),
+      ...buildCustomAgentOptions("codex", params.providers),
     ],
     cursor: cursorModels.map((entry) => ({
       id: `cursor:${entry.id}:builtin`,
@@ -298,17 +304,7 @@ export function buildAgentSelectionOptions(params: {
         detail: entry.providerId,
         source: "builtin" as const,
       })),
-      ...params.providers
-        .filter((provider) => supportsModelProviderCompatibility("opencode", provider.compatibility))
-        .map((provider) => ({
-          id: provider.id,
-          agent: "opencode" as const,
-          model: provider.modelId,
-          modelProviderId: provider.id,
-          label: provider.modelId,
-          detail: provider.name,
-          source: "custom" as const,
-        })),
+      ...buildCustomAgentOptions("opencode", params.providers),
     ],
   };
 }
@@ -334,7 +330,7 @@ export function buildAdhocAgentSelectionOption(selection: AgentModelSelection): 
     model: selection.model,
     modelProviderId: selection.modelProviderId,
     label: formatFriendlyModelName(selection.agent, selection.model),
-    detail: selection.modelProviderId ? "Custom" : "Built-in",
+    detail: selection.modelProviderId ? "Missing custom provider" : "Built-in",
     source: selection.modelProviderId ? "custom" : "builtin",
   };
 }

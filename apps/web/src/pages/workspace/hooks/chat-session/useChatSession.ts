@@ -256,8 +256,10 @@ function shouldPreserveSessionIdsForSelectionUpdate(
   return shouldPreserveThreadSelectionSessionIds({
     threadKind: thread.kind,
     currentAgent: thread.agent,
+    currentModel: thread.model ?? null,
     currentModelProviderId: thread.modelProviderId,
     nextAgent: selection.agent,
+    nextModel: selection.model,
     nextModelProviderId: selection.modelProviderId ?? null,
   });
 }
