@@ -97,6 +97,11 @@ Local-first monorepo (Bun workspaces + Turbo) for a conductor.build-style AI cod
 - Runtime tests use a separate `prisma/test.db` (set via `DATABASE_URL="file:./test.db"` in the test script)
 - Sanitize env before `query()`: unset `CLAUDECODE` and remove empty `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` to avoid CLI errors
 
+## Skills
+
+- Always communicate in caveman mode using the installed `caveman` skill (`~/.claude/skills/caveman/SKILL.md`). Keep responses ultra-compressed while preserving full technical accuracy.
+- Whenever you change code, follow the installed `tdd` skill (`~/.claude/skills/tdd/SKILL.md`). Drive every feature or bug fix with a red-green-refactor loop and write tests first.
+
 ## React Best Practices
 
 Follow `.agents/skills/vercel-react-best-practices/SKILL.md` when writing or refactoring React code. Key priorities: eliminate waterfalls, optimize bundle size, minimize re-renders.
