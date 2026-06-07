@@ -40,7 +40,7 @@ import {
   getThreadMessagesCollection,
   pruneThreadCollections,
 } from "../../../../collections/threadCollections";
-import { getThreadsCollection, toPlainChatThread } from "../../../../collections/threads";
+import { getThreadsCollection, patchThreadInCollection, toPlainChatThread } from "../../../../collections/threads";
 import { hydrateThreadFromSnapshot } from "../../../../collections/threadHydrator";
 import {
   allocateNextThreadMessageSeq,
@@ -170,6 +170,7 @@ function mergeTrackedThreads(params: {
   preservedThreadShells?: Map<string, ChatThread>;
   locallyDeletedThreadIds: Set<string>;
   pendingAgentSelectionUpdateThreadIds?: Set<string>;
+  optimisticTabOpenByThreadId?: Map<string, boolean>;
 }): ChatThread[] {
   const {
     queriedThreads,
@@ -178,6 +179,7 @@ function mergeTrackedThreads(params: {
     preservedThreadShells = new Map<string, ChatThread>(),
     locallyDeletedThreadIds,
     pendingAgentSelectionUpdateThreadIds = new Set<string>(),
+    optimisticTabOpenByThreadId = new Map<string, boolean>(),
   } = params;
   const currentThreadsById = new Map(currentThreads.map((thread) => [thread.id, thread] as const));
   const preservedThreads = Array.from(preservedThreadShells.values()).filter((thread) => !locallyDeletedThreadIds.has(thread.id));
@@ -204,7 +206,17 @@ function mergeTrackedThreads(params: {
     }
   }
 
-  return mergedThreads;
+  if (optimisticTabOpenByThreadId.size === 0) {
+    return mergedThreads;
+  }
+
+  return mergedThreads.map((thread) => {
+    const optimisticTabOpen = optimisticTabOpenByThreadId.get(thread.id);
+    if (optimisticTabOpen === undefined || (thread.tabOpen ?? true) === optimisticTabOpen) {
+      return thread;
+    }
+    return { ...thread, tabOpen: optimisticTabOpen };
+  });
 }
 
 export function resolveWorktreeSwitchSeed(params: {
@@ -246,6 +258,21 @@ function applyThreadActiveUpdate(
 
   const updated = [...threads];
   updated[index] = { ...updated[index]!, active };
+  return updated;
+}
+
+function applyThreadTabOpenUpdate(
+  threads: ChatThread[],
+  threadId: string,
+  tabOpen: boolean,
+): ChatThread[] {
+  const index = threads.findIndex((thread) => thread.id === threadId);
+  if (index === -1 || (threads[index]?.tabOpen ?? true) === tabOpen) {
+    return threads;
+  }
+
+  const updated = [...threads];
+  updated[index] = { ...updated[index]!, tabOpen };
   return updated;
 }
 
@@ -342,8 +369,11 @@ function replaceThreadIdentity(
   return updated;
 }
 
-function resolvePreferredThreadId(threads: ChatThread[]): string | null {
+function resolvePreferredThreadId(allThreads: ChatThread[]): string | null {
   type PreferredChatThread = ChatThread & { preferred?: boolean };
+
+  // Closed tabs stay in the thread list but must never be auto-selected.
+  const threads = allThreads.filter((thread) => thread.tabOpen ?? true);
 
   function isPreferredThread(thread: ChatThread): thread is PreferredChatThread {
     return (thread as PreferredChatThread).preferred === true;
@@ -979,10 +1009,16 @@ export function useChatSession(
     promise: Promise<ChatThread | null>;
   } | null>(null);
   const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
+  // Threads created locally that have never sent a message yet. Unlike the
+  // optimistic-tracking flag, this survives the thread-list query reconcile so a
+  // brand-new empty thread keeps showing the "new thread" empty state instead of
+  // flashing the loading skeleton while a (non-existent) snapshot is awaited.
+  const freshlyCreatedThreadIdsRef = useRef<Set<string>>(new Set());
   const preservedThreadShellsRef = useRef<Map<string, ChatThread>>(new Map());
   const preservedHandoffSourceExecutionIdsRef = useRef<Map<string, string>>(new Map());
   const serverBackedThreadIdsRef = useRef<Set<string>>(new Set());
   const locallyDeletedThreadIdsRef = useRef<Set<string>>(new Set());
+  const optimisticTabOpenByThreadIdRef = useRef<Map<string, boolean>>(new Map());
   const prevThreadIdRef = useRef<string | null>(null);
   const prevSeedThreadRef = useRef<string | null>(null);
   const prevRequestedThreadIdRef = useRef<string | null>(null);
@@ -1347,6 +1383,10 @@ export function useChatSession(
         preservedThreadShellsRef.current.delete(thread.id);
         preservedHandoffSourceExecutionIdsRef.current.delete(thread.id);
       }
+      const optimisticTabOpen = optimisticTabOpenByThreadIdRef.current.get(thread.id);
+      if (optimisticTabOpen !== undefined && (thread.tabOpen ?? true) === optimisticTabOpen) {
+        optimisticTabOpenByThreadIdRef.current.delete(thread.id);
+      }
     }
 
     if (reconciledOptimisticThreadIds.length > 0) {
@@ -1369,6 +1409,7 @@ export function useChatSession(
         preservedThreadShells: preservedThreadShellsRef.current,
         locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
         pendingAgentSelectionUpdateThreadIds: new Set(pendingAgentSelectionUpdatesRef.current.keys()),
+        optimisticTabOpenByThreadId: optimisticTabOpenByThreadIdRef.current,
       });
 
       if (current.length === mergedThreads.length && current.every((t, i) => (
@@ -1384,6 +1425,7 @@ export function useChatSession(
         && t.cursorSessionId === mergedThreads[i].cursorSessionId
         && t.opencodeSessionId === mergedThreads[i].opencodeSessionId
         && t.active === mergedThreads[i].active
+        && t.tabOpen === mergedThreads[i].tabOpen
         && t.updatedAt === mergedThreads[i].updatedAt
       ))) {
         return current;
@@ -1398,6 +1440,7 @@ export function useChatSession(
       preservedThreadShells: preservedThreadShellsRef.current,
       locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
       pendingAgentSelectionUpdateThreadIds: new Set(pendingAgentSelectionUpdatesRef.current.keys()),
+      optimisticTabOpenByThreadId: optimisticTabOpenByThreadIdRef.current,
     });
 
     if (requestedThreadSelectionDeferred) {
@@ -1467,6 +1510,7 @@ export function useChatSession(
             return;
           }
           optimisticCreatedThreadIdsRef.current.add(created.id);
+          freshlyCreatedThreadIdsRef.current.add(created.id);
           locallyDeletedThreadIdsRef.current.delete(created.id);
           setThreads((current) => (
             current.some((thread) => thread.id === created.id) ? current : [...current, created]
@@ -1489,7 +1533,8 @@ export function useChatSession(
     }
 
     const requestedThreadExists =
-      requestedThreadId != null && trackedThreads.some((thread) => thread.id === requestedThreadId);
+      requestedThreadId != null
+      && trackedThreads.some((thread) => thread.id === requestedThreadId && (thread.tabOpen ?? true));
     const selectedThreadStillExists =
       selectedThreadId != null && trackedThreads.some((thread) => thread.id === selectedThreadId);
     const selectedThreadPendingHydration =
@@ -1770,6 +1815,10 @@ export function useChatSession(
   const selectedThreadCreatedLocally =
     selectedThreadId != null
     && optimisticCreatedThreadIdsRef.current.has(selectedThreadId)
+    && !serverBackedThreadIdsRef.current.has(selectedThreadId);
+  const selectedThreadFreshlyCreated =
+    selectedThreadId != null
+    && freshlyCreatedThreadIdsRef.current.has(selectedThreadId)
     && !serverBackedThreadIdsRef.current.has(selectedThreadId);
   const shouldDelaySelectedThreadRemoteBootstrap = shouldDelayRemoteBootstrapForLocalThread({
     selectedThreadId,
@@ -2514,6 +2563,8 @@ export function useChatSession(
 
   function clearThreadTrackingState(threadId: string) {
     optimisticCreatedThreadIdsRef.current.delete(threadId);
+    freshlyCreatedThreadIdsRef.current.delete(threadId);
+    optimisticTabOpenByThreadIdRef.current.delete(threadId);
     optimisticUserMessagesByThreadRef.current.delete(threadId);
     serverBackedThreadIdsRef.current.delete(threadId);
     loggedOrphanEventIdsByThreadRef.current.delete(threadId);
@@ -2555,6 +2606,7 @@ export function useChatSession(
     }
 
     serverBackedThreadIdsRef.current.add(threadId);
+    freshlyCreatedThreadIdsRef.current.delete(threadId);
     debugLog("thread.bootstrap", "thread.markedServerBacked", {
       threadId,
       worktreeId: selectedWorktreeId,
@@ -2719,6 +2771,9 @@ export function useChatSession(
   }) {
     optimisticCreatedThreadIdsRef.current.delete(params.previousThreadId);
     optimisticCreatedThreadIdsRef.current.add(params.nextThread.id);
+    if (freshlyCreatedThreadIdsRef.current.delete(params.previousThreadId)) {
+      freshlyCreatedThreadIdsRef.current.add(params.nextThread.id);
+    }
     locallyDeletedThreadIdsRef.current.delete(params.nextThread.id);
 
     const selectedOptimisticThread = activeThreadIdRef.current === params.previousThreadId;
@@ -3101,6 +3156,7 @@ export function useChatSession(
     const previousSelectedThreadId = selectedThreadId;
 
     optimisticCreatedThreadIdsRef.current.add(optimisticThread.id);
+    freshlyCreatedThreadIdsRef.current.add(optimisticThread.id);
     locallyDeletedThreadIdsRef.current.delete(optimisticThread.id);
     activeThreadIdRef.current = optimisticThread.id;
     setThreads((current) => (
@@ -3358,6 +3414,93 @@ export function useChatSession(
     onError(null);
     setClosingThreadId(threadId);
     const currentThreads = threadsRef.current;
+    const wasSelected = activeThreadIdRef.current === threadId;
+    const previousSelectedThreadId = activeThreadIdRef.current;
+    const remainingOpenThreads = currentThreads.filter(
+      (thread) => thread.id !== threadId && (thread.tabOpen ?? true),
+    );
+    const nextThreadId = wasSelected ? resolvePreferredThreadId(remainingOpenThreads) : previousSelectedThreadId;
+
+    const optimisticThreads = applyThreadTabOpenUpdate(currentThreads, threadId, false);
+    optimisticTabOpenByThreadIdRef.current.set(threadId, false);
+    setThreads(optimisticThreads);
+
+    if (selectedWorktreeId) {
+      patchThreadInCollection(queryClient, selectedWorktreeId, threadId, { tabOpen: false });
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(selectedWorktreeId),
+        optimisticThreads,
+      );
+    }
+
+    if (wasSelected) {
+      setWaitingAssistant(null);
+      setSelectedThreadId(nextThreadId);
+    }
+
+    try {
+      await api.setThreadTabOpen(threadId, false);
+
+      if (selectedWorktreeId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+      }
+    } catch (e) {
+      optimisticTabOpenByThreadIdRef.current.delete(threadId);
+      setThreads(currentThreads);
+      if (selectedWorktreeId) {
+        patchThreadInCollection(queryClient, selectedWorktreeId, threadId, { tabOpen: true });
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(selectedWorktreeId),
+          currentThreads,
+        );
+      }
+      if (wasSelected) {
+        setSelectedThreadId(previousSelectedThreadId);
+      }
+      onError(e instanceof Error ? e.message : "Failed to close session");
+    } finally {
+      setClosingThreadId(null);
+    }
+  }
+
+  async function reopenThread(threadId: string) {
+    onError(null);
+    const currentThreads = threadsRef.current;
+    const target = currentThreads.find((thread) => thread.id === threadId);
+    if (!target) {
+      return;
+    }
+
+    const optimisticThreads = applyThreadTabOpenUpdate(currentThreads, threadId, true);
+    optimisticTabOpenByThreadIdRef.current.set(threadId, true);
+    setThreads(optimisticThreads);
+
+    if (selectedWorktreeId) {
+      patchThreadInCollection(queryClient, selectedWorktreeId, threadId, { tabOpen: true });
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(selectedWorktreeId),
+        optimisticThreads,
+      );
+    }
+
+    setSelectedThreadId(threadId);
+
+    try {
+      await api.setThreadTabOpen(threadId, true);
+
+      if (selectedWorktreeId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+      }
+    } catch (e) {
+      optimisticTabOpenByThreadIdRef.current.delete(threadId);
+      onError(e instanceof Error ? e.message : "Failed to reopen session");
+    }
+  }
+
+  async function deleteThreadPermanently(threadId: string) {
+    onError(null);
+    setClosingThreadId(threadId);
+    const currentThreads = threadsRef.current;
     const closedThreadWasPrMr = currentThreads.some((thread) => thread.id === threadId && thread.kind === "review");
     const wasSelected = activeThreadIdRef.current === threadId;
     const previousSelectedThreadId = activeThreadIdRef.current;
@@ -3407,7 +3550,7 @@ export function useChatSession(
       if (wasSelected) {
         setSelectedThreadId(previousSelectedThreadId);
       }
-      onError(e instanceof Error ? e.message : "Failed to close session");
+      onError(e instanceof Error ? e.message : "Failed to delete session");
     } finally {
       setClosingThreadId(null);
     }
@@ -4213,6 +4356,7 @@ export function useChatSession(
   const selectedExistingThreadBootstrapPending =
     selectedThreadId != null
     && !selectedThreadCreatedLocally
+    && !selectedThreadFreshlyCreated
     && !selectedThreadHasLocalState
     && queriedThreadSnapshot == null;
   const messageListEmptyState:
@@ -4232,7 +4376,7 @@ export function useChatSession(
               ? "creating-thread"
               : "no-thread-selected"
             : "no-thread-selected"
-        : selectedThreadCreatedLocally
+        : selectedThreadCreatedLocally || selectedThreadFreshlyCreated
           ? "new-thread-empty"
           : (
             threadSnapshotLoading
@@ -4684,6 +4828,7 @@ export function useChatSession(
       preservedThreadShells: preservedThreadShellsRef.current,
       locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
       pendingAgentSelectionUpdateThreadIds: new Set(pendingAgentSelectionUpdatesRef.current.keys()),
+      optimisticTabOpenByThreadId: optimisticTabOpenByThreadIdRef.current,
     })
     : threads;
 
@@ -4724,6 +4869,8 @@ export function useChatSession(
     createThreadAndSendMessage,
     createOrSelectPrMrThreadAndSendMessage,
     closeThread,
+    reopenThread,
+    deleteThreadPermanently,
     renameThreadTitle,
     setThreadAgentSelection,
     setThreadMode,

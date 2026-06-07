@@ -16,6 +16,14 @@ const mockTerminalService = {
   getExitEvent: vi.fn(),
   addListener: vi.fn(() => vi.fn()),
   addExitListener: vi.fn(() => vi.fn()),
+  createTab: vi.fn(),
+  listTabs: vi.fn(),
+  closeTab: vi.fn(),
+};
+
+const mockWorkspaceEventHub = {
+  emit: vi.fn(),
+  subscribe: vi.fn(() => vi.fn()),
 };
 
 const mockLogService = {
@@ -30,6 +38,7 @@ beforeAll(async () => {
   app = Fastify();
   await app.register(websocket);
   app.decorate("terminalService", mockTerminalService);
+  app.decorate("workspaceEventHub", mockWorkspaceEventHub);
   app.decorate("logService", mockLogService);
   app.decorate("filesystemService", mockFilesystemService);
   await registerTerminalRoutes(app);
@@ -44,6 +53,7 @@ beforeEach(() => {
   mockTerminalService.getExitEvent.mockReturnValue(null);
   mockTerminalService.addListener.mockReturnValue(vi.fn());
   mockTerminalService.addExitListener.mockReturnValue(vi.fn());
+  mockTerminalService.listTabs.mockReturnValue([]);
   mockFilesystemService.cleanupTerminalDropFiles.mockResolvedValue(undefined);
 });
 
@@ -215,6 +225,112 @@ describe("terminal routes", () => {
       expect(response.statusCode).toBe(204);
       expect(mockTerminalService.kill).toHaveBeenCalledWith("s1");
       expect(mockFilesystemService.cleanupTerminalDropFiles).toHaveBeenCalledWith("s1");
+    });
+  });
+
+  describe("GET /terminal/tabs", () => {
+    it("lists tabs, optionally filtered by worktree", async () => {
+      const tab = {
+        id: "tab1",
+        worktreeId: "wt1",
+        sessionId: "wt1:terminal:tab1",
+        title: "Terminal",
+        ordinal: 1,
+      };
+      mockTerminalService.listTabs.mockReturnValue([tab]);
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/terminal/tabs?worktreeId=wt1",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: [tab] });
+      expect(mockTerminalService.listTabs).toHaveBeenCalledWith("wt1");
+    });
+
+    it("lists all tabs when no worktree filter is given", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/terminal/tabs",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockTerminalService.listTabs).toHaveBeenCalledWith(undefined);
+    });
+  });
+
+  describe("POST /terminal/tabs", () => {
+    it("creates a tab and broadcasts terminal.tab.created", async () => {
+      const tab = {
+        id: "tab1",
+        worktreeId: "wt1",
+        sessionId: "wt1:terminal:tab1",
+        title: "Terminal",
+        ordinal: 1,
+      };
+      mockTerminalService.createTab.mockReturnValue(tab);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/terminal/tabs",
+        payload: { worktreeId: "wt1" },
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: tab });
+      expect(mockTerminalService.createTab).toHaveBeenCalledWith("wt1");
+      expect(mockWorkspaceEventHub.emit).toHaveBeenCalledWith("terminal.tab.created", {
+        worktreeId: "wt1",
+      });
+    });
+
+    it("returns 400 for missing worktreeId", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/terminal/tabs",
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(mockTerminalService.createTab).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("DELETE /terminal/tabs/:tabId", () => {
+    it("closes a tab, cleans up drop files and broadcasts terminal.tab.closed", async () => {
+      const tab = {
+        id: "tab1",
+        worktreeId: "wt1",
+        sessionId: "wt1:terminal:tab1",
+        title: "Terminal",
+        ordinal: 1,
+      };
+      mockTerminalService.closeTab.mockReturnValue(tab);
+
+      const response = await app.inject({
+        method: "DELETE",
+        url: "/terminal/tabs/tab1",
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(mockTerminalService.closeTab).toHaveBeenCalledWith("tab1");
+      expect(mockFilesystemService.cleanupTerminalDropFiles).toHaveBeenCalledWith("wt1:terminal:tab1");
+      expect(mockWorkspaceEventHub.emit).toHaveBeenCalledWith("terminal.tab.closed", {
+        worktreeId: "wt1",
+      });
+    });
+
+    it("returns 404 for unknown tab", async () => {
+      mockTerminalService.closeTab.mockReturnValue(null);
+
+      const response = await app.inject({
+        method: "DELETE",
+        url: "/terminal/tabs/missing",
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockWorkspaceEventHub.emit).not.toHaveBeenCalled();
     });
   });
 

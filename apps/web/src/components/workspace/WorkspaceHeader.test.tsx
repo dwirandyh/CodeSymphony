@@ -697,4 +697,56 @@ describe("WorkspaceHeader", () => {
     expect(selectedCloseButton.disabled).toBe(true);
   });
 
+  it("shows closed sessions in the history overlay with a reopen action", () => {
+    const onReopenThread = vi.fn();
+    const closedThread: ChatThread = {
+      ...threads[0]!,
+      id: "closed-thread",
+      title: "Archived Chat",
+      agent: "codex",
+      tabOpen: false,
+      updatedAt: "2026-05-13T00:00:00.000Z",
+    };
+
+    renderHeader({ closedThreads: [closedThread], onReopenThread });
+
+    const historyButton = container.querySelector<HTMLButtonElement>('button[aria-label="Closed session history"]');
+    if (!historyButton) {
+      throw new Error("History button not found");
+    }
+
+    act(() => {
+      historyButton.click();
+    });
+
+    const reopenButton = document.body.querySelector<HTMLButtonElement>('button[title="Reopen Archived Chat"]');
+    if (!reopenButton) {
+      throw new Error("Reopen action not found in overlay");
+    }
+
+    expect(document.body.textContent).toContain("Archived Chat");
+    expect(document.body.textContent).toMatch(/\d+d ago/);
+
+    act(() => {
+      reopenButton.click();
+    });
+
+    expect(onReopenThread).toHaveBeenCalledWith("closed-thread");
+  });
+
+  it("does not list open threads in the history overlay", () => {
+    renderHeader({ closedThreads: [] });
+
+    const historyButton = container.querySelector<HTMLButtonElement>('button[aria-label="Closed session history"]');
+    if (!historyButton) {
+      throw new Error("History button not found");
+    }
+
+    act(() => {
+      historyButton.click();
+    });
+
+    expect(document.body.textContent).toContain("No closed sessions");
+  });
+
 });

@@ -154,6 +154,7 @@ model ChatThread {
   permissionMode      ChatThreadPermissionMode    @default(default)
   mode                ChatMode                    @default(default)
   titleEditedManually Boolean                     @default(false)
+  tabOpen             Boolean                     @default(true)
   agent               CliAgent                    @default(claude)
   model               String                      @default("claude-sonnet-4-6")
   modelProviderId String?

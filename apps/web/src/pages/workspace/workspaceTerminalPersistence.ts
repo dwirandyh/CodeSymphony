@@ -1,4 +1,5 @@
 import type { TerminalSessionInfo } from "../../lib/api";
+import type { TerminalTab } from "@codesymphony/shared-types";
 import type { WorkspaceTerminalTab } from "../../components/workspace/WorkspaceHeader";
 
 export const WORKSPACE_TERMINAL_UI_STORAGE_KEY = "codesymphony:workspace:terminal-ui:v1";
@@ -150,6 +151,50 @@ function resolveNextTerminalOrdinal(tabs: WorkspaceTerminalTab[], fallback: numb
   }
 
   return Math.max(fallback, highestOrdinal + 1, 1);
+}
+
+export function reconcileWorkspaceTerminalTabs(input: {
+  current: WorkspaceTerminalTabsState;
+  serverTabs: TerminalTab[];
+}): WorkspaceTerminalTabsState {
+  const { current, serverTabs } = input;
+
+  const orderedTabs = [...serverTabs]
+    .sort((a, b) => a.ordinal - b.ordinal)
+    .map((tab) => ({ id: tab.id, sessionId: tab.sessionId, title: tab.title }));
+
+  const tabsUnchanged =
+    orderedTabs.length === current.tabs.length
+    && orderedTabs.every((tab, index) => {
+      const existing = current.tabs[index];
+      return existing
+        && existing.id === tab.id
+        && existing.sessionId === tab.sessionId
+        && existing.title === tab.title;
+    });
+
+  const activeTabId = current.activeTabId && orderedTabs.some((tab) => tab.id === current.activeTabId)
+    ? current.activeTabId
+    : orderedTabs[0]?.id ?? null;
+
+  const visible = current.visible && orderedTabs.length > 0;
+  const nextOrdinal = resolveNextTerminalOrdinal(orderedTabs, current.nextOrdinal);
+
+  if (
+    tabsUnchanged
+    && activeTabId === current.activeTabId
+    && visible === current.visible
+    && nextOrdinal === current.nextOrdinal
+  ) {
+    return current;
+  }
+
+  return {
+    tabs: orderedTabs,
+    activeTabId,
+    visible,
+    nextOrdinal,
+  };
 }
 
 export function getBottomPanelState(

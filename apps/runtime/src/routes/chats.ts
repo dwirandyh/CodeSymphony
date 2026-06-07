@@ -15,6 +15,7 @@ import { isUnavailableWorktreeErrorMessage } from "../services/worktreeService.j
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
+const setThreadTabOpenBody = z.object({ open: z.boolean() });
 const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
 const slashCommandQuery = z.object({
   agent: CliAgentSchema.optional(),
@@ -240,6 +241,19 @@ export async function registerChatRoutes(app: FastifyInstance) {
       return { data: thread };
     } catch (error) {
       return respondForChatRouteError(reply, error, "Unable to rename thread title");
+    }
+  });
+
+  app.post("/threads/:id/tab", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      const { open } = setThreadTabOpenBody.parse(request.body ?? {});
+      const thread = await app.chatService.setThreadTabOpen(params.id, open);
+      await emitThreadWorkspaceEvent(app, "thread.updated", thread);
+      return { data: thread };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to update thread tab state");
     }
   });
 

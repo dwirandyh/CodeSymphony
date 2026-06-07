@@ -36,7 +36,6 @@ const MacDesktopTitleBar = lazy(() =>
 );
 import { WorkspaceEmptyState } from "../components/workspace/WorkspaceEmptyState";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
-import type { WorkspaceTerminalTab } from "../components/workspace/WorkspaceHeader";
 import { StartupStatusBanner } from "../components/startup/StartupStatusBanner";
 import { useWorkspaceStartupState } from "../components/startup/workspaceStartupState";
 const FileBrowserModal = lazy(() =>
@@ -115,6 +114,7 @@ import {
   getBottomPanelState,
   getTerminalTabsState,
   readPersistedWorkspaceTerminalUiState,
+  reconcileWorkspaceTerminalTabs,
   restoreWorkspaceTerminalUiState,
   type BottomPanelWorktreeState,
   type WorkspaceTerminalTabsState,
@@ -177,6 +177,7 @@ import type { WorktreeStatusSummary } from "./workspace/hooks/worktreeThreadStat
 import { useCompletionAttention } from "./workspace/hooks/useCompletionAttention";
 import { useModelProviders } from "./workspace/hooks/useModelProviders";
 import { useWorkspaceSyncStream } from "./workspace/hooks/useWorkspaceSyncStream";
+import { subscribeToWorkspaceSyncSocket } from "../lib/workspaceLiveSocket";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
 import { useWorkspaceNavigationHistory } from "./workspace/hooks/useWorkspaceNavigationHistory";
 import { useWorkspaceFileEditor } from "./workspace/hooks/useWorkspaceFileEditor";
@@ -435,24 +436,6 @@ function resolveMobileWorktreeTarget(origin: MobileReposOrigin | null): MobileIn
   }
 
   return null;
-}
-
-function createTerminalTabId(): string {
-  if (typeof globalThis.crypto !== "undefined" && typeof globalThis.crypto.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function createWorkspaceTerminalTab(worktreeId: string, ordinal: number): WorkspaceTerminalTab {
-  const id = createTerminalTabId();
-
-  return {
-    id,
-    sessionId: `${worktreeId}:terminal:${id}`,
-    title: ordinal === 1 ? "Terminal" : `Terminal ${ordinal}`,
-  };
 }
 
 function toDebugErrorMessage(error: unknown) {
@@ -795,6 +778,59 @@ export function WorkspacePage() {
       [worktreeId]: updater(getTerminalTabsState(prev, worktreeId)),
     }));
   }, []);
+
+  const syncTerminalTabsFromServer = useCallback(async () => {
+    let serverTabs;
+    try {
+      serverTabs = await api.listTerminalTabs();
+    } catch {
+      return;
+    }
+
+    const serverTabsByWorktreeId = new Map<string, typeof serverTabs>();
+    for (const tab of serverTabs) {
+      const existing = serverTabsByWorktreeId.get(tab.worktreeId);
+      if (existing) {
+        existing.push(tab);
+      } else {
+        serverTabsByWorktreeId.set(tab.worktreeId, [tab]);
+      }
+    }
+
+    setTerminalTabsByWorktreeId((prev) => {
+      const worktreeIds = new Set([...Object.keys(prev), ...serverTabsByWorktreeId.keys()]);
+      let changed = false;
+      const next: Record<string, WorkspaceTerminalTabsState> = {};
+
+      for (const worktreeId of worktreeIds) {
+        const current = getTerminalTabsState(prev, worktreeId);
+        const reconciled = reconcileWorkspaceTerminalTabs({
+          current,
+          serverTabs: serverTabsByWorktreeId.get(worktreeId) ?? [],
+        });
+        next[worktreeId] = reconciled;
+        if (reconciled !== prev[worktreeId]) {
+          changed = true;
+        }
+      }
+
+      return changed ? next : prev;
+    });
+  }, []);
+
+  useEffect(() => {
+    void syncTerminalTabsFromServer();
+
+    const unsubscribe = subscribeToWorkspaceSyncSocket({
+      onEvent(event) {
+        if (event.type === "terminal.tab.created" || event.type === "terminal.tab.closed") {
+          void syncTerminalTabsFromServer();
+        }
+      },
+    });
+
+    return unsubscribe;
+  }, [syncTerminalTabsFromServer]);
 
   const hideTerminalView = useCallback((worktreeId: string | null | undefined) => {
     if (!worktreeId) {
@@ -2510,6 +2546,7 @@ export function WorkspacePage() {
   const [issueReportOpen, setIssueReportOpen] = useState(false);
   const [focusComposerSignal, setFocusComposerSignal] = useState(0);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
+  const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
   const openSettingsDialog = useCallback(() => {
     requestAllModelCatalogs();
     setSettingsOpen(true);
@@ -3334,16 +3371,25 @@ export function WorkspacePage() {
 
     setError(null);
     updateSearch({ view: undefined, file: undefined });
-    updateTerminalTabsState(worktreeId, (current) => {
-      const terminalTab = createWorkspaceTerminalTab(worktreeId, current.nextOrdinal);
 
-      return {
-        tabs: [...current.tabs, terminalTab],
-        activeTabId: terminalTab.id,
-        visible: true,
-        nextOrdinal: current.nextOrdinal + 1,
-      };
-    });
+    void api.createTerminalTab(worktreeId)
+      .then((tab) => {
+        updateTerminalTabsState(worktreeId, (current) => {
+          if (current.tabs.some((existing) => existing.id === tab.id)) {
+            return { ...current, activeTabId: tab.id, visible: true };
+          }
+
+          return {
+            tabs: [...current.tabs, { id: tab.id, sessionId: tab.sessionId, title: tab.title }],
+            activeTabId: tab.id,
+            visible: true,
+            nextOrdinal: Math.max(current.nextOrdinal, tab.ordinal + 1),
+          };
+        });
+      })
+      .catch(() => {
+        setError("Failed to open terminal");
+      });
   }, [confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, selectedWorktreeOperational, setError, updateSearch, updateTerminalTabsState]);
 
   const handleSelectTerminalTab = useCallback((terminalTabId: string) => {
@@ -3408,7 +3454,7 @@ export function WorkspacePage() {
 
     if (sessionIdToKill) {
       disposeTerminalRuntime(sessionIdToKill);
-      void api.killTerminalSession(sessionIdToKill).catch(() => {});
+      void api.closeTerminalTab(terminalTabId).catch(() => {});
     }
   }, [
     activeTerminalTab?.id,
@@ -4046,6 +4092,28 @@ export function WorkspacePage() {
     workspaceNavigation,
   ]);
 
+  const openThreads = useMemo(
+    () => chat.threads.filter((thread) => thread.tabOpen ?? true),
+    [chat.threads],
+  );
+  const closedThreads = useMemo(
+    () => chat.threads
+      .filter((thread) => (thread.tabOpen ?? true) === false)
+      .slice()
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),
+    [chat.threads],
+  );
+
+  const handleRequestDeleteThread = useCallback((threadId: string) => {
+    setConfirmDeleteThreadId(threadId);
+  }, []);
+
+  const handleConfirmDeleteThread = useCallback(async () => {
+    if (!confirmDeleteThreadId) return;
+    await chat.deleteThreadPermanently(confirmDeleteThreadId);
+    setConfirmDeleteThreadId(null);
+  }, [chat.deleteThreadPermanently, confirmDeleteThreadId]);
+
   const handleRequestCloseThread = useCallback((threadId: string) => {
     const needsConfirm = shouldConfirmCloseThread({
       threadId,
@@ -4158,6 +4226,9 @@ export function WorkspacePage() {
 
   const confirmCloseThread = confirmCloseThreadId
     ? chat.threads.find((thread) => thread.id === confirmCloseThreadId) ?? null
+    : null;
+  const confirmDeleteThread = confirmDeleteThreadId
+    ? chat.threads.find((thread) => thread.id === confirmDeleteThreadId) ?? null
     : null;
   const closingConfirmedThread =
     confirmCloseThreadId !== null && chat.closingThreadId === confirmCloseThreadId;
@@ -4350,7 +4421,8 @@ export function WorkspacePage() {
                     }
                     enableInstalledAppsQuery={enableNonCriticalWorkspaceData}
                     worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : resolvedStartupWorktreePath}
-                    threads={chat.threads}
+                    threads={openThreads}
+                    closedThreads={closedThreads}
                     terminalTabs={selectedTerminalTabsState.tabs}
                     activeTerminalTabId={activeTerminalTab?.id ?? null}
                     terminalTabActive={terminalViewActive}
@@ -4376,6 +4448,8 @@ export function WorkspacePage() {
                     onCreateThread={handleCreateThreadFromHeader}
                     onCreateTerminal={handleCreateTerminalTab}
                     onCloseThread={handleRequestCloseThread}
+                    onReopenThread={(threadId) => void chat.reopenThread(threadId)}
+                    onDeleteThread={handleRequestDeleteThread}
                     onCloseTerminalTab={handleCloseTerminalTab}
                     onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
                     onSelectTargetBranch={(branch) => {
@@ -5169,6 +5243,41 @@ export function WorkspacePage() {
               disabled={closingConfirmedThread || chat.stoppingRun}
             >
               {confirmCloseNeedsStop ? "Stop run" : "Close session"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={confirmDeleteThreadId !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setConfirmDeleteThreadId(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete session?</DialogTitle>
+            <DialogDescription>
+              {confirmDeleteThread
+                ? `"${confirmDeleteThread.title}" and all of its messages will be permanently deleted. This cannot be undone.`
+                : "This session and all of its messages will be permanently deleted. This cannot be undone."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmDeleteThreadId(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => void handleConfirmDeleteThread()}
+              disabled={chat.closingThreadId === confirmDeleteThreadId}
+            >
+              Delete session
             </Button>
           </div>
         </DialogContent>

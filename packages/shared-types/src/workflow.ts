@@ -260,6 +260,7 @@ export const ChatThreadSchema = z.object({
   permissionMode: ChatThreadPermissionModeSchema,
   mode: ChatModeSchema,
   titleEditedManually: z.boolean(),
+  tabOpen: z.boolean().optional(),
   agent: CliAgentSchema.optional(),
   model: z.string().min(1).optional(),
   modelProviderId: z.string().nullable().optional(),
@@ -366,8 +367,19 @@ export const WorkspaceSyncEventTypeSchema = z.enum([
   "thread.created",
   "thread.updated",
   "thread.deleted",
+  "terminal.tab.created",
+  "terminal.tab.closed",
 ]);
 export type WorkspaceSyncEventType = z.infer<typeof WorkspaceSyncEventTypeSchema>;
+
+export const TerminalTabSchema = z.object({
+  id: z.string(),
+  worktreeId: z.string(),
+  sessionId: z.string(),
+  title: z.string(),
+  ordinal: z.number().int().positive(),
+});
+export type TerminalTab = z.infer<typeof TerminalTabSchema>;
 
 export const WorkspaceSyncEventSchema = z.object({
   id: z.string(),

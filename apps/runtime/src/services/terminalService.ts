@@ -1,6 +1,8 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { TerminalTab } from "@codesymphony/shared-types";
 import { buildClaudeRuntimeEnv } from "../claude/shellEnv.js";
 import { isPtyIoError, spawnPty, type PtyProcess } from "./ptyBackend.js";
 
@@ -152,6 +154,8 @@ export function buildExecShellArgs(shell: string | undefined, command: string): 
 
 export function createTerminalService() {
     const sessions = new Map<string, TerminalSession>();
+    const tabs = new Map<string, TerminalTab>();
+    const nextOrdinalByWorktree = new Map<string, number>();
 
     function resolveCwdCandidates(cwd?: string): string[] {
         const normalizedCwd = normalizeCwd(cwd);
@@ -420,6 +424,38 @@ export function createTerminalService() {
         return sessions.get(sessionId)?.exitEvent ?? null;
     }
 
+    function createTab(worktreeId: string): TerminalTab {
+        const ordinal = nextOrdinalByWorktree.get(worktreeId) ?? 1;
+        nextOrdinalByWorktree.set(worktreeId, ordinal + 1);
+
+        const id = randomUUID();
+        const tab: TerminalTab = {
+            id,
+            worktreeId,
+            sessionId: `${worktreeId}:terminal:${id}`,
+            title: ordinal === 1 ? "Terminal" : `Terminal ${ordinal}`,
+            ordinal,
+        };
+        tabs.set(id, tab);
+        return tab;
+    }
+
+    function listTabs(worktreeId?: string): TerminalTab[] {
+        const all = [...tabs.values()];
+        return worktreeId ? all.filter((tab) => tab.worktreeId === worktreeId) : all;
+    }
+
+    function closeTab(tabId: string): TerminalTab | null {
+        const tab = tabs.get(tabId);
+        if (!tab) {
+            return null;
+        }
+
+        kill(tab.sessionId);
+        tabs.delete(tabId);
+        return tab;
+    }
+
     function killAll(): void {
         for (const session of sessions.values()) {
             if (session.active) {
@@ -429,5 +465,5 @@ export function createTerminalService() {
         sessions.clear();
     }
 
-    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, listSessions, getScrollback, getExitEvent, killAll };
+    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, listSessions, getScrollback, getExitEvent, killAll, createTab, listTabs, closeTab };
 }

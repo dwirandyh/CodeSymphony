@@ -62,6 +62,7 @@ import type {
   SendChatMessageInput,
   StartDeviceStreamInput,
   StopDeviceStreamInput,
+  TerminalTab,
   TestModelProviderInput,
   UpdateAutomationInput,
   UpdateAndroidClipboardInput,
@@ -618,6 +619,25 @@ export const api = {
     });
   },
   listTerminalSessions: () => request<TerminalSessionInfo[]>("/terminal/sessions"),
+  listTerminalTabs: (worktreeId?: string) =>
+    request<TerminalTab[]>(
+      worktreeId ? `/terminal/tabs?worktreeId=${encodeURIComponent(worktreeId)}` : "/terminal/tabs",
+    ),
+  createTerminalTab: (worktreeId: string) =>
+    request<TerminalTab>("/terminal/tabs", {
+      method: "POST",
+      body: JSON.stringify({ worktreeId }),
+    }),
+  closeTerminalTab: async (tabId: string): Promise<void> => {
+    const response = await runtimeFetch(`/terminal/tabs/${encodeURIComponent(tabId)}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok && response.status !== 204 && response.status !== 404) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to close terminal tab");
+    }
+  },
   runTerminalCommand: async (input: { sessionId: string; command: string; cwd?: string; mode?: "stdin" | "exec" }): Promise<void> => {
     const response = await runtimeFetch("/terminal/run", {
       method: "POST",
@@ -670,6 +690,11 @@ export const api = {
     request<ChatThread>(`/threads/${threadId}/mode`, {
       method: "PATCH",
       body: JSON.stringify(input),
+    }),
+  setThreadTabOpen: (threadId: string, open: boolean) =>
+    request<ChatThread>(`/threads/${threadId}/tab`, {
+      method: "POST",
+      body: JSON.stringify({ open }),
     }),
   updateThreadPermissionMode: (threadId: string, input: UpdateChatThreadPermissionModeInput) =>
     request<ChatThread>(`/threads/${threadId}/permission-mode`, {

@@ -508,6 +508,68 @@ describe("terminalService", () => {
     });
   });
 
+  describe("tab registry", () => {
+    it("creates a tab with server-assigned id, sessionId, ordinal and title", () => {
+      const tab = service.createTab("wt1");
+
+      expect(tab.worktreeId).toBe("wt1");
+      expect(tab.ordinal).toBe(1);
+      expect(tab.title).toBe("Terminal");
+      expect(tab.id).toBeTruthy();
+      expect(tab.sessionId).toBe(`wt1:terminal:${tab.id}`);
+    });
+
+    it("increments ordinal and titles per worktree", () => {
+      const first = service.createTab("wt1");
+      const second = service.createTab("wt1");
+      const otherWorktree = service.createTab("wt2");
+
+      expect(first.ordinal).toBe(1);
+      expect(first.title).toBe("Terminal");
+      expect(second.ordinal).toBe(2);
+      expect(second.title).toBe("Terminal 2");
+      expect(otherWorktree.ordinal).toBe(1);
+      expect(otherWorktree.title).toBe("Terminal");
+    });
+
+    it("lists tabs filtered by worktree, in creation order", () => {
+      const first = service.createTab("wt1");
+      const second = service.createTab("wt1");
+      service.createTab("wt2");
+
+      expect(service.listTabs("wt1")).toEqual([first, second]);
+    });
+
+    it("lists all tabs when no worktree filter is given", () => {
+      const first = service.createTab("wt1");
+      const second = service.createTab("wt2");
+
+      expect(service.listTabs()).toEqual([first, second]);
+    });
+
+    it("closes a tab and kills its pty session", () => {
+      const tab = service.createTab("wt1");
+      service.spawn(tab.sessionId, "/tmp");
+      const pty = currentMockPty;
+
+      service.closeTab(tab.id);
+
+      expect(pty.kill).toHaveBeenCalled();
+      expect(service.has(tab.sessionId)).toBe(false);
+      expect(service.listTabs("wt1")).toEqual([]);
+    });
+
+    it("returns the closed tab so callers can broadcast it", () => {
+      const tab = service.createTab("wt1");
+
+      expect(service.closeTab(tab.id)).toEqual(tab);
+    });
+
+    it("returns null when closing an unknown tab", () => {
+      expect(service.closeTab("missing")).toBeNull();
+    });
+  });
+
   describe("scrollback buffer management", () => {
     it("trims scrollback when exceeding MAX_SCROLLBACK_BYTES", () => {
       service.spawn("s1", "/tmp");

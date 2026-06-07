@@ -142,6 +142,7 @@ vi.mock("../../../../lib/api", () => ({
     updateThreadAgentSelection: vi.fn(),
     updateThreadPermissionMode: vi.fn(),
     deleteThread: vi.fn(),
+    setThreadTabOpen: vi.fn(),
     sendMessage: vi.fn(),
     stopRun: vi.fn(),
   },
@@ -944,6 +945,77 @@ describe("useChatSession", () => {
     expect(hookResult.composerModel).toBe("default[]");
   });
 
+  it("hides the tab without deleting the thread when closing", async () => {
+    threadsState.data = [makeThread("thread-a", false), makeThread("thread-b", false)];
+    vi.mocked(api.setThreadTabOpen).mockResolvedValue({ ...makeThread("thread-a"), tabOpen: false });
+
+    renderHook("thread-a", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+    });
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    expect(api.setThreadTabOpen).toHaveBeenCalledWith("thread-a", false);
+    expect(api.deleteThread).not.toHaveBeenCalled();
+    expect(hookResult.selectedThreadId).toBe("thread-b");
+
+    // The list refetch reflects the server-side tabOpen change.
+    threadsState.data = [{ ...makeThread("thread-a"), tabOpen: false }, makeThread("thread-b", false)];
+    renderHook("thread-b", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+    });
+
+    expect(hookResult.threads.map((thread) => thread.id)).toContain("thread-a");
+    expect(hookResult.threads.find((thread) => thread.id === "thread-a")?.tabOpen).toBe(false);
+  });
+
+  it("clears the selection when closing the last open thread", async () => {
+    threadsState.data = [makeThread("thread-a", false)];
+    vi.mocked(api.setThreadTabOpen).mockResolvedValue({ ...makeThread("thread-a"), tabOpen: false });
+
+    renderHook("thread-a", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+    });
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(api.setThreadTabOpen).toHaveBeenCalledWith("thread-a", false);
+    expect(hookResult.selectedThreadId).toBeNull();
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
+  });
+
+  it("reopens a closed thread tab and selects it", async () => {
+    threadsState.data = [{ ...makeThread("thread-a"), tabOpen: false }, makeThread("thread-b", false)];
+    vi.mocked(api.setThreadTabOpen).mockResolvedValue({ ...makeThread("thread-a"), tabOpen: true });
+
+    renderHook("thread-b", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+    });
+
+    await act(async () => {
+      await hookResult.reopenThread("thread-a");
+    });
+
+    expect(api.setThreadTabOpen).toHaveBeenCalledWith("thread-a", true);
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+
+    // The list refetch reflects the server-side tabOpen change.
+    threadsState.data = [{ ...makeThread("thread-a"), tabOpen: true }, makeThread("thread-b", false)];
+    renderHook("thread-a", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+    });
+
+    expect(hookResult.threads.find((thread) => thread.id === "thread-a")?.tabOpen).toBe(true);
+  });
+
   it("requests repository reviews live refresh when closing a PR/MR thread", async () => {
     const reviewThread = {
       ...makeThread("pr-mr-thread"),
@@ -957,7 +1029,7 @@ describe("useChatSession", () => {
     renderHook("pr-mr-thread", "repo-1");
 
     await act(async () => {
-      await hookResult.closeThread("pr-mr-thread");
+      await hookResult.deleteThreadPermanently("pr-mr-thread");
     });
 
     expect(api.deleteThread).toHaveBeenCalledWith("pr-mr-thread");
@@ -977,7 +1049,7 @@ describe("useChatSession", () => {
     renderHook("thread-a");
 
     await act(async () => {
-      await hookResult.closeThread("thread-a");
+      await hookResult.deleteThreadPermanently("thread-a");
     });
 
     expect(cancelQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot("thread-a") });
@@ -999,7 +1071,7 @@ describe("useChatSession", () => {
     });
 
     await act(async () => {
-      void hookResult.closeThread("thread-a");
+      void hookResult.deleteThreadPermanently("thread-a");
       await Promise.resolve();
     });
 
@@ -1042,7 +1114,7 @@ describe("useChatSession", () => {
     });
 
     await act(async () => {
-      await hookResult.closeThread("thread-a");
+      await hookResult.deleteThreadPermanently("thread-a");
     });
 
     threadsState.data = [];
@@ -1098,7 +1170,7 @@ describe("useChatSession", () => {
     });
 
     await act(async () => {
-      await hookResult.closeThread("thread-a");
+      await hookResult.deleteThreadPermanently("thread-a");
     });
 
     threadsState.data = [];
@@ -1130,7 +1202,7 @@ describe("useChatSession", () => {
     });
 
     await act(async () => {
-      await hookResult.closeThread("thread-a");
+      await hookResult.deleteThreadPermanently("thread-a");
     });
 
     threadsState.data = [];
@@ -1181,7 +1253,7 @@ describe("useChatSession", () => {
     });
 
     await act(async () => {
-      await hookResult.closeThread("thread-a");
+      await hookResult.deleteThreadPermanently("thread-a");
     });
 
     threadsState.data = [];
@@ -1246,7 +1318,7 @@ describe("useChatSession", () => {
     });
 
     await act(async () => {
-      void hookResult.closeThread("thread-a");
+      void hookResult.deleteThreadPermanently("thread-a");
       await Promise.resolve();
     });
 
@@ -1386,7 +1458,7 @@ describe("useChatSession", () => {
     });
 
     await act(async () => {
-      await hookResult.closeThread("thread-a");
+      await hookResult.deleteThreadPermanently("thread-a");
     });
 
     threadsState.data = [];
@@ -1655,7 +1727,7 @@ describe("useChatSession", () => {
     onThreadChange.mockClear();
 
     await act(async () => {
-      await hookResult.closeThread("thread-a");
+      await hookResult.deleteThreadPermanently("thread-a");
     });
 
     threadsState.data = [];
@@ -1905,6 +1977,50 @@ describe("useChatSession", () => {
     renderHook("thread-new");
 
     expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.messageListEmptyState).toBe("new-thread-empty");
+  });
+
+  it("keeps a freshly created empty thread as new-thread-empty after the query list echoes it", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.createAdditionalThread();
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.messageListEmptyState).toBe("new-thread-empty");
+
+    // Server thread list refetch echoes the new (still empty) thread; this clears
+    // the optimistic-tracking flag for thread-new. No snapshot exists yet.
+    threadsState.data = [makeThread("thread-a", true), { ...makeThread("thread-new"), title: "New Thread" }];
+    renderHook("thread-new");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Force a re-render that re-reads the cleared flag (mirrors the real app).
+    act(() => {
+      hookResult.setSelectedThreadId("thread-a");
+    });
+    renderHook("thread-a");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      hookResult.setSelectedThreadId("thread-new");
+    });
+    renderHook("thread-new");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // A brand-new empty thread must not show the loading skeleton.
     expect(hookResult.messageListEmptyState).toBe("new-thread-empty");
   });
 

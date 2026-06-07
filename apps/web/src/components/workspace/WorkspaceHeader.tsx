@@ -7,6 +7,7 @@ import {
   Dot,
   GitBranch,
   GitPullRequestArrow,
+  History,
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
@@ -19,6 +20,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import { debugLog } from "../../lib/debugLog";
+import { formatRelativeTime } from "../../lib/formatRelativeTime";
+import { AgentIcon } from "./composer/AgentModelSelector";
 import { OpenInAppButton } from "./OpenInAppButton";
 import { CreateSessionButton } from "./CreateSessionButton";
 
@@ -50,6 +53,7 @@ type WorkspaceHeaderProps = {
   enableInstalledAppsQuery?: boolean;
   worktreePath: string | null;
   threads: ChatThread[];
+  closedThreads?: ChatThread[];
   terminalTabs?: WorkspaceTerminalTab[];
   activeTerminalTabId?: string | null;
   terminalTabActive?: boolean;
@@ -73,6 +77,8 @@ type WorkspaceHeaderProps = {
   onCreateThread: () => void;
   onCreateTerminal?: () => void;
   onCloseThread: (threadId: string) => void;
+  onReopenThread?: (threadId: string) => void;
+  onDeleteThread?: (threadId: string) => void;
   onCloseTerminalTab?: (terminalTabId: string) => void;
   onRenameThread: (threadId: string, title: string) => Promise<void> | void;
   onSelectTargetBranch?: (branch: string) => void;
@@ -129,6 +135,7 @@ export function WorkspaceHeader({
   enableInstalledAppsQuery = true,
   worktreePath,
   threads,
+  closedThreads = [],
   terminalTabs = [],
   activeTerminalTabId = null,
   terminalTabActive = false,
@@ -152,6 +159,7 @@ export function WorkspaceHeader({
   onCreateThread,
   onCreateTerminal,
   onCloseThread,
+  onReopenThread,
   onCloseTerminalTab,
   onRenameThread,
   onSelectTargetBranch,
@@ -166,6 +174,7 @@ export function WorkspaceHeader({
   const SESSION_TAB_EDGE_INSET_PX = 64;
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [targetBranchFilter, setTargetBranchFilter] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const targetBranchFilterInputRef = useRef<HTMLInputElement | null>(null);
@@ -356,6 +365,56 @@ export function WorkspaceHeader({
     void onRenameThread(threadId, nextTitle);
   }
 
+  const historyPopover = (
+    <Popover open={historyOpen} onOpenChange={setHistoryOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+          aria-label="Closed session history"
+          title="Closed sessions"
+          disabled={disabled}
+        >
+          <History className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" sideOffset={8} className="w-[260px] p-1">
+        {closedThreads.length === 0 ? (
+          <p className="px-2 py-3 text-center text-xs text-muted-foreground">No closed sessions</p>
+        ) : (
+          <ScrollArea className="max-h-64">
+            <div className="flex flex-col">
+              {closedThreads.map((thread) => (
+                <button
+                  key={thread.id}
+                  type="button"
+                  className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent"
+                  title={`Reopen ${thread.title}`}
+                  onClick={() => {
+                    setHistoryOpen(false);
+                    onReopenThread?.(thread.id);
+                  }}
+                >
+                  <AgentIcon
+                    agent={thread.agent ?? "claude"}
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0 text-muted-foreground"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-xs text-foreground">{thread.title}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {formatRelativeTime(thread.updatedAt)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </ScrollArea>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+
   return (
     <section className={cn(
       "workspace-header space-y-1 lg:space-y-1.5",
@@ -508,13 +567,14 @@ export function WorkspaceHeader({
         <div
           ref={sessionTabsScrollRef}
           className={cn(
-            "min-w-0 flex-1 overflow-x-auto overscroll-x-contain scroll-px-16 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
+            "min-w-0 overflow-x-auto overscroll-x-contain scroll-px-16 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
+            desktopApp ? "max-w-full" : "flex-1",
           )}
           role="tablist"
           aria-label="Sessions"
           data-testid="session-tabs-scroll"
         >
-          <div className="flex w-max min-w-full items-center gap-0.5 whitespace-nowrap">
+          <div className={cn("flex w-max items-center gap-0.5 whitespace-nowrap", !desktopApp && "min-w-full")}>
             {threadTabs.map(({ thread, pending }) => {
               const isSelected = thread.id === selectedThreadId && !reviewTabActive && !activeFilePath && !terminalTabActive;
               const isAnyThreadClosing = closingThreadId !== null;
@@ -726,7 +786,10 @@ export function WorkspaceHeader({
           terminalDisabled={createTerminalDisabled ?? disabled}
           onCreateThread={onCreateThread}
           onCreateTerminal={onCreateTerminal ?? onCreateThread}
+          className="shrink-0"
         />
+
+        <div className="ml-auto shrink-0">{historyPopover}</div>
       </div>
     </section>
   );

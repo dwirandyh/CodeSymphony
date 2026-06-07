@@ -13,6 +13,12 @@ const interruptTerminalInputSchema = z.object({
 const killTerminalInputSchema = z.object({
     sessionId: z.string().min(1),
 });
+const createTerminalTabInputSchema = z.object({
+    worktreeId: z.string().min(1),
+});
+const listTerminalTabsQuerySchema = z.object({
+    worktreeId: z.string().min(1).optional(),
+});
 
 export function handleTerminalWebSocket(
     app: FastifyInstance,
@@ -154,6 +160,36 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
         return reply.send({
             data: app.terminalService.listSessions(),
         });
+    });
+
+    app.get("/terminal/tabs", async (request, reply) => {
+        const query = listTerminalTabsQuerySchema.parse(request.query ?? {});
+        return reply.send({
+            data: app.terminalService.listTabs(query.worktreeId),
+        });
+    });
+
+    app.post("/terminal/tabs", async (request, reply) => {
+        try {
+            const input = createTerminalTabInputSchema.parse(request.body ?? {});
+            const tab = app.terminalService.createTab(input.worktreeId);
+            app.workspaceEventHub.emit("terminal.tab.created", { worktreeId: tab.worktreeId });
+            return reply.code(201).send({ data: tab });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to create terminal tab";
+            return reply.code(400).send({ error: message });
+        }
+    });
+
+    app.delete("/terminal/tabs/:tabId", async (request, reply) => {
+        const { tabId } = request.params as { tabId: string };
+        const tab = app.terminalService.closeTab(tabId);
+        if (!tab) {
+            return reply.code(404).send({ error: "Terminal tab not found" });
+        }
+        await app.filesystemService.cleanupTerminalDropFiles(tab.sessionId);
+        app.workspaceEventHub.emit("terminal.tab.closed", { worktreeId: tab.worktreeId });
+        return reply.code(204).send();
     });
 
     app.post("/terminal/run", async (request, reply) => {

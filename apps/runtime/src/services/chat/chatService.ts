@@ -2707,10 +2707,17 @@ export function createChatService(deps: RuntimeDeps) {
               if (messageCount === 0) {
                 const updatedThread = await deps.prisma.chatThread.update({
                   where: { id: existingThread.id },
-                  data: buildSelectionUpdate(selection),
+                  data: { ...buildSelectionUpdate(selection), tabOpen: true },
                 });
                 return mapChatThread(updatedThread, isThreadActive(updatedThread.id));
               }
+            }
+            if (!existingThread.tabOpen) {
+              const reopenedThread = await deps.prisma.chatThread.update({
+                where: { id: existingThread.id },
+                data: { tabOpen: true },
+              });
+              return mapChatThread(reopenedThread, isThreadActive(reopenedThread.id));
             }
             return mapChatThread(existingThread, isThreadActive(existingThread.id));
           }
@@ -2791,6 +2798,26 @@ export function createChatService(deps: RuntimeDeps) {
           title: normalizedTitle,
           titleEditedManually: true,
         },
+      });
+
+      return mapChatThread(updatedThread, isThreadActive(updatedThread.id));
+    },
+
+    async setThreadTabOpen(threadId: string, open: boolean): Promise<ChatThread> {
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+      });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      if (thread.tabOpen === open) {
+        return mapChatThread(thread, isThreadActive(thread.id));
+      }
+
+      const updatedThread = await deps.prisma.chatThread.update({
+        where: { id: threadId },
+        data: { tabOpen: open },
       });
 
       return mapChatThread(updatedThread, isThreadActive(updatedThread.id));

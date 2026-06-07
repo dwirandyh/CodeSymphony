@@ -83,6 +83,7 @@ export function mapChatThread(thread: DbChatThread, isActive = false): ChatThrea
     permissionMode: thread.permissionMode,
     mode: thread.mode,
     titleEditedManually: thread.titleEditedManually,
+    tabOpen: thread.tabOpen,
     agent: thread.agent,
     model: thread.model,
     modelProviderId: thread.modelProviderId,

@@ -35,6 +35,7 @@ export function toPlainChatThread(thread: ChatThread): ChatThread {
     permissionMode: thread.permissionMode,
     mode: thread.mode,
     titleEditedManually: thread.titleEditedManually,
+    tabOpen: thread.tabOpen ?? true,
     agent,
     model: thread.model ?? resolveAgentDefaultModel(agent),
     modelProviderId: thread.modelProviderId ?? null,

@@ -85,6 +85,7 @@ describe("chat routes", () => {
     deleteThread: vi.fn(),
     getThreadById: vi.fn(),
     renameThreadTitle: vi.fn(),
+    setThreadTabOpen: vi.fn(),
     updateThreadMode: vi.fn(),
     updateThreadPermissionMode: vi.fn(),
     updateThreadAgentSelection: vi.fn(),
@@ -273,6 +274,50 @@ describe("chat routes", () => {
         method: "PATCH",
         url: "/api/threads/t1/title",
         payload: { title: "" },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe("POST /api/threads/:id/tab", () => {
+    it("closes a thread tab and broadcasts thread.updated", async () => {
+      mockChatService.setThreadTabOpen.mockResolvedValue({ id: "t1", worktreeId: "w1", title: "Test", mode: "default", permissionMode: "default", tabOpen: false });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/threads/t1/tab",
+        payload: { open: false },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.setThreadTabOpen).toHaveBeenCalledWith("t1", false);
+      expect(mockWorkspaceEventHub.emit).toHaveBeenCalledWith("thread.updated", expect.objectContaining({ threadId: "t1" }));
+    });
+
+    it("reopens a thread tab", async () => {
+      mockChatService.setThreadTabOpen.mockResolvedValue({ id: "t1", worktreeId: "w1", title: "Test", mode: "default", permissionMode: "default", tabOpen: true });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/threads/t1/tab",
+        payload: { open: true },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.setThreadTabOpen).toHaveBeenCalledWith("t1", true);
+    });
+
+    it("returns 404 when thread is missing", async () => {
+      mockChatService.setThreadTabOpen.mockRejectedValue(new Error("Chat thread not found"));
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/threads/t1/tab",
+        payload: { open: false },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns 400 on invalid payload", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/threads/t1/tab",
+        payload: {},
       });
       expect(res.statusCode).toBe(400);
     });
