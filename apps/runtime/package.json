@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "prisma generate && prisma migrate deploy && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && bun --watch --env-file=.env src/index.ts",
     "start": "prisma generate && prisma migrate deploy && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && bun --env-file=.env src/index.ts",
-    "build": "prisma generate && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && if [ ! -d dist ]; then rm -f tsconfig.tsbuildinfo; fi; tsc -p tsconfig.json",
+    "build": "prisma generate && bun run --filter @codesymphony/shared-types build && bun run --filter @codesymphony/chat-timeline-core build && if [ ! -d dist ]; then rm -f tsconfig.tsbuildinfo; fi; tsc -p tsconfig.json && mkdir -p dist/services && cp src/services/ptyHost.mjs dist/services/ptyHost.mjs",
     "test": "DATABASE_URL=\"file:./test.db\" prisma migrate deploy && vitest run --config vitest.config.ts",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "lint": "tsc --noEmit -p tsconfig.json",
@@ -21,7 +21,8 @@
     "startup:metrics:reset": "bun --env-file=.env src/scripts/resetDebugLog.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.19.1",
@@ -34,6 +35,7 @@
     "@opencode-ai/sdk": "^1.14.20",
     "@prisma/client": "^6.4.1",
     "fastify": "^5.2.1",
+    "node-pty": "1.1.0",
     "prisma": "^6.4.1",
     "ws": "^8.18.3",
     "zod": "^4.0.0"

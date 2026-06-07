@@ -1,5 +1,11 @@
+import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
+import { ImageAddon } from "@xterm/addon-image";
+import { LigaturesAddon } from "@xterm/addon-ligatures";
+import { ProgressAddon } from "@xterm/addon-progress";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import type { IDisposable, ILink } from "@xterm/xterm";
@@ -15,6 +21,13 @@ const MIN_VALID_TERMINAL_ROWS = 2;
 const PARKED_TERMINAL_CONTAINER_ID = "cs-terminal-runtime-parking";
 const MAX_TERMINAL_TITLE_LENGTH = 32;
 const FULLSCREEN_REDRAW_SEQUENCE_PATTERN = /\x1b\[\?(?:1049[hl]|2026l)/u;
+// Entering the alternate screen buffer is how full-screen TUIs (opencode,
+// vim, etc.) start. Some TUIs (opentui) defer their first real frame until a
+// terminal capability query times out (~seconds). The reconnect path already
+// works around stuck rendering with a resize "nudge"; mirror that for live
+// alt-screen entry so the first frame paints immediately instead of after the
+// TUI's query timeout (the symptom users hit as "stuck until refresh").
+const ALT_SCREEN_ENTER_PATTERN = /\x1b\[\?1049h/u;
 
 const XTERM_THEME: Record<string, string> = {
   background: "#0f1218",
@@ -97,6 +110,7 @@ type TerminalRuntimeEntry = {
   terminal: Terminal;
   fitAddon: FitAddon;
   searchAddon: SearchAddon;
+  optionalAddonsDispose: () => void;
   wrapper: HTMLDivElement;
   webSocket: WebSocket | null;
   reconnectTimerId: number | null;
@@ -294,6 +308,7 @@ function shouldRefreshAfterTerminalWrite(chunk: string): boolean {
 }
 
 function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
+  const entersAltScreen = ALT_SCREEN_ENTER_PATTERN.test(chunk);
   if (!shouldRefreshAfterTerminalWrite(chunk)) {
     entry.terminal.write(chunk);
     return;
@@ -305,6 +320,9 @@ function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
     }
 
     entry.terminal.refresh(0, Math.max(0, entry.terminal.rows - 1));
+    if (entersAltScreen) {
+      scheduleReconnectRedrawNudge(entry);
+    }
   });
 }
 
@@ -675,6 +693,73 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
   };
 }
 
+// Once WebGL fails for one terminal, skip it for the rest of the session
+// (the VS Code / superset pattern): a GPU context loss usually means the
+// environment can't support WebGL at all.
+let suggestedRendererType: "webgl" | "dom" | undefined;
+
+// Load the optional, render-quality addons onto an already-opened terminal.
+// WebGL is deferred to the next animation frame so it does not race xterm's
+// post-open viewport sync, and falls back to the DOM renderer if it throws or
+// loses its context. Returns a cleanup function.
+function loadOptionalAddons(terminal: Terminal, onWebglContextLoss?: () => void): () => void {
+  let disposed = false;
+  let webglAddon: WebglAddon | null = null;
+
+  terminal.loadAddon(new ClipboardAddon());
+
+  const unicode11 = new Unicode11Addon();
+  terminal.loadAddon(unicode11);
+  terminal.unicode.activeVersion = "11";
+
+  terminal.loadAddon(new ImageAddon());
+  terminal.loadAddon(new ProgressAddon());
+
+  // Ligatures must load before WebGL so the WebGL texture atlas picks up the
+  // font-feature-settings. The beta addon is browser-safe: it uses the Font
+  // Access API (with a static fallback ligature set) instead of the old
+  // Node-only font-finder, so it no longer crashes in a plain browser.
+  terminal.loadAddon(new LigaturesAddon());
+
+  const rafId = window.requestAnimationFrame(() => {
+    if (disposed || suggestedRendererType === "dom") {
+      return;
+    }
+    try {
+      webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        // Disposing the WebGL addon makes xterm fall back to the DOM renderer,
+        // but the canvas it leaves behind is blank until something repaints.
+        // A plain refresh() is enough for normal scrollback, but full-screen
+        // TUIs (opencode/vim) sit in the alternate screen buffer and only
+        // redraw on a resize. Hand off to the caller so it can run the same
+        // resize "nudge" used on reconnect; otherwise the terminal stays blank
+        // until the user manually resizes or refreshes the page.
+        suggestedRendererType = "dom";
+        webglAddon?.dispose();
+        webglAddon = null;
+        terminal.refresh(0, Math.max(0, terminal.rows - 1));
+        onWebglContextLoss?.();
+      });
+      terminal.loadAddon(webglAddon);
+    } catch {
+      suggestedRendererType = "dom";
+      webglAddon = null;
+    }
+  });
+
+  return () => {
+    disposed = true;
+    window.cancelAnimationFrame(rafId);
+    try {
+      webglAddon?.dispose();
+    } catch {
+      // already disposed
+    }
+    webglAddon = null;
+  };
+}
+
 function createTerminalRuntime(
   sessionId: string,
   cwd: string | null,
@@ -688,7 +773,10 @@ function createTerminalRuntime(
     cursorBlink: true,
     fontSize: 13,
     fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
-    lineHeight: 1.3,
+    // lineHeight must stay at 1.0: any value > 1 inserts vertical gaps between
+    // rows, which breaks box-drawing/TUI characters (e.g. opencode's vertical
+    // rules render as dashed instead of continuous).
+    lineHeight: 1.0,
     theme: XTERM_THEME,
     allowProposedApi: true,
     scrollback: 5000,
@@ -702,6 +790,15 @@ function createTerminalRuntime(
   terminal.loadAddon(searchAddon);
   terminal.loadAddon(webLinksAddon);
   terminal.open(wrapper);
+  // The WebGL context-loss handler runs long after `entry` is created (next
+  // animation frame at the earliest), so it is safe to reference it lazily
+  // here. On loss we reuse the reconnect redraw nudge so full-screen TUIs
+  // repaint into the DOM renderer instead of staying blank.
+  const optionalAddonsDispose = loadOptionalAddons(terminal, () => {
+    if (!entry.disposed) {
+      scheduleReconnectRedrawNudge(entry);
+    }
+  });
   const defaultTitle = getDefaultTerminalTitle(sessionId, cwd);
   let commandBuffer = "";
 
@@ -711,6 +808,7 @@ function createTerminalRuntime(
     terminal,
     fitAddon,
     searchAddon,
+    optionalAddonsDispose,
     wrapper,
     webSocket: null,
     reconnectTimerId: null,
@@ -1029,6 +1127,7 @@ function createTerminalRuntime(
       textarea?.removeEventListener("beforeinput", handleBeforeInput);
       keyDisposable.dispose();
       titleDisposable.dispose();
+      entry.optionalAddonsDispose();
       wrapper.remove();
       terminal.dispose();
       terminalRuntimeRegistry.delete(sessionId);

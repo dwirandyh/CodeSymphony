@@ -1696,6 +1696,48 @@ describe("Composer", () => {
     expect(payload.content).toContain("alpha");
   });
 
+  it("still attaches Electron drops after a dragenter registers the document reset listener", async () => {
+    // Exercises the full dragenter -> drop sequence (the reset listener only
+    // mounts once isDragOver is true). NOTE: this does not fully reproduce the
+    // original browser bug — there, a capture-phase document "drop" listener
+    // reset the drag state and unmounted the overlay that was the event target
+    // mid-dispatch, which halts propagation so React's onDrop never fired.
+    // jsdom keeps dispatching to a detached target, so it cannot reproduce that
+    // teardown. The fix (bubble-phase listener) was verified against a real
+    // Electron build via CDP Input.dispatchDragEvent.
+    vi.spyOn(api, "readLocalAttachments").mockResolvedValue([{
+      path: "/tmp/seq.txt",
+      filename: "seq.txt",
+      mimeType: "text/plain",
+      sizeBytes: 5,
+      content: "hello",
+    }]);
+    const getFilePaths = vi.fn(() => ["/tmp/seq.txt"]);
+    installElectronBridge(getFilePaths);
+
+    renderComposer();
+    const dropTarget = getDragDropTarget();
+    const file = new File(["hello"], "seq.txt", { type: "text/plain" });
+
+    const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnterEvent, "dataTransfer", { value: buildFileDragData(file), configurable: true });
+    await reactAct(async () => {
+      dropTarget.dispatchEvent(dragEnterEvent);
+    });
+    expect(container.textContent).toContain("Drop files here");
+
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", { value: buildFileDragData(file), configurable: true });
+    await reactAct(async () => {
+      dropTarget.dispatchEvent(dropEvent);
+    });
+    await flushMicrotasks();
+
+    expect(getFilePaths).toHaveBeenCalledWith([file]);
+    expect(api.readLocalAttachments).toHaveBeenCalledWith(["/tmp/seq.txt"]);
+    expect(container.textContent).toContain("seq.txt");
+  });
+
   it("handles Electron drag/drop attachments through bridged file paths", async () => {
     vi.spyOn(api, "readLocalAttachments").mockResolvedValue([{
       path: "/tmp/dropped.txt",

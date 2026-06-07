@@ -195,6 +195,11 @@ bun build "${WORKSPACE_ROOT}/apps/runtime/src/index.ts" \
   --packages=external \
   --outfile="${BUNDLE_DIR}/dist/index.js"
 
+# The PTY sidecar runs as a separate Node process (node-pty cannot load under
+# Bun). It is a standalone .mjs that bun build does not bundle, so copy it next
+# to the bundled entry — ptyBackend resolves it relative to import.meta.url.
+cp "${WORKSPACE_ROOT}/apps/runtime/src/services/ptyHost.mjs" "${BUNDLE_DIR}/dist/ptyHost.mjs"
+
 echo "=== Copying terminal zsh bootstrap ==="
 rm -rf "${BUNDLE_DIR}/terminal-zsh"
 mkdir -p "${BUNDLE_DIR}/terminal-zsh"

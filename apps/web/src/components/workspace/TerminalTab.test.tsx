@@ -9,6 +9,7 @@ let terminalDataHandler: ((data: string) => void) | null = null;
 let terminalKeyHandler: ((event: { key: string; domEvent: KeyboardEvent }) => void) | null = null;
 let terminalTitleHandler: ((title: string) => void) | null = null;
 let registeredLinkProvider: ILinkProvider | null = null;
+let webglContextLossHandler: (() => void) | null = null;
 let mockTextarea: HTMLTextAreaElement;
 
 function act<T>(callback: () => T): T {
@@ -65,6 +66,9 @@ const mockTerminal = {
       getLine: vi.fn(() => null),
     },
   },
+  unicode: {
+    activeVersion: "11",
+  },
 };
 
 const mockFitAddon = {
@@ -86,6 +90,35 @@ vi.mock("@xterm/addon-search", () => ({
 
 vi.mock("@xterm/addon-web-links", () => ({
   WebLinksAddon: vi.fn(),
+}));
+
+vi.mock("@xterm/addon-clipboard", () => ({
+  ClipboardAddon: vi.fn(),
+}));
+
+vi.mock("@xterm/addon-image", () => ({
+  ImageAddon: vi.fn(),
+}));
+
+vi.mock("@xterm/addon-progress", () => ({
+  ProgressAddon: vi.fn(),
+}));
+
+vi.mock("@xterm/addon-unicode11", () => ({
+  Unicode11Addon: vi.fn(),
+}));
+
+vi.mock("@xterm/addon-ligatures", () => ({
+  LigaturesAddon: vi.fn(),
+}));
+
+vi.mock("@xterm/addon-webgl", () => ({
+  WebglAddon: vi.fn().mockImplementation(() => ({
+    onContextLoss: vi.fn((handler: () => void) => {
+      webglContextLossHandler = handler;
+    }),
+    dispose: vi.fn(),
+  })),
 }));
 
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
@@ -164,6 +197,7 @@ beforeEach(() => {
   terminalKeyHandler = null;
   terminalTitleHandler = null;
   registeredLinkProvider = null;
+  webglContextLossHandler = null;
   MockWebSocket.instances = [];
   writeTerminalDropFiles.mockReset();
   mockTerminal.buffer.active.getLine.mockReturnValue(null);
@@ -192,7 +226,10 @@ describe("TerminalTab", () => {
     });
 
     expect(mockTerminal.open).toHaveBeenCalledTimes(1);
-    expect(mockTerminal.loadAddon).toHaveBeenCalledTimes(3);
+    // 3 core addons (fit, search, web-links) + 5 synchronous optional addons
+    // (clipboard, unicode11, image, progress, ligatures). WebGL loads in a
+    // deferred animation frame, so it is not counted here.
+    expect(mockTerminal.loadAddon).toHaveBeenCalledTimes(8);
   });
 
   it("opens a new runtime directly in the visible container instead of the parking container", () => {
@@ -301,6 +338,74 @@ describe("TerminalTab", () => {
 
       expect(MockWebSocket.instances[0]?.send.mock.calls.map(([message]) => message)).toEqual([
         JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+      ]);
+    } finally {
+      if (clientWidthDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", clientWidthDescriptor);
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor);
+      }
+    }
+  });
+
+  it("recovers fullscreen TUIs when the WebGL renderer context is lost", async () => {
+    vi.useFakeTimers();
+    const clientWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => 1200,
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get: () => 720,
+    });
+
+    try {
+      act(() => {
+        root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+      });
+
+      // Flush the deferred animation frame that loads the WebGL addon so its
+      // context-loss handler is registered, plus the open-time fit/redraw
+      // nudges so they do not bleed into the loss assertions below.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+
+      expect(webglContextLossHandler).toBeTruthy();
+
+      const sendsBeforeLoss = MockWebSocket.instances[0]?.send.mock.calls.length ?? 0;
+      mockTerminal.refresh.mockClear();
+
+      // Simulate the GPU dropping the terminal's WebGL context. The terminal
+      // canvas goes blank until the DOM renderer repaints, which only happens
+      // for fullscreen TUIs (alt-screen) after a resize nudge.
+      act(() => {
+        webglContextLossHandler?.();
+      });
+
+      // Immediate repaint attempt with the DOM renderer.
+      expect(mockTerminal.refresh).toHaveBeenCalledWith(0, 23);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+
+      const sendsAfterLoss = MockWebSocket.instances[0]?.send.mock.calls
+        .slice(sendsBeforeLoss)
+        .map(([message]) => message);
+
+      // A resize nudge (shrink then restore) forces the alt-screen TUI to
+      // redraw into the freshly-active DOM renderer. The reconnect nudge runs
+      // twice (at 120ms and 360ms), so the shrink/restore pair appears twice.
+      expect(sendsAfterLoss).toEqual([
         JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
         JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
         JSON.stringify({ type: "resize", cols: 79, rows: 24 }),

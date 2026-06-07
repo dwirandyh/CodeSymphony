@@ -223,6 +223,8 @@ function spawnRuntimeDev(port) {
     RUNTIME_PORT: String(port),
     CODESYMPHONY_DEBUG_LOG_PATH: path.join(workspaceRoot(), "apps", "runtime", "debug.log"),
     PATH: buildRuntimePathEnv(),
+    // See spawnRuntimeProd: the PTY sidecar runs as Node via Electron's binary.
+    CODESYMPHONY_NODE_EXECUTABLE: process.execPath,
   };
   for (const [envName, binaryName] of [
     ["CODEX_BINARY_PATH", "codex"],
@@ -275,6 +277,11 @@ function spawnRuntimeProd(port) {
     CODESYMPHONY_TERMINAL_ZSHRC_TEMPLATE: path.join(bundleDir, "terminal-zsh", ".zshrc"),
     WEB_DIST_PATH: path.join(bundleDir, "web-dist"),
     PATH: buildRuntimePathEnv(),
+    // The runtime spawns PTYs through a Node sidecar (node-pty cannot load
+    // under Bun). Electron's own binary runs as Node when launched with
+    // ELECTRON_RUN_AS_NODE=1, so point the sidecar at it — no extra Node
+    // binary needs to be bundled.
+    CODESYMPHONY_NODE_EXECUTABLE: process.execPath,
   };
   for (const [envName, binaryName] of [
     ["CLAUDE_CODE_EXECUTABLE", "claude"],

@@ -557,12 +557,19 @@ function ComposerContent({
     };
 
     window.addEventListener("blur", resetComposerDragState);
-    document.addEventListener("drop", resetComposerDragState, true);
+    // Use bubble phase (not capture) for "drop": a capture-phase listener fires
+    // before React's onDrop and tears down the drop overlay/state, which
+    // prevents the composer's own drop handler from ever running (notably for
+    // real OS file drags in the desktop shell). React's drop handlers already
+    // reset drag state for in-composer drops; this listener only needs to clear
+    // a lingering overlay when the drop lands elsewhere, so running after React
+    // is correct.
+    document.addEventListener("drop", resetComposerDragState, false);
     document.addEventListener("dragend", resetComposerDragState, true);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("blur", resetComposerDragState);
-      document.removeEventListener("drop", resetComposerDragState, true);
+      document.removeEventListener("drop", resetComposerDragState, false);
       document.removeEventListener("dragend", resetComposerDragState, true);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };

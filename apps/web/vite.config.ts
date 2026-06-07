@@ -39,6 +39,12 @@ export default defineConfig(({ mode }) => {
     plugins,
     resolve: {
       alias: {
+        "node:diagnostics_channel": fileURLToPath(
+          new URL("./src/lib/diagnosticsChannelStub.ts", import.meta.url),
+        ),
+        "diagnostics_channel": fileURLToPath(
+          new URL("./src/lib/diagnosticsChannelStub.ts", import.meta.url),
+        ),
         "@codesymphony/chat-timeline-core": fileURLToPath(
           new URL("../../packages/chat-timeline-core/src/index.ts", import.meta.url),
         ),
