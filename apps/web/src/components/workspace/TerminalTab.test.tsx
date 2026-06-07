@@ -8,6 +8,7 @@ import type { TerminalTabHandle } from "./TerminalTab";
 let terminalDataHandler: ((data: string) => void) | null = null;
 let terminalKeyHandler: ((event: { key: string; domEvent: KeyboardEvent }) => void) | null = null;
 let terminalTitleHandler: ((title: string) => void) | null = null;
+let terminalBufferChangeHandler: ((buffer: { type: "normal" | "alternate" }) => void) | null = null;
 let registeredLinkProvider: ILinkProvider | null = null;
 let webglContextLossHandler: (() => void) | null = null;
 let mockTextarea: HTMLTextAreaElement;
@@ -65,6 +66,10 @@ const mockTerminal = {
       viewportY: 0,
       getLine: vi.fn(() => null),
     },
+    onBufferChange: vi.fn((handler: (buffer: { type: "normal" | "alternate" }) => void) => {
+      terminalBufferChangeHandler = handler;
+      return { dispose: vi.fn() };
+    }),
   },
   unicode: {
     activeVersion: "11",
@@ -196,6 +201,7 @@ beforeEach(() => {
   terminalDataHandler = null;
   terminalKeyHandler = null;
   terminalTitleHandler = null;
+  terminalBufferChangeHandler = null;
   registeredLinkProvider = null;
   webglContextLossHandler = null;
   MockWebSocket.instances = [];
@@ -516,6 +522,46 @@ describe("TerminalTab", () => {
 
     expect(MockWebSocket.instances[0]?.send).toHaveBeenCalledWith("ls");
     expect(mockTerminal.focus).toHaveBeenCalled();
+  });
+
+  it("repaints when a full-screen TUI switches to the alternate screen buffer", async () => {
+    // Regression: opencode/vim entry was previously detected by regex-matching
+    // raw WebSocket chunks for \x1b[?1049h. Frame splitting made that miss and
+    // the TUI stayed blank until a manual resize. Detection now rides xterm's
+    // onBufferChange, so an alternate-buffer switch must force a repaint.
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    mockTerminal.refresh.mockClear();
+
+    act(() => {
+      terminalBufferChangeHandler?.({ type: "alternate" });
+    });
+
+    expect(mockTerminal.refresh).toHaveBeenCalled();
+  });
+
+  it("does not repaint when the buffer switches back to normal", async () => {
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    mockTerminal.refresh.mockClear();
+
+    act(() => {
+      terminalBufferChangeHandler?.({ type: "normal" });
+    });
+
+    expect(mockTerminal.refresh).not.toHaveBeenCalled();
   });
 
   it("transforms typed input before sending when requested", async () => {

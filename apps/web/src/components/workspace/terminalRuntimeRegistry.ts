@@ -117,6 +117,8 @@ type TerminalRuntimeEntry = {
   fitTimerIds: number[];
   fitAnimationFrameIds: number[];
   redrawTimerIds: number[];
+  diagFrameCount: number;
+  diagByteCount: number;
   lastResize: { cols: number; rows: number } | null;
   connected: boolean;
   title: string;
@@ -308,7 +310,10 @@ function shouldRefreshAfterTerminalWrite(chunk: string): boolean {
 }
 
 function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
-  const entersAltScreen = ALT_SCREEN_ENTER_PATTERN.test(chunk);
+  // Alternate-screen entry is handled by terminal.buffer.onBufferChange (set up
+  // in createTerminalRuntime), which is immune to WebSocket frame splitting.
+  // Here we only force a repaint after explicit redraw sequences (alt-screen
+  // exit / synchronized-update end) so scrollback TUIs repaint immediately.
   if (!shouldRefreshAfterTerminalWrite(chunk)) {
     entry.terminal.write(chunk);
     return;
@@ -320,9 +325,6 @@ function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
     }
 
     entry.terminal.refresh(0, Math.max(0, entry.terminal.rows - 1));
-    if (entersAltScreen) {
-      scheduleReconnectRedrawNudge(entry);
-    }
   });
 }
 
@@ -629,6 +631,12 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
     }
 
     setConnected(entry, true);
+    debugLog("terminal.render", "ws.open", {
+      sessionId: entry.sessionId,
+      cols: entry.terminal.cols,
+      rows: entry.terminal.rows,
+      rendererType: suggestedRendererType ?? "webgl",
+    });
     fitTerminalRuntime(entry);
     scheduleFitBurst(entry);
     scheduleReconnectRedrawNudge(entry);
@@ -640,6 +648,18 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
     }
 
     const chunk = event.data as string;
+    entry.diagFrameCount += 1;
+    entry.diagByteCount += chunk.length;
+    if (entry.diagFrameCount <= 3 || entry.diagFrameCount % 25 === 0) {
+      debugLog("terminal.render", "ws.message", {
+        sessionId: entry.sessionId,
+        frame: entry.diagFrameCount,
+        totalBytes: entry.diagByteCount,
+        chunkBytes: chunk.length,
+        entersAltScreen: ALT_SCREEN_ENTER_PATTERN.test(chunk),
+        rendererType: suggestedRendererType ?? "webgl",
+      });
+    }
     try {
       const parsed = JSON.parse(chunk) as Record<string, unknown>;
       if (
@@ -736,15 +756,20 @@ function loadOptionalAddons(terminal: Terminal, onWebglContextLoss?: () => void)
         // resize "nudge" used on reconnect; otherwise the terminal stays blank
         // until the user manually resizes or refreshes the page.
         suggestedRendererType = "dom";
+        debugLog("terminal.render", "webgl.contextLoss", {});
         webglAddon?.dispose();
         webglAddon = null;
         terminal.refresh(0, Math.max(0, terminal.rows - 1));
         onWebglContextLoss?.();
       });
       terminal.loadAddon(webglAddon);
-    } catch {
+      debugLog("terminal.render", "webgl.loaded", {});
+    } catch (error) {
       suggestedRendererType = "dom";
       webglAddon = null;
+      debugLog("terminal.render", "webgl.loadFailed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   });
 
@@ -815,6 +840,8 @@ function createTerminalRuntime(
     fitTimerIds: [],
     fitAnimationFrameIds: [],
     redrawTimerIds: [],
+    diagFrameCount: 0,
+    diagByteCount: 0,
     lastResize: null,
     connected: false,
     title: defaultTitle,
@@ -914,6 +941,26 @@ function createTerminalRuntime(
       commandBuffer += domEvent.key;
     }
   });
+  // Detect alternate-screen entry at the parser level instead of regex-matching
+  // raw WebSocket chunks: the `\x1b[?1049h` sequence can be split across frames,
+  // which made the chunk regex miss it and left full-screen TUIs (opencode/vim)
+  // blank until a manual resize. onBufferChange fires once xterm's parser has
+  // switched buffers, regardless of how the bytes were framed.
+  const bufferChangeDisposable = terminal.buffer.onBufferChange((buffer) => {
+    if (entry.disposed || buffer.type !== "alternate") {
+      return;
+    }
+    debugLog("terminal.render", "altScreen.enter", {
+      sessionId: entry.sessionId,
+      cols: terminal.cols,
+      rows: terminal.rows,
+      rendererType: suggestedRendererType ?? "webgl",
+      via: "onBufferChange",
+    });
+    terminal.refresh(0, Math.max(0, terminal.rows - 1));
+    scheduleReconnectRedrawNudge(entry);
+  });
+
   const titleDisposable = terminal.onTitleChange((title) => {
     setTerminalTitle(entry, title);
   });
@@ -1127,6 +1174,7 @@ function createTerminalRuntime(
       textarea?.removeEventListener("beforeinput", handleBeforeInput);
       keyDisposable.dispose();
       titleDisposable.dispose();
+      bufferChangeDisposable.dispose();
       entry.optionalAddonsDispose();
       wrapper.remove();
       terminal.dispose();

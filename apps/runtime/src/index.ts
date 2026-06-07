@@ -20,6 +20,7 @@ import { createChatService } from "./services/chat/index.js";
 import { createSystemService } from "./services/systemService.js";
 import { createFileService } from "./services/fileService.js";
 import { createTerminalService } from "./services/terminalService.js";
+import { setPtyDiagnosticsSink } from "./services/ptyBackend.js";
 import { createLogService } from "./services/logService.js";
 import { createFilesystemService } from "./services/filesystemService.js";
 import { createScriptStreamService } from "./services/scriptStreamService.js";
@@ -39,7 +40,7 @@ import { registerSystemRoutes } from "./routes/system.js";
 import { registerTerminalRoutes } from "./routes/terminal.js";
 import { registerLogRoutes } from "./routes/logs.js";
 import { registerFilesystemRoutes } from "./routes/filesystem.js";
-import { registerDebugRoutes, resolveDatabaseInfo } from "./routes/debug.js";
+import { appendRuntimeDebugLog, registerDebugRoutes, resolveDatabaseInfo } from "./routes/debug.js";
 import { registerModelRoutes } from "./routes/models.js";
 import { registerWorkspaceEventRoutes } from "./routes/workspaceEvents.js";
 import { registerWorkspaceLiveSocketRoutes } from "./routes/workspaceLiveSocket.js";
@@ -96,7 +97,14 @@ function createApp() {
   const worktreeService = createWorktreeService(prisma, { workspaceEventHub });
   const systemService = createSystemService();
   const fileService = createFileService();
-  const terminalService = createTerminalService();
+  const terminalService = createTerminalService(prisma);
+  setPtyDiagnosticsSink((event) => {
+    appendRuntimeDebugLog({
+      source: "diagnose.pty",
+      message: event.kind,
+      data: { id: event.id ?? null, pid: event.pid ?? null, detail: event.detail ?? null },
+    });
+  });
   const logService = createLogService();
   const filesystemService = createFilesystemService();
   const scriptStreamService = createScriptStreamService();

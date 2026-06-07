@@ -18,7 +18,6 @@ export type WorkspaceTerminalTabsState = {
   tabs: WorkspaceTerminalTab[];
   activeTabId: string | null;
   visible: boolean;
-  nextOrdinal: number;
 };
 
 type PersistedWorkspaceTerminalUiState = {
@@ -32,7 +31,6 @@ const EMPTY_TERMINAL_TABS_STATE: WorkspaceTerminalTabsState = {
   tabs: [],
   activeTabId: null,
   visible: false,
-  nextOrdinal: 1,
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -107,7 +105,6 @@ function sanitizeTerminalTabsState(value: unknown): WorkspaceTerminalTabsState |
     tabs,
     activeTabId: activeTabId && tabs.some((tab) => tab.id === activeTabId) ? activeTabId : null,
     visible: sanitizeBoolean(value.visible, false),
-    nextOrdinal: Math.max(1, sanitizeNonNegativeInteger(value.nextOrdinal, 1)),
   };
 }
 
@@ -135,24 +132,6 @@ function sanitizeRecord<T>(
   return result;
 }
 
-function resolveNextTerminalOrdinal(tabs: WorkspaceTerminalTab[], fallback: number): number {
-  let highestOrdinal = 0;
-
-  for (const tab of tabs) {
-    const match = /^Terminal(?: (\d+))?$/u.exec(tab.title);
-    if (!match) {
-      continue;
-    }
-
-    const ordinal = match[1] ? Number(match[1]) : 1;
-    if (Number.isInteger(ordinal) && ordinal > highestOrdinal) {
-      highestOrdinal = ordinal;
-    }
-  }
-
-  return Math.max(fallback, highestOrdinal + 1, 1);
-}
-
 export function reconcileWorkspaceTerminalTabs(input: {
   current: WorkspaceTerminalTabsState;
   serverTabs: TerminalTab[];
@@ -178,13 +157,11 @@ export function reconcileWorkspaceTerminalTabs(input: {
     : orderedTabs[0]?.id ?? null;
 
   const visible = current.visible && orderedTabs.length > 0;
-  const nextOrdinal = resolveNextTerminalOrdinal(orderedTabs, current.nextOrdinal);
 
   if (
     tabsUnchanged
     && activeTabId === current.activeTabId
     && visible === current.visible
-    && nextOrdinal === current.nextOrdinal
   ) {
     return current;
   }
@@ -193,7 +170,43 @@ export function reconcileWorkspaceTerminalTabs(input: {
     tabs: orderedTabs,
     activeTabId,
     visible,
-    nextOrdinal,
+  };
+}
+
+export type CloseWorkspaceTerminalTabResult = {
+  state: WorkspaceTerminalTabsState;
+  sessionIdToKill: string | null;
+};
+
+// Close a terminal tab and report which PTY session the caller must kill
+// server-side. The session id is derived synchronously from the passed-in
+// state — never inside a React state updater, whose body runs later during
+// render. Reading it inside the updater leaves the caller's `if` check looking
+// at a stale `null`, so the server DELETE never fires and the tab resurfaces
+// the next time the tab list reconciles from the server.
+export function closeWorkspaceTerminalTab(
+  current: WorkspaceTerminalTabsState,
+  terminalTabId: string,
+): CloseWorkspaceTerminalTabResult {
+  const terminalIndex = current.tabs.findIndex((tab) => tab.id === terminalTabId);
+  if (terminalIndex < 0) {
+    return { state: current, sessionIdToKill: null };
+  }
+
+  const sessionIdToKill = current.tabs[terminalIndex]!.sessionId;
+  const nextTabs = current.tabs.filter((tab) => tab.id !== terminalTabId);
+  const nextActiveTabId = current.activeTabId === terminalTabId
+    ? (nextTabs[terminalIndex] ?? nextTabs[terminalIndex - 1] ?? null)?.id ?? null
+    : current.activeTabId;
+
+  return {
+    state: {
+      ...current,
+      tabs: nextTabs,
+      activeTabId: nextActiveTabId,
+      visible: current.visible && nextActiveTabId !== null,
+    },
+    sessionIdToKill,
   };
 }
 
@@ -324,7 +337,6 @@ export function restoreWorkspaceTerminalUiState(input: {
       tabs,
       activeTabId,
       visible: state.visible && tabs.length > 0,
-      nextOrdinal: resolveNextTerminalOrdinal(tabs, state.nextOrdinal),
     };
   }
 

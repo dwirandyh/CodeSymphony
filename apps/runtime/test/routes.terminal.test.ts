@@ -13,11 +13,14 @@ const mockTerminalService = {
   kill: vi.fn(),
   listSessions: vi.fn(),
   getScrollback: vi.fn(),
+  getReattachReplay: vi.fn(),
+  scheduleReattachRedraw: vi.fn(),
   getExitEvent: vi.fn(),
   addListener: vi.fn(() => vi.fn()),
   addExitListener: vi.fn(() => vi.fn()),
   createTab: vi.fn(),
   listTabs: vi.fn(),
+  renameTab: vi.fn(),
   closeTab: vi.fn(),
 };
 
@@ -50,10 +53,11 @@ beforeEach(() => {
   mockTerminalService.spawn.mockReturnValue({ resolvedCwd: "/tmp" });
   mockTerminalService.listSessions.mockReturnValue([]);
   mockTerminalService.getScrollback.mockReturnValue("");
+  mockTerminalService.getReattachReplay.mockReturnValue("");
   mockTerminalService.getExitEvent.mockReturnValue(null);
   mockTerminalService.addListener.mockReturnValue(vi.fn());
   mockTerminalService.addExitListener.mockReturnValue(vi.fn());
-  mockTerminalService.listTabs.mockReturnValue([]);
+  mockTerminalService.listTabs.mockResolvedValue([]);
   mockFilesystemService.cleanupTerminalDropFiles.mockResolvedValue(undefined);
 });
 
@@ -237,7 +241,7 @@ describe("terminal routes", () => {
         title: "Terminal",
         ordinal: 1,
       };
-      mockTerminalService.listTabs.mockReturnValue([tab]);
+      mockTerminalService.listTabs.mockResolvedValue([tab]);
 
       const response = await app.inject({
         method: "GET",
@@ -269,7 +273,7 @@ describe("terminal routes", () => {
         title: "Terminal",
         ordinal: 1,
       };
-      mockTerminalService.createTab.mockReturnValue(tab);
+      mockTerminalService.createTab.mockResolvedValue(tab);
 
       const response = await app.inject({
         method: "POST",
@@ -306,7 +310,7 @@ describe("terminal routes", () => {
         title: "Terminal",
         ordinal: 1,
       };
-      mockTerminalService.closeTab.mockReturnValue(tab);
+      mockTerminalService.closeTab.mockResolvedValue(tab);
 
       const response = await app.inject({
         method: "DELETE",
@@ -322,7 +326,7 @@ describe("terminal routes", () => {
     });
 
     it("returns 404 for unknown tab", async () => {
-      mockTerminalService.closeTab.mockReturnValue(null);
+      mockTerminalService.closeTab.mockResolvedValue(null);
 
       const response = await app.inject({
         method: "DELETE",
@@ -331,6 +335,56 @@ describe("terminal routes", () => {
 
       expect(response.statusCode).toBe(404);
       expect(mockWorkspaceEventHub.emit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("PATCH /terminal/tabs/:tabId/title", () => {
+    it("renames a tab and broadcasts terminal.tab.updated", async () => {
+      const tab = {
+        id: "tab1",
+        worktreeId: "wt1",
+        sessionId: "wt1:terminal:tab1",
+        title: "Build",
+        ordinal: 1,
+      };
+      mockTerminalService.renameTab.mockResolvedValue(tab);
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/terminal/tabs/tab1/title",
+        payload: { title: "Build" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: tab });
+      expect(mockTerminalService.renameTab).toHaveBeenCalledWith("tab1", "Build");
+      expect(mockWorkspaceEventHub.emit).toHaveBeenCalledWith("terminal.tab.updated", {
+        worktreeId: "wt1",
+      });
+    });
+
+    it("returns 404 for unknown tab", async () => {
+      mockTerminalService.renameTab.mockResolvedValue(null);
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/terminal/tabs/missing/title",
+        payload: { title: "Build" },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockWorkspaceEventHub.emit).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 for empty title", async () => {
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/terminal/tabs/tab1/title",
+        payload: { title: "   " },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(mockTerminalService.renameTab).not.toHaveBeenCalled();
     });
   });
 
@@ -389,7 +443,7 @@ describe("terminal routes", () => {
 
     it("waits for the first resize before replaying scrollback and exit state", () => {
       let messageHandler: ((raw: Buffer | ArrayBuffer | Buffer[]) => void) | null = null;
-      mockTerminalService.getScrollback.mockReturnValue("ready\n");
+      mockTerminalService.getReattachReplay.mockReturnValue("ready\n");
       mockTerminalService.getExitEvent.mockReturnValue({ exitCode: 0, signal: 0 });
 
       const socket = {
@@ -431,6 +485,30 @@ describe("terminal routes", () => {
       })));
 
       expect(socket.send).toHaveBeenCalledTimes(2);
+    });
+
+    it("forces a TUI redraw once after the first reattach resize", () => {
+      let messageHandler: ((raw: Buffer | ArrayBuffer | Buffer[]) => void) | null = null;
+      const socket = {
+        close: vi.fn(),
+        on: vi.fn((event: string, listener: (...args: any[]) => void) => {
+          if (event === "message") {
+            messageHandler = listener as (raw: Buffer | ArrayBuffer | Buffer[]) => void;
+          }
+        }),
+        send: vi.fn(),
+        readyState: 1,
+      };
+
+      handleTerminalWebSocket(app, socket, {
+        query: { sessionId: "wt1:terminal:abc", cwd: "/tmp/wt1" },
+      });
+
+      messageHandler?.(Buffer.from(JSON.stringify({ type: "resize", cols: 122, rows: 43 })));
+      messageHandler?.(Buffer.from(JSON.stringify({ type: "resize", cols: 121, rows: 42 })));
+
+      expect(mockTerminalService.scheduleReattachRedraw).toHaveBeenCalledTimes(1);
+      expect(mockTerminalService.scheduleReattachRedraw).toHaveBeenCalledWith("wt1:terminal:abc");
     });
   });
 });

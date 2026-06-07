@@ -111,6 +111,7 @@ import {
   getWorkspaceMainClassName,
 } from "./workspace/workspaceMainClass";
 import {
+  closeWorkspaceTerminalTab,
   getBottomPanelState,
   getTerminalTabsState,
   readPersistedWorkspaceTerminalUiState,
@@ -823,7 +824,7 @@ export function WorkspacePage() {
 
     const unsubscribe = subscribeToWorkspaceSyncSocket({
       onEvent(event) {
-        if (event.type === "terminal.tab.created" || event.type === "terminal.tab.closed") {
+        if (event.type === "terminal.tab.created" || event.type === "terminal.tab.updated" || event.type === "terminal.tab.closed") {
           void syncTerminalTabsFromServer();
         }
       },
@@ -3383,7 +3384,6 @@ export function WorkspacePage() {
             tabs: [...current.tabs, { id: tab.id, sessionId: tab.sessionId, title: tab.title }],
             activeTabId: tab.id,
             visible: true,
-            nextOrdinal: Math.max(current.nextOrdinal, tab.ordinal + 1),
           };
         });
       })
@@ -3410,6 +3410,33 @@ export function WorkspacePage() {
     }));
   }, [confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, updateSearch, updateTerminalTabsState]);
 
+  const handleRenameTerminalTab = useCallback((terminalTabId: string, title: string) => {
+    const worktreeId = repos.selectedWorktreeId;
+    if (!worktreeId) {
+      return;
+    }
+
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      return;
+    }
+
+    // Optimistic rename; the server is the source of truth and a follow-up
+    // terminal.tab.updated event will reconcile any divergence. Revert by
+    // re-syncing from the server if the request fails.
+    updateTerminalTabsState(worktreeId, (current) => ({
+      ...current,
+      tabs: current.tabs.map((tab) =>
+        tab.id === terminalTabId ? { ...tab, title: nextTitle } : tab,
+      ),
+    }));
+
+    void api.renameTerminalTab(terminalTabId, { title: nextTitle }).catch(() => {
+      setError("Failed to rename terminal");
+      void syncTerminalTabsFromServer();
+    });
+  }, [repos.selectedWorktreeId, setError, syncTerminalTabsFromServer, updateTerminalTabsState]);
+
   const handleCloseTerminalTab = useCallback((terminalTabId: string) => {
     const worktreeId = repos.selectedWorktreeId;
     if (!worktreeId) {
@@ -3428,29 +3455,9 @@ export function WorkspacePage() {
       updateSearch({ threadId: undefined });
     }
 
-    let sessionIdToKill: string | null = null;
+    const { sessionIdToKill } = closeWorkspaceTerminalTab(selectedTerminalTabsState, terminalTabId);
 
-    updateTerminalTabsState(worktreeId, (current) => {
-      const terminalIndex = current.tabs.findIndex((tab) => tab.id === terminalTabId);
-      if (terminalIndex < 0) {
-        return current;
-      }
-
-      const targetTab = current.tabs[terminalIndex]!;
-      sessionIdToKill = targetTab.sessionId;
-
-      const nextTabs = current.tabs.filter((tab) => tab.id !== terminalTabId);
-      const nextActiveTabId = current.activeTabId === terminalTabId
-        ? (nextTabs[terminalIndex] ?? nextTabs[terminalIndex - 1] ?? null)?.id ?? null
-        : current.activeTabId;
-
-      return {
-        ...current,
-        tabs: nextTabs,
-        activeTabId: nextActiveTabId,
-        visible: current.visible && nextActiveTabId !== null,
-      };
-    });
+    updateTerminalTabsState(worktreeId, (current) => closeWorkspaceTerminalTab(current, terminalTabId).state);
 
     if (sessionIdToKill) {
       disposeTerminalRuntime(sessionIdToKill);
@@ -3461,7 +3468,7 @@ export function WorkspacePage() {
     chat.messageListEmptyState,
     chat.setSelectedThreadId,
     repos.selectedWorktreeId,
-    selectedTerminalTabsState.tabs.length,
+    selectedTerminalTabsState.tabs,
     setWorkspaceLandingHold,
     terminalViewActive,
     updateSearch,
@@ -4451,6 +4458,7 @@ export function WorkspacePage() {
                     onReopenThread={(threadId) => void chat.reopenThread(threadId)}
                     onDeleteThread={handleRequestDeleteThread}
                     onCloseTerminalTab={handleCloseTerminalTab}
+                    onRenameTerminalTab={handleRenameTerminalTab}
                     onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
                     onSelectTargetBranch={(branch) => {
                       if (!repos.selectedWorktreeId) {

@@ -53,6 +53,7 @@ import type {
   QueueChatMessageInput,
   SlashCommandCatalog,
   RenameChatThreadTitleInput,
+  RenameTerminalTabTitleInput,
   RenameWorktreeBranchInput,
   ResolvePermissionInput,
   UpdateQueuedMessageInput,
@@ -627,6 +628,11 @@ export const api = {
     request<TerminalTab>("/terminal/tabs", {
       method: "POST",
       body: JSON.stringify({ worktreeId }),
+    }),
+  renameTerminalTab: (tabId: string, input: RenameTerminalTabTitleInput) =>
+    request<TerminalTab>(`/terminal/tabs/${encodeURIComponent(tabId)}/title`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
     }),
   closeTerminalTab: async (tabId: string): Promise<void> => {
     const response = await runtimeFetch(`/terminal/tabs/${encodeURIComponent(tabId)}`, {

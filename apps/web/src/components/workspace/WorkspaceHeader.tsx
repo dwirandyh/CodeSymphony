@@ -80,6 +80,7 @@ type WorkspaceHeaderProps = {
   onReopenThread?: (threadId: string) => void;
   onDeleteThread?: (threadId: string) => void;
   onCloseTerminalTab?: (terminalTabId: string) => void;
+  onRenameTerminalTab?: (terminalTabId: string, title: string) => Promise<void> | void;
   onRenameThread: (threadId: string, title: string) => Promise<void> | void;
   onSelectTargetBranch?: (branch: string) => void;
   onSelectReviewTab?: () => void;
@@ -161,6 +162,7 @@ export function WorkspaceHeader({
   onCloseThread,
   onReopenThread,
   onCloseTerminalTab,
+  onRenameTerminalTab,
   onRenameThread,
   onSelectTargetBranch,
   onSelectReviewTab,
@@ -173,10 +175,12 @@ export function WorkspaceHeader({
 }: WorkspaceHeaderProps) {
   const SESSION_TAB_EDGE_INSET_PX = 64;
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [editingTerminalTabId, setEditingTerminalTabId] = useState<string | null>(null);
   const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [targetBranchFilter, setTargetBranchFilter] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const terminalRenameInputRef = useRef<HTMLInputElement | null>(null);
   const targetBranchFilterInputRef = useRef<HTMLInputElement | null>(null);
   const sessionTabsScrollRef = useRef<HTMLDivElement | null>(null);
   const selectedThreadTabRef = useRef<HTMLButtonElement | null>(null);
@@ -297,6 +301,30 @@ export function WorkspaceHeader({
   }, [editingThreadId]);
 
   useEffect(() => {
+    if (!editingTerminalTabId) {
+      return;
+    }
+
+    if (!terminalTabs.some((tab) => tab.id === editingTerminalTabId)) {
+      setEditingTerminalTabId(null);
+    }
+  }, [editingTerminalTabId, terminalTabs]);
+
+  useEffect(() => {
+    if (!editingTerminalTabId) {
+      return;
+    }
+
+    const input = terminalRenameInputRef.current;
+    if (!input) {
+      return;
+    }
+
+    input.focus();
+    input.select();
+  }, [editingTerminalTabId]);
+
+  useEffect(() => {
     if (!targetBranchSelectorOpen) {
       setTargetBranchFilter("");
       return;
@@ -363,6 +391,33 @@ export function WorkspaceHeader({
     }
 
     void onRenameThread(threadId, nextTitle);
+  }
+
+  function startTerminalTabRename(terminalTabId: string, isSelected: boolean) {
+    if (!isSelected || disabled) {
+      return;
+    }
+
+    setEditingTerminalTabId(terminalTabId);
+  }
+
+  function cancelTerminalTabRename() {
+    setEditingTerminalTabId(null);
+  }
+
+  function saveTerminalTabRename(terminalTabId: string, currentTitle: string, rawTitle: string) {
+    if (editingTerminalTabId !== terminalTabId) {
+      return;
+    }
+
+    const nextTitle = rawTitle.trim();
+    cancelTerminalTabRename();
+
+    if (!nextTitle || nextTitle === currentTitle) {
+      return;
+    }
+
+    void onRenameTerminalTab?.(terminalTabId, nextTitle);
   }
 
   const historyPopover = (
@@ -653,6 +708,7 @@ export function WorkspaceHeader({
 
             {terminalTabs.map((terminalTab) => {
               const isSelected = terminalTabActive && activeTerminalTabId === terminalTab.id;
+              const isEditing = editingTerminalTabId === terminalTab.id;
 
               return (
                 <div
@@ -662,21 +718,44 @@ export function WorkspaceHeader({
                     isSelected && "border-b-primary text-foreground",
                   )}
                 >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isSelected}
-                    title={terminalTab.title}
-                    className={cn(
-                      "flex max-w-[180px] min-w-0 items-center gap-1.5 px-2 py-1.5 text-xs font-medium transition-colors",
-                      isSelected && "text-foreground",
-                    )}
-                    onClick={() => onSelectTerminalTab?.(terminalTab.id)}
-                    disabled={disabled}
-                  >
-                    <SquareTerminal className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate">{terminalTab.title}</span>
-                  </button>
+                  {isEditing ? (
+                    <input
+                      ref={terminalRenameInputRef}
+                      defaultValue={terminalTab.title}
+                      onBlur={(event) => saveTerminalTabRename(terminalTab.id, terminalTab.title, event.currentTarget.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          saveTerminalTabRename(terminalTab.id, terminalTab.title, event.currentTarget.value);
+                          return;
+                        }
+
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelTerminalTabRename();
+                        }
+                      }}
+                      aria-label="Rename terminal tab title"
+                      className="w-[180px] rounded-sm border border-border bg-background px-2 py-1 text-xs font-medium text-foreground outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={isSelected}
+                      title={terminalTab.title}
+                      className={cn(
+                        "flex max-w-[180px] min-w-0 items-center gap-1.5 px-2 py-1.5 text-xs font-medium transition-colors",
+                        isSelected && "text-foreground",
+                      )}
+                      onClick={() => onSelectTerminalTab?.(terminalTab.id)}
+                      onDoubleClick={() => startTerminalTabRename(terminalTab.id, isSelected)}
+                      disabled={disabled}
+                    >
+                      <SquareTerminal className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{terminalTab.title}</span>
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -687,7 +766,7 @@ export function WorkspaceHeader({
                       isSelected ? "opacity-100" : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
                     )}
                     onClick={() => onCloseTerminalTab?.(terminalTab.id)}
-                    disabled={disabled}
+                    disabled={disabled || isEditing}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

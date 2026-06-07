@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  closeWorkspaceTerminalTab,
   getBottomPanelState,
   readPersistedWorkspaceTerminalUiState,
   reconcileWorkspaceTerminalTabs,
@@ -19,12 +20,11 @@ const serverTab = (overrides: Partial<{ id: string; worktreeId: string; sessionI
 describe("reconcileWorkspaceTerminalTabs", () => {
   it("adds tabs created by another client", () => {
     const next = reconcileWorkspaceTerminalTabs({
-      current: { tabs: [], activeTabId: null, visible: false, nextOrdinal: 1 },
+      current: { tabs: [], activeTabId: null, visible: false },
       serverTabs: [serverTab({ id: "a", sessionId: "wt1:terminal:a", title: "Terminal", ordinal: 1 })],
     });
 
     expect(next.tabs).toEqual([{ id: "a", sessionId: "wt1:terminal:a", title: "Terminal" }]);
-    expect(next.nextOrdinal).toBe(2);
   });
 
   it("removes tabs closed by another client and reselects the active tab", () => {
@@ -32,11 +32,10 @@ describe("reconcileWorkspaceTerminalTabs", () => {
       current: {
         tabs: [
           { id: "a", sessionId: "wt1:terminal:a", title: "Terminal" },
-          { id: "b", sessionId: "wt1:terminal:b", title: "Terminal 2" },
+          { id: "b", sessionId: "wt1:terminal:b", title: "Terminal" },
         ],
         activeTabId: "b",
         visible: true,
-        nextOrdinal: 3,
       },
       serverTabs: [serverTab({ id: "a", sessionId: "wt1:terminal:a", title: "Terminal", ordinal: 1 })],
     });
@@ -51,17 +50,34 @@ describe("reconcileWorkspaceTerminalTabs", () => {
         tabs: [{ id: "a", sessionId: "wt1:terminal:a", title: "Terminal" }],
         activeTabId: "a",
         visible: true,
-        nextOrdinal: 2,
       },
       serverTabs: [
-        serverTab({ id: "b", sessionId: "wt1:terminal:b", title: "Terminal 2", ordinal: 2 }),
+        serverTab({ id: "b", sessionId: "wt1:terminal:b", title: "Terminal", ordinal: 2 }),
         serverTab({ id: "a", sessionId: "wt1:terminal:a", title: "Terminal", ordinal: 1 }),
       ],
     });
 
     expect(next.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
     expect(next.activeTabId).toBe("a");
-    expect(next.nextOrdinal).toBe(3);
+  });
+
+  it("reflects custom renamed titles from the server and orders by ordinal", () => {
+    const next = reconcileWorkspaceTerminalTabs({
+      current: {
+        tabs: [{ id: "a", sessionId: "wt1:terminal:a", title: "Terminal" }],
+        activeTabId: "a",
+        visible: true,
+      },
+      serverTabs: [
+        serverTab({ id: "b", sessionId: "wt1:terminal:b", title: "Deploy", ordinal: 2 }),
+        serverTab({ id: "a", sessionId: "wt1:terminal:a", title: "Build", ordinal: 1 }),
+      ],
+    });
+
+    expect(next.tabs).toEqual([
+      { id: "a", sessionId: "wt1:terminal:a", title: "Build" },
+      { id: "b", sessionId: "wt1:terminal:b", title: "Deploy" },
+    ]);
   });
 
   it("clears active tab and hides view when the server has no tabs", () => {
@@ -70,7 +86,6 @@ describe("reconcileWorkspaceTerminalTabs", () => {
         tabs: [{ id: "a", sessionId: "wt1:terminal:a", title: "Terminal" }],
         activeTabId: "a",
         visible: true,
-        nextOrdinal: 2,
       },
       serverTabs: [],
     });
@@ -85,7 +100,6 @@ describe("reconcileWorkspaceTerminalTabs", () => {
       tabs: [{ id: "a", sessionId: "wt1:terminal:a", title: "Terminal" }],
       activeTabId: "a",
       visible: true,
-      nextOrdinal: 2,
     };
     const next = reconcileWorkspaceTerminalTabs({
       current,
@@ -93,6 +107,73 @@ describe("reconcileWorkspaceTerminalTabs", () => {
     });
 
     expect(next).toBe(current);
+  });
+});
+
+describe("closeWorkspaceTerminalTab", () => {
+  const baseState = () => ({
+    tabs: [
+      { id: "a", sessionId: "wt1:terminal:a", title: "Terminal" },
+      { id: "b", sessionId: "wt1:terminal:b", title: "Terminal" },
+      { id: "c", sessionId: "wt1:terminal:c", title: "Terminal" },
+    ],
+    activeTabId: "b",
+    visible: true,
+  });
+
+  it("returns the session id of the closed tab so the caller can kill it server-side", () => {
+    const result = closeWorkspaceTerminalTab(baseState(), "b");
+
+    // This is the crux of the bug: the session id must be derived from the
+    // passed-in state synchronously, not assigned inside a React updater.
+    expect(result.sessionIdToKill).toBe("wt1:terminal:b");
+  });
+
+  it("removes the closed tab and reselects the next neighbour", () => {
+    const result = closeWorkspaceTerminalTab(baseState(), "b");
+
+    expect(result.state.tabs.map((tab) => tab.id)).toEqual(["a", "c"]);
+    expect(result.state.activeTabId).toBe("c");
+    expect(result.state.visible).toBe(true);
+  });
+
+  it("falls back to the previous neighbour when closing the last tab", () => {
+    const result = closeWorkspaceTerminalTab(baseState(), "c");
+
+    expect(result.state.tabs.map((tab) => tab.id)).toEqual(["a", "b"]);
+    expect(result.state.activeTabId).toBe("b");
+  });
+
+  it("keeps the active tab unchanged when closing a non-active tab", () => {
+    const result = closeWorkspaceTerminalTab(baseState(), "a");
+
+    expect(result.state.activeTabId).toBe("b");
+    expect(result.state.tabs.map((tab) => tab.id)).toEqual(["b", "c"]);
+  });
+
+  it("hides the view and clears the active tab when the last tab closes", () => {
+    const result = closeWorkspaceTerminalTab(
+      {
+        tabs: [{ id: "a", sessionId: "wt1:terminal:a", title: "Terminal" }],
+        activeTabId: "a",
+        visible: true,
+        nextOrdinal: 2,
+      },
+      "a",
+    );
+
+    expect(result.state.tabs).toEqual([]);
+    expect(result.state.activeTabId).toBeNull();
+    expect(result.state.visible).toBe(false);
+    expect(result.sessionIdToKill).toBe("wt1:terminal:a");
+  });
+
+  it("returns the same state reference and no session id for an unknown tab", () => {
+    const current = baseState();
+    const result = closeWorkspaceTerminalTab(current, "missing");
+
+    expect(result.state).toBe(current);
+    expect(result.sessionIdToKill).toBeNull();
   });
 });
 
@@ -117,11 +198,10 @@ describe("workspaceTerminalPersistence", () => {
         wt1: {
           tabs: [
             { id: "tab-1", title: "Terminal", sessionId: "wt1:terminal:1" },
-            { id: "tab-2", title: "Terminal 2", sessionId: "wt1:terminal:missing" },
+            { id: "tab-2", title: "Deploy", sessionId: "wt1:terminal:missing" },
           ],
           activeTabId: "tab-2",
           visible: true,
-          nextOrdinal: 4,
         },
       },
     });
@@ -167,7 +247,6 @@ describe("workspaceTerminalPersistence", () => {
           ],
           activeTabId: "tab-1",
           visible: true,
-          nextOrdinal: 4,
         },
       },
     });

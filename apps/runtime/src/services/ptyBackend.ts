@@ -21,6 +21,42 @@ export interface PtySpawnOptions {
     env: Record<string, string>;
 }
 
+export type PtyDiagnosticsEvent = {
+    kind:
+        | "host-spawn"
+        | "host-exit"
+        | "host-stderr"
+        | "spawn-request"
+        | "spawn-error";
+    id?: string;
+    pid?: number;
+    detail?: string;
+};
+
+type PtyDiagnosticsSink = (event: PtyDiagnosticsEvent) => void;
+
+let ptyDiagnosticsSink: PtyDiagnosticsSink | null = null;
+
+/**
+ * Register a sink for PTY host lifecycle + failure events. The runtime feeds
+ * this into its debug ring buffer (source `diagnose.pty`) so packaged-app
+ * terminal failures show up in user issue-reports instead of only stderr.
+ */
+export function setPtyDiagnosticsSink(sink: PtyDiagnosticsSink | null): void {
+    ptyDiagnosticsSink = sink;
+}
+
+function emitPtyDiagnostics(event: PtyDiagnosticsEvent): void {
+    if (!ptyDiagnosticsSink) {
+        return;
+    }
+    try {
+        ptyDiagnosticsSink(event);
+    } catch {
+        // Diagnostics must never break the PTY path.
+    }
+}
+
 type HostOutboundMessage =
     | { type: "ready" }
     | { type: "spawned"; id: string; pid: number }
@@ -50,6 +86,21 @@ class PtyHost {
 
         const hostScript = resolveHostScript();
         const nodeExecutable = resolveNodeExecutable();
+        if (!existsSync(hostScript)) {
+            // Root cause of the packaged-app terminal "stuck" bug: the PTY host
+            // sidecar was missing from the bundle. Name it explicitly so issue
+            // reports surface it instead of only a generic Node stderr line.
+            emitPtyDiagnostics({
+                kind: "host-stderr",
+                detail: `ptyHost script not found at ${hostScript}`,
+            });
+        }
+        if (!existsSync(nodeExecutable) && nodeExecutable.includes("/")) {
+            emitPtyDiagnostics({
+                kind: "host-stderr",
+                detail: `node executable not found at ${nodeExecutable}`,
+            });
+        }
         const child = spawnChildProcess(nodeExecutable, [hostScript], {
             stdio: ["pipe", "pipe", "pipe"],
             env: {
@@ -64,16 +115,27 @@ class PtyHost {
         child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
         child.stderr.setEncoding("utf8");
         child.stderr.on("data", (chunk: string) => {
-            console.warn(`[pty-host] ${chunk.toString().trimEnd()}`);
+            const text = chunk.toString().trimEnd();
+            console.warn(`[pty-host] ${text}`);
+            emitPtyDiagnostics({ kind: "host-stderr", detail: text });
         });
-        child.on("exit", () => this.handleHostExit());
+        child.on("exit", (code, signal) => this.handleHostExit(code, signal));
 
         this.child = child;
+        emitPtyDiagnostics({
+            kind: "host-spawn",
+            pid: child.pid ?? undefined,
+            detail: `${nodeExecutable} ${hostScript}`,
+        });
         return child;
     }
 
-    private handleHostExit(): void {
+    private handleHostExit(code?: number | null, signal?: NodeJS.Signals | null): void {
         const affected = [...this.sessions.values(), ...this.pendingSpawns.values()];
+        emitPtyDiagnostics({
+            kind: "host-exit",
+            detail: `exitCode=${code ?? "null"} signal=${signal ?? "null"} affectedSessions=${affected.length}`,
+        });
         this.sessions.clear();
         this.pendingSpawns.clear();
         this.child = null;
@@ -122,6 +184,7 @@ class PtyHost {
                 this.sessions.delete(message.id);
                 session?.emitExit({ exitCode: 1, signal: 0 });
                 console.warn(`[pty-host] spawn error: ${message.message}`);
+                emitPtyDiagnostics({ kind: "spawn-error", id: message.id, detail: message.message });
                 return;
             }
             case "data": {
@@ -162,6 +225,11 @@ class PtyHost {
             cwd: options.cwd,
             env: options.env,
         });
+        emitPtyDiagnostics({
+            kind: "spawn-request",
+            id,
+            detail: `${file} ${args.join(" ")} cwd=${options.cwd}`,
+        });
         return session;
     }
 
@@ -175,6 +243,24 @@ class PtyHost {
 
     kill(id: string, signal?: string): void {
         this.writeCommand({ type: "kill", id, signal });
+    }
+
+    resetForTests(): void {
+        const child = this.child;
+        if (child) {
+            // Detach listeners first so the old child's async exit cannot clobber
+            // a freshly spawned host or emit stray diagnostics into a new test.
+            child.stdout.removeAllListeners();
+            child.stderr.removeAllListeners();
+            child.removeAllListeners("exit");
+            if (!child.killed) {
+                child.kill();
+            }
+        }
+        this.child = null;
+        this.stdoutBuffer = "";
+        this.sessions.clear();
+        this.pendingSpawns.clear();
     }
 }
 
@@ -303,6 +389,10 @@ export function spawnPty(
     options: PtySpawnOptions,
 ): PtyProcess {
     return ptyHost.spawn(file, args, options);
+}
+
+export function resetPtyHostForTests(): void {
+    ptyHost.resetForTests();
 }
 
 export function isPtyIoError(error: unknown): boolean {

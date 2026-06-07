@@ -56,12 +56,78 @@ vi.mock("../src/claude/shellEnv.js", () => ({
 import { buildClaudeRuntimeEnv } from "../src/claude/shellEnv.js";
 import { buildExecShellArgs, createTerminalService } from "../src/services/terminalService";
 
+type FakeTerminalTabRow = {
+  id: string;
+  worktreeId: string;
+  sessionId: string;
+  title: string;
+  ordinal: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+// Minimal in-memory stand-in for the prisma.terminalTab model the service
+// depends on. Mirrors only the operations the service calls.
+function createFakePrisma() {
+  const rows: FakeTerminalTabRow[] = [];
+  const terminalTab = {
+    findFirst: async ({ where, orderBy }: any) => {
+      const filtered = rows.filter((row) => !where?.worktreeId || row.worktreeId === where.worktreeId);
+      if (orderBy?.ordinal === "desc") {
+        filtered.sort((a, b) => b.ordinal - a.ordinal);
+      }
+      return filtered[0] ?? null;
+    },
+    findMany: async ({ where, orderBy }: any = {}) => {
+      let filtered = rows.filter((row) => !where?.worktreeId || row.worktreeId === where.worktreeId);
+      if (orderBy?.ordinal === "asc") {
+        filtered = [...filtered].sort((a, b) => a.ordinal - b.ordinal);
+      }
+      return filtered.map((row) => ({ ...row }));
+    },
+    findUnique: async ({ where }: any) => rows.find((row) => row.id === where.id) ?? null,
+    create: async ({ data }: any) => {
+      const row: FakeTerminalTabRow = {
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ...data,
+      };
+      rows.push(row);
+      return { ...row };
+    },
+    update: async ({ where, data }: any) => {
+      const row = rows.find((entry) => entry.id === where.id);
+      if (!row) {
+        throw new Error("Record to update not found");
+      }
+      Object.assign(row, data, { updatedAt: new Date() });
+      return { ...row };
+    },
+    delete: async ({ where }: any) => {
+      const index = rows.findIndex((entry) => entry.id === where.id);
+      if (index < 0) {
+        throw new Error("Record to delete does not exist");
+      }
+      const [removed] = rows.splice(index, 1);
+      return { ...removed };
+    },
+  };
+
+  return {
+    terminalTab,
+    $transaction: async (fn: (tx: any) => Promise<unknown>) => fn({ terminalTab }),
+    __rows: rows,
+  };
+}
+
 describe("terminalService", () => {
   let service: ReturnType<typeof createTerminalService>;
+  let fakePrisma: ReturnType<typeof createFakePrisma>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = createTerminalService();
+    fakePrisma = createFakePrisma();
+    service = createTerminalService(fakePrisma as never);
   });
 
   describe("spawn", () => {
@@ -486,8 +552,8 @@ describe("terminalService", () => {
   });
 
   describe("tab registry", () => {
-    it("creates a tab with server-assigned id, sessionId, ordinal and title", () => {
-      const tab = service.createTab("wt1");
+    it("creates a tab with server-assigned id, sessionId, ordinal and title", async () => {
+      const tab = await service.createTab("wt1");
 
       expect(tab.worktreeId).toBe("wt1");
       expect(tab.ordinal).toBe(1);
@@ -496,54 +562,132 @@ describe("terminalService", () => {
       expect(tab.sessionId).toBe(`wt1:terminal:${tab.id}`);
     });
 
-    it("increments ordinal and titles per worktree", () => {
-      const first = service.createTab("wt1");
-      const second = service.createTab("wt1");
-      const otherWorktree = service.createTab("wt2");
+    it("always titles new tabs 'Terminal' but keeps incrementing ordinal per worktree", async () => {
+      const first = await service.createTab("wt1");
+      const second = await service.createTab("wt1");
+      const otherWorktree = await service.createTab("wt2");
 
       expect(first.ordinal).toBe(1);
       expect(first.title).toBe("Terminal");
       expect(second.ordinal).toBe(2);
-      expect(second.title).toBe("Terminal 2");
+      expect(second.title).toBe("Terminal");
       expect(otherWorktree.ordinal).toBe(1);
       expect(otherWorktree.title).toBe("Terminal");
     });
 
-    it("lists tabs filtered by worktree, in creation order", () => {
-      const first = service.createTab("wt1");
-      const second = service.createTab("wt1");
-      service.createTab("wt2");
+    it("lists tabs filtered by worktree, ordered by ordinal", async () => {
+      const first = await service.createTab("wt1");
+      const second = await service.createTab("wt1");
+      await service.createTab("wt2");
 
-      expect(service.listTabs("wt1")).toEqual([first, second]);
+      expect(await service.listTabs("wt1")).toEqual([first, second]);
     });
 
-    it("lists all tabs when no worktree filter is given", () => {
-      const first = service.createTab("wt1");
-      const second = service.createTab("wt2");
+    it("lists all tabs when no worktree filter is given", async () => {
+      const first = await service.createTab("wt1");
+      const second = await service.createTab("wt2");
 
-      expect(service.listTabs()).toEqual([first, second]);
+      expect(await service.listTabs()).toEqual([first, second]);
     });
 
-    it("closes a tab and kills its pty session", () => {
-      const tab = service.createTab("wt1");
+    it("renames a tab and persists the new title", async () => {
+      const tab = await service.createTab("wt1");
+
+      const renamed = await service.renameTab(tab.id, "Build");
+
+      expect(renamed?.title).toBe("Build");
+      expect((await service.listTabs("wt1"))[0]?.title).toBe("Build");
+    });
+
+    it("returns null when renaming an unknown tab", async () => {
+      expect(await service.renameTab("missing", "Nope")).toBeNull();
+    });
+
+    it("closes a tab and kills its pty session", async () => {
+      const tab = await service.createTab("wt1");
       service.spawn(tab.sessionId, "/tmp");
       const pty = currentMockPty;
 
-      service.closeTab(tab.id);
+      await service.closeTab(tab.id);
 
       expect(pty.kill).toHaveBeenCalled();
       expect(service.has(tab.sessionId)).toBe(false);
-      expect(service.listTabs("wt1")).toEqual([]);
+      expect(await service.listTabs("wt1")).toEqual([]);
     });
 
-    it("returns the closed tab so callers can broadcast it", () => {
-      const tab = service.createTab("wt1");
+    it("returns the closed tab so callers can broadcast it", async () => {
+      const tab = await service.createTab("wt1");
 
-      expect(service.closeTab(tab.id)).toEqual(tab);
+      expect(await service.closeTab(tab.id)).toEqual(tab);
     });
 
-    it("returns null when closing an unknown tab", () => {
-      expect(service.closeTab("missing")).toBeNull();
+    it("returns null when closing an unknown tab", async () => {
+      expect(await service.closeTab("missing")).toBeNull();
+    });
+  });
+
+  describe("fullscreen TUI reattach", () => {
+    const ALT_ENTER = "\x1b[?1049h";
+    const ALT_EXIT = "\x1b[?1049l";
+
+    it("prefixes reattach replay with alt-screen enter when the TUI is on the alternate buffer", () => {
+      service.spawn("s1", "/tmp");
+      currentMockPty._emit("data", `${ALT_ENTER}opencode frame`);
+
+      expect(service.getReattachReplay("s1")).toBe(`${ALT_ENTER}${ALT_ENTER}opencode frame`);
+    });
+
+    it("does not prefix reattach replay once the TUI leaves the alternate buffer", () => {
+      service.spawn("s1", "/tmp");
+      currentMockPty._emit("data", `${ALT_ENTER}opencode frame`);
+      currentMockPty._emit("data", `${ALT_EXIT}back to shell`);
+
+      expect(service.getReattachReplay("s1")).toBe(`${ALT_ENTER}opencode frame${ALT_EXIT}back to shell`);
+    });
+
+    it("detects alt-screen enter even when the sequence is split across chunks", () => {
+      service.spawn("s1", "/tmp");
+      currentMockPty._emit("data", "\x1b[?10");
+      currentMockPty._emit("data", "49hframe");
+
+      expect(service.getReattachReplay("s1")).toBe(`${ALT_ENTER}\x1b[?1049hframe`);
+    });
+
+    it("forces a transient resize SIGWINCH so a reattached TUI repaints immediately", () => {
+      vi.useFakeTimers();
+      try {
+        service.spawn("s1", "/tmp");
+        const pty = currentMockPty;
+        service.resize("s1", 122, 43);
+        pty._emit("data", `${ALT_ENTER}frame`);
+        pty.resize.mockClear();
+
+        service.scheduleReattachRedraw("s1");
+        expect(pty.resize).toHaveBeenCalledWith(121, 43);
+        expect(pty.resize).toHaveBeenCalledTimes(1);
+
+        vi.advanceTimersByTime(200);
+        expect(pty.resize).toHaveBeenCalledWith(122, 43);
+        expect(pty.resize).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not nudge resize when the session is not on the alternate buffer", () => {
+      vi.useFakeTimers();
+      try {
+        service.spawn("s1", "/tmp");
+        const pty = currentMockPty;
+        service.resize("s1", 122, 43);
+        pty.resize.mockClear();
+
+        service.scheduleReattachRedraw("s1");
+        vi.advanceTimersByTime(200);
+        expect(pty.resize).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

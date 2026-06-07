@@ -180,6 +180,101 @@ describe("WorkspaceHeader", () => {
     expect(container.querySelector('input[aria-label="Rename thread title"]')).toBeNull();
   });
 
+  const terminalTabs = [
+    { id: "term-1", title: "Terminal", sessionId: "wt-1:terminal:term-1" },
+    { id: "term-2", title: "Terminal", sessionId: "wt-1:terminal:term-2" },
+  ];
+
+  it("renames selected terminal tab via double-click then Enter", async () => {
+    const onRenameTerminalTab = vi.fn();
+    renderHeader({
+      terminalTabs,
+      terminalTabActive: true,
+      activeTerminalTabId: "term-1",
+      onRenameTerminalTab,
+    });
+
+    const selectedTab = container.querySelector<HTMLButtonElement>(
+      'button[role="tab"][title="Terminal"][aria-selected="true"]',
+    );
+    if (!selectedTab) {
+      throw new Error("Selected terminal tab not found");
+    }
+
+    act(() => {
+      selectedTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Rename terminal tab title"]');
+    if (!input) {
+      throw new Error("Terminal rename input not found");
+    }
+
+    await act(async () => {
+      input.value = "  Build  ";
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(onRenameTerminalTab).toHaveBeenCalledTimes(1);
+    expect(onRenameTerminalTab).toHaveBeenCalledWith("term-1", "Build");
+  });
+
+  it("cancels terminal tab rename on Escape", () => {
+    const onRenameTerminalTab = vi.fn();
+    renderHeader({
+      terminalTabs,
+      terminalTabActive: true,
+      activeTerminalTabId: "term-1",
+      onRenameTerminalTab,
+    });
+
+    const selectedTab = container.querySelector<HTMLButtonElement>(
+      'button[role="tab"][title="Terminal"][aria-selected="true"]',
+    );
+    if (!selectedTab) {
+      throw new Error("Selected terminal tab not found");
+    }
+
+    act(() => {
+      selectedTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Rename terminal tab title"]');
+    if (!input) {
+      throw new Error("Terminal rename input not found");
+    }
+
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    expect(container.querySelector('input[aria-label="Rename terminal tab title"]')).toBeNull();
+    expect(onRenameTerminalTab).not.toHaveBeenCalled();
+  });
+
+  it("does not enter rename mode for an unselected terminal tab", () => {
+    renderHeader({
+      terminalTabs,
+      terminalTabActive: true,
+      activeTerminalTabId: "term-1",
+      onRenameTerminalTab: noop,
+    });
+
+    const unselectedTab = container.querySelector<HTMLButtonElement>(
+      'button[role="tab"][title="Terminal"][aria-selected="false"]',
+    );
+    if (!unselectedTab) {
+      throw new Error("Unselected terminal tab not found");
+    }
+
+    act(() => {
+      unselectedTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+
+    expect(container.querySelector('input[aria-label="Rename terminal tab title"]')).toBeNull();
+  });
+
   it("uses the same button background styling for run and stop states", () => {
     renderHeader({ runScriptRunning: false, onToggleRunScript: noop });
 

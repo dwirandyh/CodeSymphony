@@ -2,11 +2,29 @@ import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PrismaClient } from "@prisma/client";
 import type { TerminalTab } from "@codesymphony/shared-types";
 import { buildClaudeRuntimeEnv } from "../claude/shellEnv.js";
 import { isPtyIoError, spawnPty, type PtyProcess } from "./ptyBackend.js";
 
 const MAX_SCROLLBACK_BYTES = 50_000;
+
+// Entering/leaving the alternate screen buffer is how full-screen TUIs
+// (opencode, vim, etc.) start and stop. We track this server-side so a
+// reattaching client can be told to switch to the alternate buffer before the
+// scrollback replay (the alt-enter byte itself may have been evicted from the
+// scrollback ring buffer), and so we only force a redraw SIGWINCH for sessions
+// that are actually running a TUI.
+const ALT_SCREEN_ENTER = "\x1b[?1049h";
+const ALT_SCREEN_EXIT = "\x1b[?1049l";
+// The alt-screen sequences can be split across PTY data chunks; keep a short
+// tail of recent output so a sequence straddling two chunks is still detected.
+const ALT_SCREEN_SCAN_TAIL = ALT_SCREEN_ENTER.length - 1;
+// Full SIGWINCH redraw nudge: shrink by one column (a real size change so the
+// TUI cannot debounce it away), hold past the TUI's resize debounce window,
+// then restore. Mirrors the client reconnect nudge but is immune to browser
+// fit-burst timing races.
+const REATTACH_REDRAW_RESTORE_DELAY_MS = 120;
 
 interface TerminalSession {
     id: string;
@@ -19,6 +37,9 @@ interface TerminalSession {
     scrollbackSize: number;
     active: boolean;
     exitEvent: { exitCode: number; signal: number } | null;
+    onAlternateScreen: boolean;
+    altScreenScanTail: string;
+    lastResize: { cols: number; rows: number } | null;
 }
 
 interface SpawnOptions {
@@ -152,10 +173,24 @@ export function buildExecShellArgs(shell: string | undefined, command: string): 
     return ["-lc", command];
 }
 
-export function createTerminalService() {
+// Update alternate-screen tracking from a fresh PTY data chunk. The alt
+// enter/exit sequences can be split across chunks, so we prepend a short tail
+// of the previous chunk before scanning and remember the last alt transition
+// that appears in the combined window.
+function updateAlternateScreenState(session: TerminalSession, chunk: string): void {
+    const scanWindow = session.altScreenScanTail + chunk;
+    const lastEnter = scanWindow.lastIndexOf(ALT_SCREEN_ENTER);
+    const lastExit = scanWindow.lastIndexOf(ALT_SCREEN_EXIT);
+
+    if (lastEnter !== -1 || lastExit !== -1) {
+        session.onAlternateScreen = lastEnter > lastExit;
+    }
+
+    session.altScreenScanTail = scanWindow.slice(-ALT_SCREEN_SCAN_TAIL);
+}
+
+export function createTerminalService(prisma: PrismaClient) {
     const sessions = new Map<string, TerminalSession>();
-    const tabs = new Map<string, TerminalTab>();
-    const nextOrdinalByWorktree = new Map<string, number>();
 
     function resolveCwdCandidates(cwd?: string): string[] {
         const normalizedCwd = normalizeCwd(cwd);
@@ -237,6 +272,9 @@ export function createTerminalService() {
             scrollbackSize: 0,
             active: true,
             exitEvent: null,
+            onAlternateScreen: false,
+            altScreenScanTail: "",
+            lastResize: existing?.lastResize ?? null,
         };
 
         ptyProcess.onData((data) => {
@@ -247,6 +285,11 @@ export function createTerminalService() {
                 const removed = session.scrollback.shift()!;
                 session.scrollbackSize -= removed.length;
             }
+
+            // Track whether the session is sitting on the alternate screen
+            // buffer (a full-screen TUI) so reattach can restore it cleanly even
+            // after the alt-enter byte is evicted from the scrollback ring.
+            updateAlternateScreenState(session, data);
 
             for (const listener of session.listeners) {
                 listener(data);
@@ -308,6 +351,8 @@ export function createTerminalService() {
         if (!session?.active) {
             return;
         }
+
+        session.lastResize = { cols, rows };
 
         try {
             session.ptyProcess.resize(cols, rows);
@@ -420,40 +465,142 @@ export function createTerminalService() {
         return session.scrollback.join("");
     }
 
+    // Scrollback to send to a freshly attached client. If the session is on the
+    // alternate screen buffer (a full-screen TUI), prepend the alt-enter
+    // sequence so the new xterm switches to the alternate buffer before the
+    // replay paints — the original alt-enter byte may have been evicted from
+    // the scrollback ring by a long-running TUI.
+    function getReattachReplay(sessionId: string): string {
+        const session = sessions.get(sessionId);
+        if (!session || session.scrollback.length === 0) {
+            return "";
+        }
+
+        const replay = session.scrollback.join("");
+        return session.onAlternateScreen ? `${ALT_SCREEN_ENTER}${replay}` : replay;
+    }
+
+    // Force a full repaint of a reattached full-screen TUI by briefly resizing
+    // the PTY (a genuine size change the TUI cannot debounce away) and then
+    // restoring it. This is the server-side equivalent of the client reconnect
+    // nudge, but immune to browser fit-burst timing races. No-op for sessions
+    // that are not on the alternate screen buffer.
+    function scheduleReattachRedraw(sessionId: string): void {
+        const session = sessions.get(sessionId);
+        if (!session?.active || !session.onAlternateScreen) {
+            return;
+        }
+
+        const current = session.lastResize;
+        if (!current) {
+            return;
+        }
+
+        const nudged = current.cols > 2
+            ? { cols: current.cols - 1, rows: current.rows }
+            : current.rows > 2
+                ? { cols: current.cols, rows: current.rows - 1 }
+                : null;
+        if (!nudged) {
+            return;
+        }
+
+        try {
+            session.ptyProcess.resize(nudged.cols, nudged.rows);
+        } catch (error) {
+            handlePtyIoFailure(sessionId, session, error);
+            return;
+        }
+
+        setTimeout(() => {
+            const latest = sessions.get(sessionId);
+            if (latest !== session || !session.active) {
+                return;
+            }
+            try {
+                session.ptyProcess.resize(current.cols, current.rows);
+            } catch (error) {
+                handlePtyIoFailure(sessionId, session, error);
+            }
+        }, REATTACH_REDRAW_RESTORE_DELAY_MS);
+    }
+
     function getExitEvent(sessionId: string): { exitCode: number; signal: number } | null {
         return sessions.get(sessionId)?.exitEvent ?? null;
     }
 
-    function createTab(worktreeId: string): TerminalTab {
-        const ordinal = nextOrdinalByWorktree.get(worktreeId) ?? 1;
-        nextOrdinalByWorktree.set(worktreeId, ordinal + 1);
-
-        const id = randomUUID();
-        const tab: TerminalTab = {
-            id,
-            worktreeId,
-            sessionId: `${worktreeId}:terminal:${id}`,
-            title: ordinal === 1 ? "Terminal" : `Terminal ${ordinal}`,
-            ordinal,
+    function toTerminalTab(row: {
+        id: string;
+        worktreeId: string;
+        sessionId: string;
+        title: string;
+        ordinal: number;
+    }): TerminalTab {
+        return {
+            id: row.id,
+            worktreeId: row.worktreeId,
+            sessionId: row.sessionId,
+            title: row.title,
+            ordinal: row.ordinal,
         };
-        tabs.set(id, tab);
-        return tab;
     }
 
-    function listTabs(worktreeId?: string): TerminalTab[] {
-        const all = [...tabs.values()];
-        return worktreeId ? all.filter((tab) => tab.worktreeId === worktreeId) : all;
+    async function createTab(worktreeId: string): Promise<TerminalTab> {
+        // Compute the next ordinal and insert atomically so concurrent creates
+        // can't collide on the @@unique([worktreeId, ordinal]) constraint.
+        const row = await prisma.$transaction(async (tx) => {
+            const latest = await tx.terminalTab.findFirst({
+                where: { worktreeId },
+                orderBy: { ordinal: "desc" },
+            });
+            const ordinal = (latest?.ordinal ?? 0) + 1;
+            const id = randomUUID();
+
+            return tx.terminalTab.create({
+                data: {
+                    id,
+                    worktreeId,
+                    sessionId: `${worktreeId}:terminal:${id}`,
+                    // New tabs are always just "Terminal"; users can rename them.
+                    title: "Terminal",
+                    ordinal,
+                },
+            });
+        });
+
+        return toTerminalTab(row);
     }
 
-    function closeTab(tabId: string): TerminalTab | null {
-        const tab = tabs.get(tabId);
+    async function listTabs(worktreeId?: string): Promise<TerminalTab[]> {
+        const rows = await prisma.terminalTab.findMany({
+            where: worktreeId ? { worktreeId } : undefined,
+            orderBy: { ordinal: "asc" },
+        });
+        return rows.map(toTerminalTab);
+    }
+
+    async function renameTab(tabId: string, title: string): Promise<TerminalTab | null> {
+        const existing = await prisma.terminalTab.findUnique({ where: { id: tabId } });
+        if (!existing) {
+            return null;
+        }
+
+        const updated = await prisma.terminalTab.update({
+            where: { id: tabId },
+            data: { title },
+        });
+        return toTerminalTab(updated);
+    }
+
+    async function closeTab(tabId: string): Promise<TerminalTab | null> {
+        const tab = await prisma.terminalTab.findUnique({ where: { id: tabId } });
         if (!tab) {
             return null;
         }
 
         kill(tab.sessionId);
-        tabs.delete(tabId);
-        return tab;
+        await prisma.terminalTab.delete({ where: { id: tabId } });
+        return toTerminalTab(tab);
     }
 
     function killAll(): void {
@@ -465,5 +612,5 @@ export function createTerminalService() {
         sessions.clear();
     }
 
-    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, listSessions, getScrollback, getExitEvent, killAll, createTab, listTabs, closeTab };
+    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, listSessions, getScrollback, getReattachReplay, scheduleReattachRedraw, getExitEvent, killAll, createTab, listTabs, renameTab, closeTab };
 }

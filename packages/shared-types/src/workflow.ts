@@ -368,6 +368,7 @@ export const WorkspaceSyncEventTypeSchema = z.enum([
   "thread.updated",
   "thread.deleted",
   "terminal.tab.created",
+  "terminal.tab.updated",
   "terminal.tab.closed",
 ]);
 export type WorkspaceSyncEventType = z.infer<typeof WorkspaceSyncEventTypeSchema>;
@@ -380,6 +381,12 @@ export const TerminalTabSchema = z.object({
   ordinal: z.number().int().positive(),
 });
 export type TerminalTab = z.infer<typeof TerminalTabSchema>;
+
+export const MAX_TERMINAL_TAB_TITLE_LENGTH = 48;
+export const RenameTerminalTabTitleInputSchema = z.object({
+  title: z.string().trim().min(1).max(MAX_TERMINAL_TAB_TITLE_LENGTH),
+});
+export type RenameTerminalTabTitleInput = z.infer<typeof RenameTerminalTabTitleInputSchema>;
 
 export const WorkspaceSyncEventSchema = z.object({
   id: z.string(),

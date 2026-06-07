@@ -147,6 +147,10 @@ function isIssueReportPriorityDebugEntry(entry: DebugLogEntry): boolean {
     return true;
   }
 
+  if (entry.source === "terminal.render") {
+    return true;
+  }
+
   return entry.source === "runtime.chats"
     || entry.source === "thread.bootstrap"
     || entry.source === "thread.selection"

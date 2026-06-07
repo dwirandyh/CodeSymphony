@@ -139,9 +139,25 @@ model Worktree {
   threads    ChatThread[]
   automations Automation[]
   automationRuns AutomationRun[]
+  terminalTabs TerminalTab[]
 
   @@unique([repositoryId, branch])
   @@index([repositoryId])
+}
+
+model TerminalTab {
+  id         String   @id @default(cuid())
+  worktreeId String
+  sessionId  String   @unique
+  title      String
+  ordinal    Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  worktree Worktree @relation(fields: [worktreeId], references: [id], onDelete: Cascade)
+
+  @@unique([worktreeId, ordinal])
+  @@index([worktreeId])
 }
 
 model ChatThread {

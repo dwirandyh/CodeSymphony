@@ -22,3 +22,4 @@ dogfood-output/
 artifacts/
 *.tsbuildinfo
 .factory
+.playwright-cli/

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { RenameTerminalTabTitleInputSchema } from "@codesymphony/shared-types";
 
 const runTerminalInputSchema = z.object({
     sessionId: z.string().min(1),
@@ -59,6 +60,7 @@ export function handleTerminalWebSocket(
     );
 
     let initialPayloadSent = false;
+    let reattachRedrawScheduled = false;
     const sendInitialPayload = () => {
         if (initialPayloadSent) {
             return;
@@ -71,7 +73,7 @@ export function handleTerminalWebSocket(
                 return;
             }
 
-            const replay = app.terminalService.getScrollback(sessionId);
+            const replay = app.terminalService.getReattachReplay(sessionId);
             if (replay.length > 0) {
                 socket.send(replay);
             }
@@ -131,7 +133,17 @@ export function handleTerminalWebSocket(
                 const cols = Number(parsed.cols) || 80;
                 const rows = Number(parsed.rows) || 24;
                 app.terminalService.resize(sessionId, cols, rows);
+                const isReattach = !initialPayloadSent;
                 sendInitialPayload();
+                // On the first resize after (re)attaching, force a full repaint
+                // for full-screen TUIs. The client just established the real
+                // terminal size; nudging it server-side guarantees an effective
+                // SIGWINCH that opencode/vim cannot debounce away, without
+                // depending on browser-side fit-burst timing.
+                if (isReattach && !reattachRedrawScheduled) {
+                    reattachRedrawScheduled = true;
+                    app.terminalService.scheduleReattachRedraw(sessionId);
+                }
                 return;
             }
         } catch {
@@ -165,14 +177,14 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
     app.get("/terminal/tabs", async (request, reply) => {
         const query = listTerminalTabsQuerySchema.parse(request.query ?? {});
         return reply.send({
-            data: app.terminalService.listTabs(query.worktreeId),
+            data: await app.terminalService.listTabs(query.worktreeId),
         });
     });
 
     app.post("/terminal/tabs", async (request, reply) => {
         try {
             const input = createTerminalTabInputSchema.parse(request.body ?? {});
-            const tab = app.terminalService.createTab(input.worktreeId);
+            const tab = await app.terminalService.createTab(input.worktreeId);
             app.workspaceEventHub.emit("terminal.tab.created", { worktreeId: tab.worktreeId });
             return reply.code(201).send({ data: tab });
         } catch (error) {
@@ -181,9 +193,25 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
         }
     });
 
+    app.patch("/terminal/tabs/:tabId/title", async (request, reply) => {
+        const { tabId } = request.params as { tabId: string };
+        try {
+            const input = RenameTerminalTabTitleInputSchema.parse(request.body ?? {});
+            const tab = await app.terminalService.renameTab(tabId, input.title);
+            if (!tab) {
+                return reply.code(404).send({ error: "Terminal tab not found" });
+            }
+            app.workspaceEventHub.emit("terminal.tab.updated", { worktreeId: tab.worktreeId });
+            return reply.send({ data: tab });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to rename terminal tab";
+            return reply.code(400).send({ error: message });
+        }
+    });
+
     app.delete("/terminal/tabs/:tabId", async (request, reply) => {
         const { tabId } = request.params as { tabId: string };
-        const tab = app.terminalService.closeTab(tabId);
+        const tab = await app.terminalService.closeTab(tabId);
         if (!tab) {
             return reply.code(404).send({ error: "Terminal tab not found" });
         }
