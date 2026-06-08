@@ -5,6 +5,18 @@ import { handleTerminalWebSocket, registerTerminalRoutes } from "../src/routes/t
 
 let app: FastifyInstance;
 
+function emptySnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    snapshotAnsi: "",
+    rehydrateSequences: "",
+    cwd: null,
+    modes: { alternateScreen: false },
+    cols: 80,
+    rows: 24,
+    ...overrides,
+  };
+}
+
 const mockTerminalService = {
   spawn: vi.fn(),
   write: vi.fn(),
@@ -13,8 +25,7 @@ const mockTerminalService = {
   kill: vi.fn(),
   listSessions: vi.fn(),
   getScrollback: vi.fn(),
-  getReattachReplay: vi.fn(),
-  scheduleReattachRedraw: vi.fn(),
+  getAttachSnapshot: vi.fn(),
   getExitEvent: vi.fn(),
   addListener: vi.fn(() => vi.fn()),
   addExitListener: vi.fn(() => vi.fn()),
@@ -53,7 +64,7 @@ beforeEach(() => {
   mockTerminalService.spawn.mockReturnValue({ resolvedCwd: "/tmp" });
   mockTerminalService.listSessions.mockReturnValue([]);
   mockTerminalService.getScrollback.mockReturnValue("");
-  mockTerminalService.getReattachReplay.mockReturnValue("");
+  mockTerminalService.getAttachSnapshot.mockResolvedValue(emptySnapshot());
   mockTerminalService.getExitEvent.mockReturnValue(null);
   mockTerminalService.addListener.mockReturnValue(vi.fn());
   mockTerminalService.addExitListener.mockReturnValue(vi.fn());
@@ -441,9 +452,14 @@ describe("terminal routes", () => {
       );
     });
 
-    it("waits for the first resize before replaying scrollback and exit state", () => {
+    it("waits for the first client message before sending the attach snapshot and exit state", async () => {
       let messageHandler: ((raw: Buffer | ArrayBuffer | Buffer[]) => void) | null = null;
-      mockTerminalService.getReattachReplay.mockReturnValue("ready\n");
+      mockTerminalService.getAttachSnapshot.mockResolvedValue(emptySnapshot({
+        snapshotAnsi: "ready\n",
+        modes: { alternateScreen: true },
+        cols: 120,
+        rows: 32,
+      }));
       mockTerminalService.getExitEvent.mockReturnValue({ exitCode: 0, signal: 0 });
 
       const socket = {
@@ -463,14 +479,24 @@ describe("terminal routes", () => {
 
       expect(socket.send).not.toHaveBeenCalled();
 
-      messageHandler?.(Buffer.from(JSON.stringify({
+      await messageHandler?.(Buffer.from(JSON.stringify({
         type: "resize",
         cols: 120,
         rows: 32,
       })));
 
       expect(mockTerminalService.resize).toHaveBeenCalledWith("wt1:script-runner:1", 120, 32);
-      expect(socket.send).toHaveBeenNthCalledWith(1, "ready\n");
+      expect(mockTerminalService.getAttachSnapshot).toHaveBeenCalledWith("wt1:script-runner:1");
+
+      const attachFrame = JSON.parse((socket.send.mock.calls[0]?.[0]) as string);
+      expect(attachFrame).toMatchObject({
+        kind: "cs-terminal-event",
+        type: "attach",
+        snapshotAnsi: "ready\n",
+        modes: { alternateScreen: true },
+        cols: 120,
+        rows: 32,
+      });
       expect(socket.send).toHaveBeenNthCalledWith(2, JSON.stringify({
         kind: "cs-terminal-event",
         type: "exit",
@@ -478,37 +504,13 @@ describe("terminal routes", () => {
         signal: 0,
       }));
 
-      messageHandler?.(Buffer.from(JSON.stringify({
+      await messageHandler?.(Buffer.from(JSON.stringify({
         type: "resize",
         cols: 121,
         rows: 33,
       })));
 
       expect(socket.send).toHaveBeenCalledTimes(2);
-    });
-
-    it("forces a TUI redraw once after the first reattach resize", () => {
-      let messageHandler: ((raw: Buffer | ArrayBuffer | Buffer[]) => void) | null = null;
-      const socket = {
-        close: vi.fn(),
-        on: vi.fn((event: string, listener: (...args: any[]) => void) => {
-          if (event === "message") {
-            messageHandler = listener as (raw: Buffer | ArrayBuffer | Buffer[]) => void;
-          }
-        }),
-        send: vi.fn(),
-        readyState: 1,
-      };
-
-      handleTerminalWebSocket(app, socket, {
-        query: { sessionId: "wt1:terminal:abc", cwd: "/tmp/wt1" },
-      });
-
-      messageHandler?.(Buffer.from(JSON.stringify({ type: "resize", cols: 122, rows: 43 })));
-      messageHandler?.(Buffer.from(JSON.stringify({ type: "resize", cols: 121, rows: 42 })));
-
-      expect(mockTerminalService.scheduleReattachRedraw).toHaveBeenCalledTimes(1);
-      expect(mockTerminalService.scheduleReattachRedraw).toHaveBeenCalledWith("wt1:terminal:abc");
     });
   });
 });

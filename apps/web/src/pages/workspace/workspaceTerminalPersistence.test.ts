@@ -157,7 +157,6 @@ describe("closeWorkspaceTerminalTab", () => {
         tabs: [{ id: "a", sessionId: "wt1:terminal:a", title: "Terminal" }],
         activeTabId: "a",
         visible: true,
-        nextOrdinal: 2,
       },
       "a",
     );

@@ -7,6 +7,7 @@ import {
   getConfiguredWebDevPort,
   type RuntimeConfigViteEnv,
 } from "./runtimeConfig";
+import { fixXtermEsbuildMinifyBug } from "./src/build/fixXtermEsbuildMinifyBug";
 
 export default defineConfig(({ mode }) => {
   const env = {
@@ -25,6 +26,7 @@ export default defineConfig(({ mode }) => {
       quoteStyle: "double",
     }),
     react(),
+    fixXtermEsbuildMinifyBug(),
   ];
 
   if (mode === "analyze") {

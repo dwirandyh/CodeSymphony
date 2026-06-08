@@ -21,6 +21,30 @@ function act<T>(callback: () => T): T {
   return result!;
 }
 
+// Opens the stream gate by delivering the server's attach snapshot frame, the
+// way the runtime does before any live output. Use in tests that inject raw
+// PTY output directly.
+function deliverAttachFrame(
+  socketIndex = 0,
+  overrides: Record<string, unknown> = {},
+): void {
+  act(() => {
+    MockWebSocket.instances[socketIndex]?.onmessage?.(new MessageEvent("message", {
+      data: JSON.stringify({
+        kind: "cs-terminal-event",
+        type: "attach",
+        snapshotAnsi: "",
+        rehydrateSequences: "",
+        modes: { alternateScreen: false },
+        cwd: "/tmp",
+        cols: 80,
+        rows: 24,
+        ...overrides,
+      }),
+    }));
+  });
+}
+
 const { writeTerminalDropFiles } = vi.hoisted(() => ({
   writeTerminalDropFiles: vi.fn(),
 }));
@@ -52,12 +76,16 @@ const mockTerminal = {
   dispose: vi.fn(),
   focus: vi.fn(),
   clear: vi.fn(),
+  reset: vi.fn(),
   scrollToBottom: vi.fn(),
   rows: 24,
   registerLinkProvider: vi.fn((provider: ILinkProvider) => {
     registeredLinkProvider = provider;
     return { dispose: vi.fn() };
   }),
+  parser: {
+    registerCsiHandler: vi.fn((_selector: { intermediates?: string; final: string }) => ({ dispose: vi.fn() })),
+  },
   textarea: null as HTMLTextAreaElement | null,
   buffer: {
     active: {
@@ -650,6 +678,10 @@ describe("TerminalTab", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
+    deliverAttachFrame();
+    mockTerminal.write.mockClear();
+    mockTerminal.refresh.mockClear();
+
     const fullscreenChunk = "\x1b[?1049h\x1b[?2026hOpenCode\x1b[?2026l";
     act(() => {
       MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
@@ -668,6 +700,308 @@ describe("TerminalTab", () => {
     });
 
     expect(mockTerminal.refresh).toHaveBeenCalledWith(0, 23);
+  });
+
+  it("nudges replayed alternate-screen chunks even when the buffer is already alternate", async () => {
+    vi.useFakeTimers();
+    const clientWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => 1200,
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get: () => 720,
+    });
+
+    try {
+      act(() => {
+        root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+
+      deliverAttachFrame();
+
+      MockWebSocket.instances[0]?.send.mockClear();
+      mockTerminal.refresh.mockClear();
+      mockTerminal.scrollToBottom.mockClear();
+      mockTerminal.write.mockClear();
+
+      const replayChunk = "\x1b[?1049hOpenCode";
+      act(() => {
+        MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+          data: replayChunk,
+        }));
+      });
+
+      const writeCallback = mockTerminal.write.mock.calls.at(-1)?.[1];
+      expect(mockTerminal.write).toHaveBeenLastCalledWith(replayChunk, expect.any(Function));
+
+      act(() => {
+        if (typeof writeCallback === "function") {
+          writeCallback();
+        }
+      });
+
+      expect(mockTerminal.scrollToBottom).toHaveBeenCalledTimes(1);
+      expect(mockTerminal.refresh).toHaveBeenCalledWith(0, 23);
+
+      mockTerminal.write.mockClear();
+      mockTerminal.refresh.mockClear();
+      mockTerminal.scrollToBottom.mockClear();
+
+      act(() => {
+        MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+          data: "next tui frame",
+        }));
+      });
+
+      const nextWriteCallback = mockTerminal.write.mock.calls.at(-1)?.[1];
+      expect(mockTerminal.write).toHaveBeenLastCalledWith("next tui frame", expect.any(Function));
+
+      act(() => {
+        if (typeof nextWriteCallback === "function") {
+          nextWriteCallback();
+        }
+      });
+
+      expect(mockTerminal.scrollToBottom).toHaveBeenCalledTimes(1);
+      expect(mockTerminal.refresh).toHaveBeenCalledWith(0, 23);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+
+      expect(MockWebSocket.instances[0]?.send.mock.calls.map(([message]) => message)).toEqual([
+        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+      ]);
+    } finally {
+      if (clientWidthDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", clientWidthDescriptor);
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor);
+      }
+    }
+  });
+
+  it("registers query-response suppression handlers on the terminal parser", async () => {
+    vi.useFakeTimers();
+
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+
+    const finals = mockTerminal.parser.registerCsiHandler.mock.calls.map(
+      (call) => call[0],
+    );
+    expect(finals).toContainEqual({ final: "R" });
+    expect(finals).toContainEqual({ final: "I" });
+    expect(finals).toContainEqual({ final: "O" });
+    expect(finals).toContainEqual({ intermediates: "$", final: "y" });
+  });
+
+  it("restores an alternate-screen TUI deterministically from the attach snapshot", async () => {
+    vi.useFakeTimers();
+
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+
+    mockTerminal.write.mockClear();
+
+    act(() => {
+      MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          kind: "cs-terminal-event",
+          type: "attach",
+          // The serialized alt-screen snapshot already carries the alt-enter
+          // sequence plus the painted screen contents.
+          snapshotAnsi: "\x1b[?1049h\x1b[HOpenCode screen contents",
+          rehydrateSequences: "\x1b[?2004h",
+          modes: { alternateScreen: true },
+          cwd: "/tmp",
+          cols: 80,
+          rows: 24,
+        }),
+      }));
+    });
+
+    // Drive any write callbacks so the chained writes run to completion.
+    for (let i = 0; i < mockTerminal.write.mock.calls.length; i += 1) {
+      const callback = mockTerminal.write.mock.calls[i]?.[1];
+      if (typeof callback === "function") {
+        act(() => {
+          callback();
+        });
+      }
+    }
+
+    const writes = mockTerminal.write.mock.calls.map((call) => call[0]);
+    // The snapshot body MUST be written so the alt screen actually paints —
+    // otherwise the pane stays blank until a manual refresh.
+    expect(writes).toContain("\x1b[?1049h\x1b[HOpenCode screen contents");
+    // Input-mode rehydrate is applied too.
+    expect(writes).toContain("\x1b[?2004h");
+  });
+
+  it("queues live output until the attach snapshot is applied then flushes it", async () => {
+    vi.useFakeTimers();
+
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+
+    mockTerminal.write.mockClear();
+
+    // Live data arrives before the attach frame — must be held, not written.
+    act(() => {
+      MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+        data: "live-before-attach",
+      }));
+    });
+    expect(mockTerminal.write).not.toHaveBeenCalledWith("live-before-attach");
+
+    // A normal-buffer attach frame restores, then flushes the queued data.
+    act(() => {
+      MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          kind: "cs-terminal-event",
+          type: "attach",
+          snapshotAnsi: "",
+          rehydrateSequences: "",
+          modes: { alternateScreen: false },
+          cwd: "/tmp",
+          cols: 80,
+          rows: 24,
+        }),
+      }));
+    });
+
+    const flushedWrites = mockTerminal.write.mock.calls.map(([data]) => data);
+    expect(flushedWrites).toContain("live-before-attach");
+  });
+
+  it("renders live output even if the attach snapshot never arrives (no permanent gate)", async () => {
+    vi.useFakeTimers();
+
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+
+    mockTerminal.write.mockClear();
+
+    // Live output arrives, but the server never sends an attach frame (e.g. the
+    // first resize never fired, so the deferred snapshot was never requested).
+    act(() => {
+      MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+        data: "\x1b[?1049hopencode TUI paint",
+      }));
+    });
+
+    // The gate must open on its own after the fallback timeout so the terminal
+    // never stays blank forever waiting on an attach frame.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    const writes = mockTerminal.write.mock.calls.map((call) => call[0]);
+    expect(writes).toContain("\x1b[?1049hopencode TUI paint");
+  });
+
+  it("nudges live alternate-screen entry split across websocket frames", async () => {
+    vi.useFakeTimers();
+    const clientWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get: () => 1200,
+    });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get: () => 720,
+    });
+
+    try {
+      act(() => {
+        root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+
+      deliverAttachFrame();
+
+      MockWebSocket.instances[0]?.send.mockClear();
+      mockTerminal.refresh.mockClear();
+      mockTerminal.scrollToBottom.mockClear();
+      mockTerminal.write.mockClear();
+
+      act(() => {
+        MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+          data: "\x1b[?10",
+        }));
+        MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+          data: "49hOpenCode",
+        }));
+      });
+
+      const writeCallback = mockTerminal.write.mock.calls.at(-1)?.[1];
+      expect(mockTerminal.write).toHaveBeenLastCalledWith("49hOpenCode", expect.any(Function));
+
+      act(() => {
+        if (typeof writeCallback === "function") {
+          writeCallback();
+        }
+      });
+
+      expect(mockTerminal.scrollToBottom).toHaveBeenCalledTimes(1);
+      expect(mockTerminal.refresh).toHaveBeenCalledWith(0, 23);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+
+      expect(MockWebSocket.instances[0]?.send.mock.calls.map(([message]) => message)).toEqual([
+        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+      ]);
+    } finally {
+      if (clientWidthDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", clientWidthDescriptor);
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor);
+      }
+    }
   });
 
   it("does not reconnect when only onSessionExit changes and still uses the latest callback", async () => {

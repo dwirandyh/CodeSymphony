@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { RenameTerminalTabTitleInputSchema } from "@codesymphony/shared-types";
+import { appendRuntimeDebugLog } from "./debug.js";
 
 const runTerminalInputSchema = z.object({
     sessionId: z.string().min(1),
@@ -60,8 +61,7 @@ export function handleTerminalWebSocket(
     );
 
     let initialPayloadSent = false;
-    let reattachRedrawScheduled = false;
-    const sendInitialPayload = () => {
+    const sendInitialPayload = async () => {
         if (initialPayloadSent) {
             return;
         }
@@ -73,13 +73,26 @@ export function handleTerminalWebSocket(
                 return;
             }
 
-            const replay = app.terminalService.getReattachReplay(sessionId);
-            if (replay.length > 0) {
-                socket.send(replay);
+            // Structured attach frame: the client restores deterministically from
+            // the headless emulator's snapshot (serialized screen + modes + cwd)
+            // instead of replaying raw scrollback and guessing the alt-screen
+            // state. This is what lets a reattaching client repaint a running TUI.
+            const snapshot = await app.terminalService.getAttachSnapshot(sessionId);
+            if (socket.readyState === 1) {
+                socket.send(JSON.stringify({
+                    kind: "cs-terminal-event",
+                    type: "attach",
+                    snapshotAnsi: snapshot.snapshotAnsi,
+                    rehydrateSequences: snapshot.rehydrateSequences,
+                    modes: snapshot.modes,
+                    cwd: snapshot.cwd,
+                    cols: snapshot.cols,
+                    rows: snapshot.rows,
+                }));
             }
 
             const exitEvent = app.terminalService.getExitEvent(sessionId);
-            if (exitEvent) {
+            if (exitEvent && socket.readyState === 1) {
                 socket.send(JSON.stringify({
                     kind: "cs-terminal-event",
                     type: "exit",
@@ -95,12 +108,38 @@ export function handleTerminalWebSocket(
     const removeListener = app.terminalService.addListener(
         sessionId,
         (data: string) => {
+            // Decisive delivery instrument: when the PTY emits the alt-screen
+            // enter (a full-screen TUI starting), log whether we actually had an
+            // open socket to send it on. Pairs with the client's
+            // `client.altEnterChunk` — server "sent" + client "received: 0" means
+            // the bytes were dropped in transit, not a render bug.
+            if (data.includes("\x1b[?1049h")) {
+                appendRuntimeDebugLog({
+                    source: "terminal.render",
+                    message: "server.altEnterForward",
+                    data: {
+                        sessionId,
+                        worktreeId,
+                        socketReadyState: socket.readyState,
+                        willSend: socket.readyState === 1,
+                        chunkLength: data.length,
+                    },
+                });
+            }
             try {
                 if (socket.readyState === 1) {
                     socket.send(data);
                 }
-            } catch {
-                // ignore send errors
+            } catch (sendError) {
+                appendRuntimeDebugLog({
+                    source: "terminal.render",
+                    message: "server.sendError",
+                    data: {
+                        sessionId,
+                        worktreeId,
+                        message: sendError instanceof Error ? sendError.message : String(sendError),
+                    },
+                });
             }
         },
         { replay: false },
@@ -133,25 +172,15 @@ export function handleTerminalWebSocket(
                 const cols = Number(parsed.cols) || 80;
                 const rows = Number(parsed.rows) || 24;
                 app.terminalService.resize(sessionId, cols, rows);
-                const isReattach = !initialPayloadSent;
-                sendInitialPayload();
-                // On the first resize after (re)attaching, force a full repaint
-                // for full-screen TUIs. The client just established the real
-                // terminal size; nudging it server-side guarantees an effective
-                // SIGWINCH that opencode/vim cannot debounce away, without
-                // depending on browser-side fit-burst timing.
-                if (isReattach && !reattachRedrawScheduled) {
-                    reattachRedrawScheduled = true;
-                    app.terminalService.scheduleReattachRedraw(sessionId);
-                }
-                return;
+                return sendInitialPayload();
             }
         } catch {
             // Not JSON — treat as raw terminal input
         }
 
-        sendInitialPayload();
+        const payload = sendInitialPayload();
         app.terminalService.write(sessionId, message);
+        return payload;
     });
 
     socket.on("close", () => {

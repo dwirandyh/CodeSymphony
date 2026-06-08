@@ -34,6 +34,8 @@
     "@fastify/websocket": "^11.2.0",
     "@opencode-ai/sdk": "^1.14.20",
     "@prisma/client": "^6.4.1",
+    "@xterm/addon-serialize": "0.15.0-beta.285",
+    "@xterm/headless": "6.1.0-beta.285",
     "fastify": "^5.2.1",
     "node-pty": "1.1.0",
     "prisma": "^6.4.1",

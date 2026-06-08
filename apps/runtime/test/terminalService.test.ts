@@ -211,6 +211,9 @@ describe("terminalService", () => {
         FORCE_COLOR: process.env.FORCE_COLOR,
         CURSOR_AGENT: process.env.CURSOR_AGENT,
         CURSOR_INVOKED_AS: process.env.CURSOR_INVOKED_AS,
+        OPENCODE: process.env.OPENCODE,
+        OPENCODE_PROCESS_ROLE: process.env.OPENCODE_PROCESS_ROLE,
+        OPENCODE_RUN_ID: process.env.OPENCODE_RUN_ID,
         TERM_PROGRAM: process.env.TERM_PROGRAM,
         CODESYMPHONY_TERMINAL_ZDOTDIR: process.env.CODESYMPHONY_TERMINAL_ZDOTDIR,
         CODESYMPHONY_TERMINAL_ZSHRC_TEMPLATE: process.env.CODESYMPHONY_TERMINAL_ZSHRC_TEMPLATE,
@@ -220,6 +223,9 @@ describe("terminalService", () => {
       process.env.FORCE_COLOR = "0";
       process.env.CURSOR_AGENT = "1";
       process.env.CURSOR_INVOKED_AS = "agent";
+      process.env.OPENCODE = "1";
+      process.env.OPENCODE_PROCESS_ROLE = "worker";
+      process.env.OPENCODE_RUN_ID = "run-1";
       process.env.TERM_PROGRAM = "zed";
       process.env.CODESYMPHONY_TERMINAL_ZDOTDIR = "/tmp/codesymphony-terminal-zsh";
       process.env.CODESYMPHONY_TERMINAL_ZSHRC_TEMPLATE = "/Applications/CodeSymphony.app/Contents/Resources/runtime-bundle/terminal-zsh/.zshrc";
@@ -233,7 +239,10 @@ describe("terminalService", () => {
         expect(env?.FORCE_COLOR).toBe("1");
         expect(env?.CURSOR_AGENT).toBeUndefined();
         expect(env?.CURSOR_INVOKED_AS).toBeUndefined();
-        expect(env?.TERM_PROGRAM).toBe("CodeSymphony");
+        expect(env?.OPENCODE).toBeUndefined();
+        expect(env?.OPENCODE_PROCESS_ROLE).toBeUndefined();
+        expect(env?.OPENCODE_RUN_ID).toBeUndefined();
+        expect(env?.TERM_PROGRAM).toBe("kitty");
         expect(env?.ZDOTDIR).toBe("/tmp/codesymphony-terminal-zsh");
         expect(fs.mkdirSync).toHaveBeenCalledWith("/tmp/codesymphony-terminal-zsh", { recursive: true });
         expect(fs.copyFileSync).toHaveBeenCalledWith(
@@ -269,7 +278,7 @@ describe("terminalService", () => {
             COLORTERM: "truecolor",
             FORCE_COLOR: "1",
             CLICOLOR_FORCE: "1",
-            TERM_PROGRAM: "CodeSymphony",
+            TERM_PROGRAM: "kitty",
           }),
         }),
       );
@@ -626,68 +635,55 @@ describe("terminalService", () => {
     });
   });
 
-  describe("fullscreen TUI reattach", () => {
+  describe("headless emulator query responses", () => {
     const ALT_ENTER = "\x1b[?1049h";
-    const ALT_EXIT = "\x1b[?1049l";
 
-    it("prefixes reattach replay with alt-screen enter when the TUI is on the alternate buffer", () => {
+    it("answers a DA1 query by writing the reply back to the PTY with no listeners attached", async () => {
       service.spawn("s1", "/tmp");
-      currentMockPty._emit("data", `${ALT_ENTER}opencode frame`);
+      const pty = currentMockPty;
+      pty.write.mockClear();
 
-      expect(service.getReattachReplay("s1")).toBe(`${ALT_ENTER}${ALT_ENTER}opencode frame`);
+      pty._emit("data", "\x1b[c");
+      // Emulator writes are async; let xterm process and emit the reply.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const written = pty.write.mock.calls.map((call) => call[0]).join("");
+      expect(written).toContain("\x1b[?");
     });
 
-    it("does not prefix reattach replay once the TUI leaves the alternate buffer", () => {
+    it("produces an attach snapshot reflecting alternate-screen mode", async () => {
       service.spawn("s1", "/tmp");
-      currentMockPty._emit("data", `${ALT_ENTER}opencode frame`);
-      currentMockPty._emit("data", `${ALT_EXIT}back to shell`);
+      const pty = currentMockPty;
+      service.resize("s1", 122, 43);
+      pty._emit("data", `${ALT_ENTER}opencode frame`);
 
-      expect(service.getReattachReplay("s1")).toBe(`${ALT_ENTER}opencode frame${ALT_EXIT}back to shell`);
+      const snapshot = await service.getAttachSnapshot("s1");
+      expect(snapshot.modes.alternateScreen).toBe(true);
+      expect(snapshot.cols).toBe(122);
+      expect(snapshot.rows).toBe(43);
     });
 
-    it("detects alt-screen enter even when the sequence is split across chunks", () => {
+    it("captures written text in the attach snapshot", async () => {
+      service.spawn("s1", "/tmp");
+      currentMockPty._emit("data", "hello from shell");
+
+      const snapshot = await service.getAttachSnapshot("s1");
+      expect(snapshot.snapshotAnsi).toContain("hello from shell");
+    });
+
+    it("detects alt-screen enter even when the sequence is split across chunks", async () => {
       service.spawn("s1", "/tmp");
       currentMockPty._emit("data", "\x1b[?10");
       currentMockPty._emit("data", "49hframe");
 
-      expect(service.getReattachReplay("s1")).toBe(`${ALT_ENTER}\x1b[?1049hframe`);
+      const snapshot = await service.getAttachSnapshot("s1");
+      expect(snapshot.modes.alternateScreen).toBe(true);
     });
 
-    it("forces a transient resize SIGWINCH so a reattached TUI repaints immediately", () => {
-      vi.useFakeTimers();
-      try {
-        service.spawn("s1", "/tmp");
-        const pty = currentMockPty;
-        service.resize("s1", 122, 43);
-        pty._emit("data", `${ALT_ENTER}frame`);
-        pty.resize.mockClear();
-
-        service.scheduleReattachRedraw("s1");
-        expect(pty.resize).toHaveBeenCalledWith(121, 43);
-        expect(pty.resize).toHaveBeenCalledTimes(1);
-
-        vi.advanceTimersByTime(200);
-        expect(pty.resize).toHaveBeenCalledWith(122, 43);
-        expect(pty.resize).toHaveBeenCalledTimes(2);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("does not nudge resize when the session is not on the alternate buffer", () => {
-      vi.useFakeTimers();
-      try {
-        service.spawn("s1", "/tmp");
-        const pty = currentMockPty;
-        service.resize("s1", 122, 43);
-        pty.resize.mockClear();
-
-        service.scheduleReattachRedraw("s1");
-        vi.advanceTimersByTime(200);
-        expect(pty.resize).not.toHaveBeenCalled();
-      } finally {
-        vi.useRealTimers();
-      }
+    it("returns an empty snapshot for an unknown session", async () => {
+      const snapshot = await service.getAttachSnapshot("nope");
+      expect(snapshot.snapshotAnsi).toBe("");
+      expect(snapshot.modes.alternateScreen).toBe(false);
     });
   });
 

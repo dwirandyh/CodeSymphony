@@ -5,26 +5,11 @@ import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
 import type { TerminalTab } from "@codesymphony/shared-types";
 import { buildClaudeRuntimeEnv } from "../claude/shellEnv.js";
+import { appendRuntimeDebugLog } from "../routes/debug.js";
+import { HeadlessEmulator, DEFAULT_MODES, type TerminalSnapshot } from "./headlessEmulator.js";
 import { isPtyIoError, spawnPty, type PtyProcess } from "./ptyBackend.js";
 
 const MAX_SCROLLBACK_BYTES = 50_000;
-
-// Entering/leaving the alternate screen buffer is how full-screen TUIs
-// (opencode, vim, etc.) start and stop. We track this server-side so a
-// reattaching client can be told to switch to the alternate buffer before the
-// scrollback replay (the alt-enter byte itself may have been evicted from the
-// scrollback ring buffer), and so we only force a redraw SIGWINCH for sessions
-// that are actually running a TUI.
-const ALT_SCREEN_ENTER = "\x1b[?1049h";
-const ALT_SCREEN_EXIT = "\x1b[?1049l";
-// The alt-screen sequences can be split across PTY data chunks; keep a short
-// tail of recent output so a sequence straddling two chunks is still detected.
-const ALT_SCREEN_SCAN_TAIL = ALT_SCREEN_ENTER.length - 1;
-// Full SIGWINCH redraw nudge: shrink by one column (a real size change so the
-// TUI cannot debounce it away), hold past the TUI's resize debounce window,
-// then restore. Mirrors the client reconnect nudge but is immune to browser
-// fit-burst timing races.
-const REATTACH_REDRAW_RESTORE_DELAY_MS = 120;
 
 interface TerminalSession {
     id: string;
@@ -37,9 +22,9 @@ interface TerminalSession {
     scrollbackSize: number;
     active: boolean;
     exitEvent: { exitCode: number; signal: number } | null;
-    onAlternateScreen: boolean;
-    altScreenScanTail: string;
+    emulator: HeadlessEmulator;
     lastResize: { cols: number; rows: number } | null;
+    lastLoggedAlternateScreen: boolean;
 }
 
 interface SpawnOptions {
@@ -73,10 +58,11 @@ const TERMINAL_ENV_STRIP_EXACT = new Set([
     "CURSOR_INVOKED_AS",
     "CURSOR_ASKPASS_SECRET",
     "CURSOR_ASKPASS_SOCKET",
+    "OPENCODE",
     "ZED_TERM",
 ]);
 
-const TERMINAL_ENV_STRIP_PREFIXES = ["CURSOR_"];
+const TERMINAL_ENV_STRIP_PREFIXES = ["CURSOR_", "OPENCODE_"];
 
 function stripAgentEnvForTerminal(env: Record<string, string>): void {
     for (const key of Object.keys(env)) {
@@ -145,7 +131,9 @@ function buildTerminalEnv(): Record<string, string> {
         COLORTERM: "truecolor",
         FORCE_COLOR: "1",
         CLICOLOR_FORCE: "1",
-        TERM_PROGRAM: "CodeSymphony",
+        // xterm.js emits kitty-compatible keyboard bytes; advertise kitty so
+        // agent TUIs parse them and avoid inherited runtime terminal quirks.
+        TERM_PROGRAM: "kitty",
     };
 }
 
@@ -156,6 +144,52 @@ function normalizeCwd(cwd?: string): string | undefined {
 
 function isWorkspaceTerminalSessionId(sessionId: string): boolean {
     return /(?:^|:)terminal(?:$|:)/u.test(sessionId) || /^default:\d+$/u.test(sessionId);
+}
+
+// Detect terminal capability queries a full-screen TUI sends at startup and may
+// block on. We log which queries appear (and whether the emulator answers them)
+// so a stuck-launch issue report shows exactly which query went unanswered.
+// We intentionally summarize — never log raw PTY bytes — so this stays out of
+// the issue-report raw-payload redaction path.
+const TERMINAL_QUERY_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
+    { name: "DA1", pattern: /\x1b\[(?:\?|>|=)?[0-9;]*c/u },
+    { name: "DA2", pattern: /\x1b\[>[0-9;]*c/u },
+    { name: "DSR", pattern: /\x1b\[(?:\?)?[0-9;]*n/u },
+    { name: "XTVERSION", pattern: /\x1b\[>[0-9;]*q/u },
+    { name: "kittyKeyboard", pattern: /\x1b\[\?[0-9;]*u/u },
+    { name: "DECRQM", pattern: /\x1b\[\?[0-9;]+\$p/u },
+    { name: "OSC10_11", pattern: /\x1b\][0-9]{2};\?(?:\x07|\x1b\\)/u },
+];
+
+// Replies the emulator emits. Distinct from the query patterns because a reply
+// often has a different shape than its query (e.g. OSC color replies carry an
+// rgb spec rather than "?"), so we can confirm in a report that the emulator
+// actually answered, not just that a query arrived.
+const TERMINAL_REPLY_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
+    { name: "kittyKeyboard", pattern: /\x1b\[\?[0-9;]*u/u },
+    { name: "DA", pattern: /\x1b\[(?:\?|>)?[0-9;]*c/u },
+    { name: "OSC10_11", pattern: /\x1b\][0-9]{2};rgb:/u },
+];
+
+function matchPatterns(
+    chunk: string,
+    patterns: Array<{ name: string; pattern: RegExp }>,
+): string[] {
+    const found: string[] = [];
+    for (const { name, pattern } of patterns) {
+        if (pattern.test(chunk)) {
+            found.push(name);
+        }
+    }
+    return found;
+}
+
+function detectTerminalQueries(chunk: string): string[] {
+    return matchPatterns(chunk, TERMINAL_QUERY_PATTERNS);
+}
+
+function detectTerminalReplies(chunk: string): string[] {
+    return matchPatterns(chunk, TERMINAL_REPLY_PATTERNS);
 }
 
 export function resolveShellCandidates(): string[] {
@@ -171,22 +205,6 @@ export function buildExecShellArgs(shell: string | undefined, command: string): 
     }
 
     return ["-lc", command];
-}
-
-// Update alternate-screen tracking from a fresh PTY data chunk. The alt
-// enter/exit sequences can be split across chunks, so we prepend a short tail
-// of the previous chunk before scanning and remember the last alt transition
-// that appears in the combined window.
-function updateAlternateScreenState(session: TerminalSession, chunk: string): void {
-    const scanWindow = session.altScreenScanTail + chunk;
-    const lastEnter = scanWindow.lastIndexOf(ALT_SCREEN_ENTER);
-    const lastExit = scanWindow.lastIndexOf(ALT_SCREEN_EXIT);
-
-    if (lastEnter !== -1 || lastExit !== -1) {
-        session.onAlternateScreen = lastEnter > lastExit;
-    }
-
-    session.altScreenScanTail = scanWindow.slice(-ALT_SCREEN_SCAN_TAIL);
 }
 
 export function createTerminalService(prisma: PrismaClient) {
@@ -258,8 +276,21 @@ export function createTerminalService(prisma: PrismaClient) {
             existing.active = false;
             existing.ptyProcess.kill();
         }
+        existing?.emulator.dispose();
 
         const { ptyProcess, resolvedCwd } = spawnProcess(normalizedCwd, options);
+
+        const sessionWorktreeId = sessionId.includes(":") ? sessionId.split(":", 1)[0] : undefined;
+
+        const emulator = new HeadlessEmulator({
+            cols: existing?.lastResize?.cols ?? 80,
+            rows: existing?.lastResize?.rows ?? 24,
+            // Match the web client's XTERM_THEME so OSC 10/11 color queries (which
+            // opencode sends at startup) get a reply consistent with the visible UI.
+            foreground: "#d4d8e0",
+            background: "#0f1218",
+        });
+        emulator.setCwd(resolvedCwd);
 
         const session: TerminalSession = {
             id: sessionId,
@@ -272,10 +303,40 @@ export function createTerminalService(prisma: PrismaClient) {
             scrollbackSize: 0,
             active: true,
             exitEvent: null,
-            onAlternateScreen: false,
-            altScreenScanTail: "",
+            emulator,
             lastResize: existing?.lastResize ?? null,
+            lastLoggedAlternateScreen: false,
         };
+
+        // The headless emulator answers terminal capability queries (DA1/DSR,
+        // kitty keyboard, etc.) that full-screen TUIs send on startup and then
+        // block waiting for. Without a responder, opencode/vim stall until their
+        // internal query timeout (the "stuck until refresh" bug). The reply is
+        // written straight back to the PTY regardless of whether any client is
+        // attached.
+        emulator.onData((reply) => {
+            if (!session.active) {
+                return;
+            }
+            const answeredQueries = detectTerminalReplies(reply);
+            if (answeredQueries.length > 0) {
+                appendRuntimeDebugLog({
+                    source: "terminal.render",
+                    message: "emulator.queryReply",
+                    data: {
+                        sessionId,
+                        worktreeId: sessionWorktreeId,
+                        queries: answeredQueries,
+                        replyLength: reply.length,
+                    },
+                });
+            }
+            try {
+                session.ptyProcess.write(reply);
+            } catch (error) {
+                handlePtyIoFailure(sessionId, session, error);
+            }
+        });
 
         ptyProcess.onData((data) => {
             // Buffer output for replay on reconnect
@@ -286,10 +347,41 @@ export function createTerminalService(prisma: PrismaClient) {
                 session.scrollbackSize -= removed.length;
             }
 
-            // Track whether the session is sitting on the alternate screen
-            // buffer (a full-screen TUI) so reattach can restore it cleanly even
-            // after the alt-enter byte is evicted from the scrollback ring.
-            updateAlternateScreenState(session, data);
+            // Surface which capability queries the TUI emitted so a stuck-launch
+            // issue report shows whether the emulator had a query to answer.
+            const ptyQueries = detectTerminalQueries(data);
+            if (ptyQueries.length > 0) {
+                appendRuntimeDebugLog({
+                    source: "terminal.render",
+                    message: "pty.query",
+                    data: {
+                        sessionId,
+                        worktreeId: sessionWorktreeId,
+                        queries: ptyQueries,
+                    },
+                });
+            }
+
+            // Feed the headless emulator so it answers queries and keeps an
+            // authoritative screen model for snapshot-based reattach.
+            session.emulator.write(data);
+
+            // Ground truth for stuck-TUI reports: does the PTY ever actually
+            // enter the alternate screen? Log every flip of the emulator's
+            // alt-screen mode (the "refresh fixes it" path relies on this state).
+            const altNow = session.emulator.getModes().alternateScreen;
+            if (altNow !== session.lastLoggedAlternateScreen) {
+                session.lastLoggedAlternateScreen = altNow;
+                appendRuntimeDebugLog({
+                    source: "terminal.render",
+                    message: "pty.alternateScreen",
+                    data: {
+                        sessionId,
+                        worktreeId: sessionWorktreeId,
+                        alternateScreen: altNow,
+                    },
+                });
+            }
 
             for (const listener of session.listeners) {
                 listener(data);
@@ -359,6 +451,7 @@ export function createTerminalService(prisma: PrismaClient) {
         } catch (error) {
             handlePtyIoFailure(sessionId, session, error);
         }
+        session.emulator.resize(cols, rows);
     }
 
     function addListener(
@@ -414,6 +507,7 @@ export function createTerminalService(prisma: PrismaClient) {
             if (session.active) {
                 session.ptyProcess.kill();
             }
+            session.emulator.dispose();
             sessions.delete(sessionId);
         }
     }
@@ -465,64 +559,32 @@ export function createTerminalService(prisma: PrismaClient) {
         return session.scrollback.join("");
     }
 
-    // Scrollback to send to a freshly attached client. If the session is on the
-    // alternate screen buffer (a full-screen TUI), prepend the alt-enter
-    // sequence so the new xterm switches to the alternate buffer before the
-    // replay paints — the original alt-enter byte may have been evicted from
-    // the scrollback ring by a long-running TUI.
-    function getReattachReplay(sessionId: string): string {
+    // Structured snapshot for a freshly attaching client. The headless emulator
+    // holds the authoritative screen state, so we flush pending writes then
+    // serialize: screen contents, input-affecting modes (including whether the
+    // session is on the alternate screen buffer for a full-screen TUI), and cwd.
+    // The client restores deterministically from this instead of replaying raw
+    // scrollback and guessing the alt-screen state.
+    async function getAttachSnapshot(sessionId: string): Promise<TerminalSnapshot> {
         const session = sessions.get(sessionId);
-        if (!session || session.scrollback.length === 0) {
-            return "";
+        if (!session) {
+            return {
+                snapshotAnsi: "",
+                rehydrateSequences: "",
+                cwd: null,
+                modes: { ...DEFAULT_MODES },
+                cols: 80,
+                rows: 24,
+            };
         }
 
-        const replay = session.scrollback.join("");
-        return session.onAlternateScreen ? `${ALT_SCREEN_ENTER}${replay}` : replay;
-    }
-
-    // Force a full repaint of a reattached full-screen TUI by briefly resizing
-    // the PTY (a genuine size change the TUI cannot debounce away) and then
-    // restoring it. This is the server-side equivalent of the client reconnect
-    // nudge, but immune to browser fit-burst timing races. No-op for sessions
-    // that are not on the alternate screen buffer.
-    function scheduleReattachRedraw(sessionId: string): void {
-        const session = sessions.get(sessionId);
-        if (!session?.active || !session.onAlternateScreen) {
-            return;
+        await session.emulator.flush();
+        const snapshot = session.emulator.getSnapshot();
+        if (session.lastResize) {
+            snapshot.cols = session.lastResize.cols;
+            snapshot.rows = session.lastResize.rows;
         }
-
-        const current = session.lastResize;
-        if (!current) {
-            return;
-        }
-
-        const nudged = current.cols > 2
-            ? { cols: current.cols - 1, rows: current.rows }
-            : current.rows > 2
-                ? { cols: current.cols, rows: current.rows - 1 }
-                : null;
-        if (!nudged) {
-            return;
-        }
-
-        try {
-            session.ptyProcess.resize(nudged.cols, nudged.rows);
-        } catch (error) {
-            handlePtyIoFailure(sessionId, session, error);
-            return;
-        }
-
-        setTimeout(() => {
-            const latest = sessions.get(sessionId);
-            if (latest !== session || !session.active) {
-                return;
-            }
-            try {
-                session.ptyProcess.resize(current.cols, current.rows);
-            } catch (error) {
-                handlePtyIoFailure(sessionId, session, error);
-            }
-        }, REATTACH_REDRAW_RESTORE_DELAY_MS);
+        return snapshot;
     }
 
     function getExitEvent(sessionId: string): { exitCode: number; signal: number } | null {
@@ -608,9 +670,10 @@ export function createTerminalService(prisma: PrismaClient) {
             if (session.active) {
                 session.ptyProcess.kill();
             }
+            session.emulator.dispose();
         }
         sessions.clear();
     }
 
-    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, listSessions, getScrollback, getReattachReplay, scheduleReattachRedraw, getExitEvent, killAll, createTab, listTabs, renameTab, closeTab };
+    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, listSessions, getScrollback, getAttachSnapshot, getExitEvent, killAll, createTab, listTabs, renameTab, closeTab };
 }

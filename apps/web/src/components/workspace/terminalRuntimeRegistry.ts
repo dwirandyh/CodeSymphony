@@ -12,15 +12,21 @@ import type { IDisposable, ILink } from "@xterm/xterm";
 import { debugLog } from "../../lib/debugLog";
 import { resolveRuntimeApiBase } from "../../lib/runtimeUrl";
 import { parseFileLocation } from "../../lib/worktree";
+import { suppressQueryResponses } from "./suppressQueryResponses";
 
 const FIT_RETRY_DELAYS_MS = [0, 48, 120, 240, 400];
 const RECONNECT_REDRAW_NUDGE_DELAYS_MS = [120, 360];
 const RECONNECT_REDRAW_RESTORE_DELAY_MS = 48;
+// Fallback for the live-output gate: if the server's attach snapshot never
+// arrives (e.g. the first resize that triggers it never fired), open the gate
+// anyway so the terminal renders live output instead of staying blank forever.
+const STREAM_GATE_FALLBACK_MS = 250;
 const MIN_VALID_TERMINAL_COLS = 2;
 const MIN_VALID_TERMINAL_ROWS = 2;
 const PARKED_TERMINAL_CONTAINER_ID = "cs-terminal-runtime-parking";
 const MAX_TERMINAL_TITLE_LENGTH = 32;
 const FULLSCREEN_REDRAW_SEQUENCE_PATTERN = /\x1b\[\?(?:1049[hl]|2026l)/u;
+const ALT_SCREEN_ENTER = "\x1b[?1049h";
 // Entering the alternate screen buffer is how full-screen TUIs (opencode,
 // vim, etc.) start. Some TUIs (opentui) defer their first real frame until a
 // terminal capability query times out (~seconds). The reconnect path already
@@ -28,6 +34,7 @@ const FULLSCREEN_REDRAW_SEQUENCE_PATTERN = /\x1b\[\?(?:1049[hl]|2026l)/u;
 // alt-screen entry so the first frame paints immediately instead of after the
 // TUI's query timeout (the symptom users hit as "stuck until refresh").
 const ALT_SCREEN_ENTER_PATTERN = /\x1b\[\?1049h/u;
+const ALT_SCREEN_SCAN_TAIL = ALT_SCREEN_ENTER.length - 1;
 
 const XTERM_THEME: Record<string, string> = {
   background: "#0f1218",
@@ -114,11 +121,18 @@ type TerminalRuntimeEntry = {
   wrapper: HTMLDivElement;
   webSocket: WebSocket | null;
   reconnectTimerId: number | null;
+  suppressQueryResponsesDispose: () => void;
+  streamReady: boolean;
+  streamGateTimerId: number | null;
+  pendingData: string[];
   fitTimerIds: number[];
   fitAnimationFrameIds: number[];
   redrawTimerIds: number[];
   diagFrameCount: number;
   diagByteCount: number;
+  forceRefreshWritesRemaining: number;
+  modeScanTail: string;
+  onAlternateScreen: boolean;
   lastResize: { cols: number; rows: number } | null;
   connected: boolean;
   title: string;
@@ -309,12 +323,28 @@ function shouldRefreshAfterTerminalWrite(chunk: string): boolean {
   return FULLSCREEN_REDRAW_SEQUENCE_PATTERN.test(chunk);
 }
 
+function detectSplitAlternateScreenEntry(entry: TerminalRuntimeEntry, chunk: string): boolean {
+  const scanWindow = entry.modeScanTail + chunk;
+  entry.modeScanTail = scanWindow.slice(-ALT_SCREEN_SCAN_TAIL);
+  return ALT_SCREEN_ENTER_PATTERN.test(scanWindow);
+}
+
 function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
+  const entersAlternateScreen = detectSplitAlternateScreenEntry(entry, chunk);
+  if (entersAlternateScreen) {
+    entry.forceRefreshWritesRemaining = Math.max(entry.forceRefreshWritesRemaining, 8);
+  }
+  const forceRefreshAfterWrite = entry.forceRefreshWritesRemaining > 0;
+  if (forceRefreshAfterWrite) {
+    entry.forceRefreshWritesRemaining -= 1;
+  }
   // Alternate-screen entry is handled by terminal.buffer.onBufferChange (set up
   // in createTerminalRuntime), which is immune to WebSocket frame splitting.
-  // Here we only force a repaint after explicit redraw sequences (alt-screen
-  // exit / synchronized-update end) so scrollback TUIs repaint immediately.
-  if (!shouldRefreshAfterTerminalWrite(chunk)) {
+  // Raw chunks still matter on replay/reattach: xterm may already be on the
+  // alternate buffer, so no buffer-change event fires. In that case the raw
+  // alt-enter byte is the only signal that a fullscreen TUI needs a resize
+  // redraw nudge.
+  if (!entersAlternateScreen && !shouldRefreshAfterTerminalWrite(chunk) && !forceRefreshAfterWrite) {
     entry.terminal.write(chunk);
     return;
   }
@@ -324,7 +354,11 @@ function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
       return;
     }
 
+    entry.terminal.scrollToBottom();
     entry.terminal.refresh(0, Math.max(0, entry.terminal.rows - 1));
+    if (entersAlternateScreen) {
+      scheduleReconnectRedrawNudge(entry);
+    }
   });
 }
 
@@ -387,6 +421,130 @@ function clearReconnectRedrawNudges(entry: TerminalRuntimeEntry): void {
     window.clearTimeout(timerId);
   }
   entry.redrawTimerIds = [];
+}
+
+type TerminalAttachFrame = {
+  snapshotAnsi: string;
+  rehydrateSequences: string;
+  modes: { alternateScreen?: boolean } & Record<string, unknown>;
+  cwd: string | null;
+  cols: number;
+  rows: number;
+};
+
+const ALT_SCREEN_ENTER_LEGACY = "\x1b[?47h";
+
+// Apply the server's structured attach snapshot. The headless emulator on the
+// runtime holds the authoritative screen state; the client restores
+// deterministically from it instead of replaying raw scrollback and guessing
+// the alt-screen state.
+//
+// The serialized snapshot (`snapshotAnsi`) already carries everything needed to
+// reproduce the screen — including the `\x1b[?1049h` alternate-screen enter and
+// the painted contents for a full-screen TUI. We therefore write the
+// input-mode rehydrate sequences first (cursor keys, bracketed paste, etc.,
+// which `generateRehydrateSequences` emits without the alt-screen enter), then
+// the snapshot body. Writing the snapshot is what actually repaints the pane —
+// skipping it (an earlier port) left reattached TUIs blank until a manual
+// refresh.
+function applyAttachSnapshot(entry: TerminalRuntimeEntry, frame: TerminalAttachFrame): void {
+  if (entry.disposed) {
+    return;
+  }
+
+  const { terminal } = entry;
+  const onAlternateScreen = frame.modes?.alternateScreen === true;
+  entry.onAlternateScreen = onAlternateScreen;
+
+  debugLog("terminal.render", "attach.snapshot", {
+    sessionId: entry.sessionId,
+    alternateScreen: onAlternateScreen,
+    snapshotBytes: frame.snapshotAnsi.length,
+    rehydrateBytes: frame.rehydrateSequences.length,
+  });
+
+  const finalizeRestore = () => {
+    if (entry.disposed) {
+      return;
+    }
+    openStreamGate(entry);
+    terminal.scrollToBottom();
+    terminal.refresh(0, Math.max(0, terminal.rows - 1));
+    // Surface the post-restore buffer state so a stuck-launch issue report shows
+    // whether the deterministic restore actually landed on the alternate screen
+    // (a blank pane after this with alternateScreen mismatch = restore failed).
+    debugLog("terminal.render", "attach.restored", {
+      sessionId: entry.sessionId,
+      expectedAlternateScreen: onAlternateScreen,
+      actualBufferType: terminal.buffer.active.type,
+      wroteSnapshot: frame.snapshotAnsi.length > 0,
+    });
+  };
+
+  const writeSnapshot = () => {
+    if (frame.snapshotAnsi) {
+      terminal.write(frame.snapshotAnsi, finalizeRestore);
+    } else {
+      finalizeRestore();
+    }
+  };
+
+  // Strip any alternate-screen enter from the rehydrate sequences as a
+  // belt-and-braces guard — the snapshot body owns the alt-screen switch, so we
+  // never want to enter it twice.
+  const rehydrate = frame.rehydrateSequences
+    .split(ALT_SCREEN_ENTER)
+    .join("")
+    .split(ALT_SCREEN_ENTER_LEGACY)
+    .join("");
+
+  if (rehydrate) {
+    terminal.write(rehydrate, writeSnapshot);
+  } else {
+    writeSnapshot();
+  }
+}
+
+// Open the live-output gate: flush any queued data and let subsequent live
+// output render directly. Idempotent — safe to call from the attach-snapshot
+// restore path and from the fallback timer, whichever fires first.
+function openStreamGate(entry: TerminalRuntimeEntry): void {
+  clearStreamGateFallback(entry);
+  if (entry.streamReady) {
+    return;
+  }
+  entry.streamReady = true;
+  if (entry.pendingData.length === 0) {
+    return;
+  }
+  const queued = entry.pendingData.splice(0, entry.pendingData.length);
+  for (const chunk of queued) {
+    writeTerminalOutput(entry, chunk);
+  }
+}
+
+function clearStreamGateFallback(entry: TerminalRuntimeEntry): void {
+  if (entry.streamGateTimerId !== null) {
+    window.clearTimeout(entry.streamGateTimerId);
+    entry.streamGateTimerId = null;
+  }
+}
+
+// Arm the safety valve that opens the gate even if the server's attach snapshot
+// never arrives, so a terminal never stays blank waiting on it.
+function armStreamGateFallback(entry: TerminalRuntimeEntry): void {
+  clearStreamGateFallback(entry);
+  entry.streamGateTimerId = window.setTimeout(() => {
+    entry.streamGateTimerId = null;
+    if (entry.disposed || entry.streamReady) {
+      return;
+    }
+    debugLog("terminal.render", "streamGate.fallback", {
+      sessionId: entry.sessionId,
+      pendingChunks: entry.pendingData.length,
+    });
+    openStreamGate(entry);
+  }, STREAM_GATE_FALLBACK_MS);
 }
 
 function scheduleFitBurst(entry: TerminalRuntimeEntry): void {
@@ -621,6 +779,13 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
 
   entry.lastResize = null;
   entry.currentWebSocketUrl = nextUrl;
+  // Each (re)connection re-gates live output until the server sends its attach
+  // snapshot, so live data can't paint ahead of the deterministic restore. A
+  // fallback timer opens the gate even if the attach frame never arrives, so the
+  // terminal can never stay blank waiting on it.
+  entry.streamReady = false;
+  entry.pendingData = [];
+  armStreamGateFallback(entry);
   const nextWebSocket = new WebSocket(nextUrl);
   entry.webSocket = nextWebSocket;
 
@@ -644,6 +809,18 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
 
   nextWebSocket.onmessage = (event) => {
     if (entry.disposed || entry.webSocket !== nextWebSocket) {
+      // The chunk arrived on a superseded socket (the client reconnected and
+      // entry.webSocket now points to a newer WS). If it carried the alt-screen
+      // enter, that live paint is being dropped here — log it so a stuck-TUI
+      // report shows the bytes were lost to socket churn, not a render bug.
+      if (typeof event.data === "string" && ALT_SCREEN_ENTER_PATTERN.test(event.data)) {
+        debugLog("terminal.render", "client.altEnterDroppedStaleSocket", {
+          sessionId: entry.sessionId,
+          disposed: entry.disposed,
+          hasCurrentSocket: entry.webSocket !== null,
+          chunkBytes: event.data.length,
+        });
+      }
       return;
     }
 
@@ -660,8 +837,31 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
         rendererType: suggestedRendererType ?? "webgl",
       });
     }
+    // Always log when a live chunk carries the alt-screen enter byte (the
+    // frame-sampled ws.message above can miss it). Lets a stuck-TUI report show
+    // whether the client actually received the alt-enter the server emulator saw.
+    if (ALT_SCREEN_ENTER_PATTERN.test(chunk)) {
+      debugLog("terminal.render", "client.altEnterChunk", {
+        sessionId: entry.sessionId,
+        frame: entry.diagFrameCount,
+        chunkBytes: chunk.length,
+        streamReady: entry.streamReady,
+        bufferType: entry.terminal.buffer.active.type,
+      });
+    }
     try {
       const parsed = JSON.parse(chunk) as Record<string, unknown>;
+      if (parsed.kind === "cs-terminal-event" && parsed.type === "attach") {
+        applyAttachSnapshot(entry, {
+          snapshotAnsi: typeof parsed.snapshotAnsi === "string" ? parsed.snapshotAnsi : "",
+          rehydrateSequences: typeof parsed.rehydrateSequences === "string" ? parsed.rehydrateSequences : "",
+          modes: (parsed.modes ?? {}) as TerminalAttachFrame["modes"],
+          cwd: typeof parsed.cwd === "string" ? parsed.cwd : null,
+          cols: typeof parsed.cols === "number" ? parsed.cols : entry.terminal.cols,
+          rows: typeof parsed.rows === "number" ? parsed.rows : entry.terminal.rows,
+        });
+        return;
+      }
       if (
         parsed.kind === "cs-terminal-event"
         && parsed.type === "exit"
@@ -681,6 +881,13 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
       }
     } catch {
       // Not an internal event payload; treat as terminal output.
+    }
+
+    // Hold live output until the attach snapshot has been applied, then flush
+    // in order so the restored screen is never clobbered by mid-restore writes.
+    if (!entry.streamReady) {
+      entry.pendingData.push(chunk);
+      return;
     }
 
     writeTerminalOutput(entry, chunk);
@@ -815,6 +1022,10 @@ function createTerminalRuntime(
   terminal.loadAddon(searchAddon);
   terminal.loadAddon(webLinksAddon);
   terminal.open(wrapper);
+  // Consume the visible xterm's own query responses (CPR/focus/DECRPM) so they
+  // are not piped to the PTY as fake keystrokes. The server-side headless
+  // emulator is the sole responder to terminal capability queries.
+  const suppressQueryResponsesDispose = suppressQueryResponses(terminal);
   // The WebGL context-loss handler runs long after `entry` is created (next
   // animation frame at the earliest), so it is safe to reference it lazily
   // here. On loss we reuse the reconnect redraw nudge so full-screen TUIs
@@ -837,11 +1048,18 @@ function createTerminalRuntime(
     wrapper,
     webSocket: null,
     reconnectTimerId: null,
+    suppressQueryResponsesDispose,
+    streamReady: false,
+    streamGateTimerId: null,
+    pendingData: [],
     fitTimerIds: [],
     fitAnimationFrameIds: [],
     redrawTimerIds: [],
     diagFrameCount: 0,
     diagByteCount: 0,
+    forceRefreshWritesRemaining: 0,
+    modeScanTail: "",
+    onAlternateScreen: false,
     lastResize: null,
     connected: false,
     title: defaultTitle,
@@ -947,7 +1165,11 @@ function createTerminalRuntime(
   // blank until a manual resize. onBufferChange fires once xterm's parser has
   // switched buffers, regardless of how the bytes were framed.
   const bufferChangeDisposable = terminal.buffer.onBufferChange((buffer) => {
-    if (entry.disposed || buffer.type !== "alternate") {
+    if (entry.disposed) {
+      return;
+    }
+    entry.onAlternateScreen = buffer.type === "alternate";
+    if (buffer.type !== "alternate") {
       return;
     }
     debugLog("terminal.render", "altScreen.enter", {
@@ -1158,6 +1380,8 @@ function createTerminalRuntime(
       entry.sessionExitListeners.clear();
       clearScheduledFitBurst(entry);
       clearReconnectRedrawNudges(entry);
+      clearStreamGateFallback(entry);
+      entry.suppressQueryResponsesDispose();
       if (entry.reconnectTimerId !== null) {
         window.clearTimeout(entry.reconnectTimerId);
         entry.reconnectTimerId = null;
