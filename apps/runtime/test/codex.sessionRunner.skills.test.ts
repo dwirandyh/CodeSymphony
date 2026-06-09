@@ -876,4 +876,97 @@ describe("codex session runner skill integration", () => {
     ]);
     expect(result.output).toBe("Detailed question\n\n`svg tetap zoom/pan`");
   });
+
+  it("reports thinking active for reasoning items and clears it on the final answer", async () => {
+    const child = new MockCodexChildProcess();
+    attachJsonRpcServer(child, {
+      onTurnStart: () => {
+        child.stdout.write(`${JSON.stringify({
+          method: "item/started",
+          params: {
+            item: {
+              id: "reasoning-1",
+              type: "reasoning",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/reasoning/summaryTextDelta",
+          params: {
+            itemId: "reasoning-1",
+            delta: "Thinking about it",
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/completed",
+          params: {
+            item: {
+              id: "reasoning-1",
+              type: "reasoning",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/started",
+          params: {
+            item: {
+              id: "msg-final",
+              type: "agentMessage",
+              phase: "final_answer",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/completed",
+          params: {
+            item: {
+              id: "msg-final",
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "4",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "turn/completed",
+          params: {
+            turn: {
+              status: "completed",
+            },
+          },
+        })}\n`);
+      },
+    });
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const thinkingStates: boolean[] = [];
+    const { runCodexWithStreaming } = await import("../src/codex/sessionRunner");
+    await runCodexWithStreaming({
+      prompt: "What is 2+2?",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onThinking: (active) => {
+        thinkingStates.push(active);
+      },
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(thinkingStates[0]).toBe(true);
+    expect(thinkingStates).toContain(false);
+    expect(thinkingStates[thinkingStates.length - 1]).toBe(false);
+  });
 });

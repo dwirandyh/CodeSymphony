@@ -100,6 +100,19 @@ describe("deriveWorkingStatus", () => {
     });
   });
 
+  it("uses Thinking once the agent emits reasoning before any timeline item", () => {
+    expect(deriveWorkingStatus({
+      selectedThreadUiStatus: "running",
+      thinkingActive: true,
+      timelineItems: [makeMessageTimelineItem("user", "user-1")],
+    })).toEqual({
+      label: "Thinking",
+      startedAt: "2026-01-01T00:00:00Z",
+      finishedAt: null,
+      state: "running",
+    });
+  });
+
   it("uses Editing when the latest running item is an edited diff", () => {
     expect(deriveWorkingStatus({
       selectedThreadUiStatus: "running",

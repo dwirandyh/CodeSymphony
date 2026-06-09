@@ -13,6 +13,7 @@ type ThreadStreamState = {
   reconnectAttempts: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   disposed: boolean;
+  thinkingActive: boolean;
 };
 
 const threadStreamStateRegistry = new Map<string, ThreadStreamState>();
@@ -30,6 +31,7 @@ function createThreadStreamState(): ThreadStreamState {
     reconnectAttempts: 0,
     reconnectTimer: null,
     disposed: false,
+    thinkingActive: false,
   };
 }
 
@@ -199,6 +201,31 @@ export function clearAllThreadStreamState() {
 
 export function resetThreadStreamStateRegistryForTest() {
   clearAllThreadStreamState();
+}
+
+export function getThreadThinkingActive(threadId: string): boolean {
+  return getThreadStreamState(threadId).thinkingActive;
+}
+
+export function setThreadThinkingActive(threadId: string, active: boolean): void {
+  const state = getThreadStreamState(threadId);
+  state.thinkingActive = active;
+  notifyConnectionListeners(state);
+}
+
+function subscribeToThreadThinkingActive(threadId: string, listener: () => void) {
+  const state = getThreadStreamState(threadId);
+  state.connectionListeners.add(listener);
+  return () => {
+    state.connectionListeners.delete(listener);
+  };
+}
+
+export function useThreadThinkingActive(threadId: string | null) {
+  return useSyncExternalStore(
+    (listener) => threadId ? subscribeToThreadThinkingActive(threadId, listener) : () => undefined,
+    () => threadId ? getThreadThinkingActive(threadId) : false,
+  );
 }
 
 function subscribeToThreadStreamConnection(threadId: string, listener: () => void) {

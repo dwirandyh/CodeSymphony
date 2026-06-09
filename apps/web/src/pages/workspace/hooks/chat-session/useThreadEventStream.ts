@@ -43,6 +43,7 @@ import {
   setThreadLastMessageSeq,
   setThreadStreamConnectionState,
   setThreadReconnectTimer,
+  setThreadThinkingActive,
 } from "../../../../collections/threadStreamState";
 import { EVENT_TYPES } from "../../constants";
 import {
@@ -935,6 +936,18 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         stream.addEventListener(eventType, onEvent as EventListener);
       }
       stream.addEventListener("heartbeat", onHeartbeat as EventListener);
+      stream.addEventListener("agent.thinking", ((e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (typeof data.active === "boolean") {
+            debugLog("thread.thinking", "stream.agent.thinking", {
+              threadId: selectedThreadId,
+              active: data.active,
+            }, { threadId: selectedThreadId, force: true });
+            setThreadThinkingActive(selectedThreadId, data.active);
+          }
+        } catch { /* ignore malformed JSON */ }
+      }) as EventListener);
 
       stream.onopen = () => {
         lastOpenAtMs = getNowMs();

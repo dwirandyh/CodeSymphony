@@ -40,6 +40,8 @@ export type RuntimeLogFilter = {
 export type RuntimeEventHub = {
   emit: (threadId: string, type: ChatEventType, payload: RuntimeEventPayload) => Promise<ChatEvent>;
   list: (threadId: string, afterIdx?: number) => Promise<ChatEvent[]>;
+  notify: (threadId: string, type: string, payload: Record<string, unknown>) => void;
+  subscribeTransient: (threadId: string, listener: (type: string, payload: Record<string, unknown>) => void) => () => void;
   subscribe: (threadId: string, listener: (event: ChatEvent) => void) => () => void;
 };
 
@@ -286,6 +288,7 @@ export type ClaudeRunner = (args: {
     isResponseUpdate?: boolean;
   }) => Promise<void> | void;
   onToolInstrumentation?: (event: ClaudeToolInstrumentationEvent) => Promise<void> | void;
+  onThinking?: (active: boolean) => Promise<void> | void;
 }) => Promise<ClaudeRunnerResult>;
 
 export type ChatAgentRunner = ClaudeRunner;

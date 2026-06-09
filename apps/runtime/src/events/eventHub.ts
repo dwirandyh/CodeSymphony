@@ -82,6 +82,7 @@ const MAX_EVENT_PERSIST_RETRY_ATTEMPTS = 25;
 
 export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
   const listeners: ListenerMap = new Map();
+  const transientListeners = new Map<string, Set<(type: string, payload: Record<string, unknown>) => void>>();
   const threadStates = new Map<string, ThreadState>();
 
   // Per-thread serial queue for idx allocation + listener delivery.
@@ -231,9 +232,30 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
     };
   }
 
+  function notify(threadId: string, type: string, payload: Record<string, unknown>): void {
+    const threadListeners = transientListeners.get(threadId);
+    threadListeners?.forEach((listener) => listener(type, payload));
+  }
+
+  function subscribeTransient(threadId: string, listener: (type: string, payload: Record<string, unknown>) => void): () => void {
+    if (!transientListeners.has(threadId)) {
+      transientListeners.set(threadId, new Set());
+    }
+    const threadListeners = transientListeners.get(threadId)!;
+    threadListeners.add(listener);
+    return () => {
+      threadListeners.delete(listener);
+      if (threadListeners.size === 0) {
+        transientListeners.delete(threadId);
+      }
+    };
+  }
+
   return {
     emit,
     list,
+    notify,
+    subscribeTransient,
     subscribe,
   };
 }

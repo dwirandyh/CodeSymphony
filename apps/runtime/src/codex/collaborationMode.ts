@@ -4,7 +4,7 @@ type CodexCollaborationMode = {
   mode: "default" | "plan";
   settings: {
     model: string;
-    reasoning_effort: "medium" | null;
+    reasoning_effort: "xhigh" | "medium" | null;
     developer_instructions: null;
   };
 };
@@ -19,7 +19,7 @@ export function buildCollaborationMode(model: string, permissionMode: string | u
       // Match Codex app-server built-in collaboration presets. Passing null
       // developer instructions lets the installed Codex version inject its own
       // native template for the selected mode.
-      reasoning_effort: mode === "plan" ? "medium" : null,
+      reasoning_effort: "xhigh",
       developer_instructions: null,
     },
   };

@@ -745,6 +745,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   onTodoUpdate,
   onSubagentStarted,
   onSubagentStopped,
+  onThinking,
 }): Promise<ChatAgentRunnerResult> => {
   if (listSlashCommandsOnly) {
     return {
@@ -800,6 +801,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   let rejectCompletion: ((error: Error) => void) | null = null;
   let lastForwardedAgentMessageId: string | null = null;
   let sawForwardedCommentary = false;
+  let lastReportedThinkingState: boolean | null = null;
   let firstTurnSignalTimer: ReturnType<typeof setTimeout> | null = null;
   let sawFirstTurnSignal = false;
 
@@ -875,6 +877,8 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
       return;
     }
     finished = true;
+    lastReportedThinkingState = null;
+    void onThinking?.(false);
 
     if (error) {
       rejectWith(error);
@@ -1222,9 +1226,26 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
             return;
           }
 
+          if (normalizedItemType === "reasoning") {
+            if (lastReportedThinkingState !== true) {
+              lastReportedThinkingState = true;
+              await onThinking?.(true);
+            }
+            return;
+          }
+
           if (normalizedItemType === "agentmessage") {
             const phase = normalizeAgentMessagePhase(asString(item.phase));
             agentMessagePhaseById.set(itemId, phase);
+            if (phase === "commentary") {
+              if (lastReportedThinkingState !== true) {
+                lastReportedThinkingState = true;
+                await onThinking?.(true);
+              }
+            } else if (lastReportedThinkingState !== false) {
+              lastReportedThinkingState = false;
+              await onThinking?.(false);
+            }
             const completedText = asString(item.text);
             if (completedText) {
               observedTextByMessageId.set(itemId, completedText);
@@ -1265,6 +1286,10 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
 
           toolStartedAt.set(itemId, Date.now());
           toolContextById.set(itemId, toolContext);
+          if (lastReportedThinkingState !== false) {
+            lastReportedThinkingState = false;
+            await onThinking?.(false);
+          }
           await onToolStarted({
             toolName: toolContext.toolName,
             toolKind: toolContext.toolKind,
@@ -1279,6 +1304,15 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
             shell: toolContext.shell,
             isBash: toolContext.isBash,
           });
+          return;
+        }
+
+        if (parsed.method === "item/reasoning/summaryTextDelta") {
+          markFirstTurnSignal();
+          if (lastReportedThinkingState !== true) {
+            lastReportedThinkingState = true;
+            await onThinking?.(true);
+          }
           return;
         }
 
@@ -1448,6 +1482,8 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
             return;
           }
           latestPlanText = latestPlanText ?? findPlanTextInTurn(turn);
+          lastReportedThinkingState = null;
+          await onThinking?.(false);
           resolveComplete();
         }
       } catch (error) {

@@ -285,7 +285,7 @@ describe("codex session runner plan helpers", () => {
       mode: "plan",
       settings: {
         model: "gpt-5.4",
-        reasoning_effort: "medium",
+        reasoning_effort: "xhigh",
         developer_instructions: null,
       },
     });
@@ -294,7 +294,7 @@ describe("codex session runner plan helpers", () => {
       mode: "default",
       settings: {
         model: "gpt-5.4",
-        reasoning_effort: null,
+        reasoning_effort: "xhigh",
         developer_instructions: null,
       },
     });

@@ -228,6 +228,7 @@ function workingLabelForItem(item: ChatTimelineItem | null): string {
 export function deriveWorkingStatus(params: {
   events?: ChatEvent[];
   selectedThreadUiStatus?: string;
+  thinkingActive?: boolean;
   timelineItems: ChatTimelineItem[];
 }): ChatWorkingStatus | null {
   const runningItem = findLatestRunningItem(params.timelineItems);
@@ -242,10 +243,11 @@ export function deriveWorkingStatus(params: {
   }
 
   if (params.selectedThreadUiStatus === "running") {
-    const label =
-      !runningItem
-        && lastItem?.kind === "message"
-        && lastItem.message.role === "user"
+    const label = params.thinkingActive
+      ? "Thinking"
+      : !runningItem
+          && lastItem?.kind === "message"
+          && lastItem.message.role === "user"
         ? "Waiting for response"
         : workingLabelForItem(runningItem ?? lastItem);
     return {

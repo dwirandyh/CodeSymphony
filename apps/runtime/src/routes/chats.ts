@@ -704,6 +704,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       let closed = false;
       let historyFlushed = false;
       let unsubscribe: (() => void) | null = null;
+      let unsubscribeTransient: (() => void) | null = null;
       const bufferedEvents: ChatEvent[] = [];
       const heartbeat = setInterval(() => {
         if (!closed) {
@@ -718,6 +719,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
         closed = true;
         clearInterval(heartbeat);
         unsubscribe?.();
+        unsubscribeTransient?.();
         appendRuntimeDebugLog({
           source: "runtime.chats",
           message: "chat.backend.sse.closed",
@@ -741,6 +743,12 @@ export async function registerChatRoutes(app: FastifyInstance) {
           return;
         }
         reply.raw.write(formatSseEvent(event));
+      });
+      unsubscribeTransient = app.eventHub.subscribeTransient(params.id, (type, payload) => {
+        if (closed) return;
+        if (type === "agent.thinking") {
+          reply.raw.write(`event: agent.thinking\ndata: ${JSON.stringify(payload)}\n\n`);
+        }
       });
 
       try {

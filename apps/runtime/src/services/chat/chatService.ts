@@ -1999,6 +1999,10 @@ export function createChatService(deps: RuntimeDeps) {
             kind: "other",
           });
         },
+        onThinking: (active) => {
+          logRunDebug("runner.thinking", { active });
+          deps.eventHub.notify(threadId, "agent.thinking", { active });
+        },
         onText: (chunk) => {
           recordFirstRunnerSignal("text", {
             assistantMessageId: assistantMessage.id,
@@ -3581,6 +3585,7 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
           providerCompatibility: selection.provider?.compatibility,
           providerApiKey: selection.provider?.apiKey ?? undefined,
           providerBaseUrl: selection.provider?.baseUrl ?? undefined,
+          onThinking: () => {},
           onText: (chunk) => {
             streamedOutput += chunk;
           },

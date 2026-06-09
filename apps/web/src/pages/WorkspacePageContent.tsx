@@ -218,6 +218,7 @@ import { refetchGitStatusCollection } from "../collections/gitStatus";
 import { getThreadsCollection, replaceThreadsCollection } from "../collections/threads";
 import { writeWorkspaceShellStateSnapshot } from "../collections/workspaceShellState";
 import { buildRepositoryWorktreeIndex } from "../collections/worktrees";
+import { useThreadThinkingActive } from "../collections/threadStreamState";
 import { WorkspaceHeaderShell } from "./workspace/WorkspaceHeaderShell";
 import { WorkspaceRightPanelShell } from "./workspace/WorkspaceRightPanelShell";
 import { WorkspaceSidebarShell } from "./workspace/WorkspaceSidebarShell";
@@ -3192,13 +3193,15 @@ export function WorkspacePage() {
 
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
+  const thinkingActive = useThreadThinkingActive(chat.selectedThreadId);
   const workingStatus = useMemo(
     () => deriveWorkingStatus({
+      thinkingActive,
       events: chat.events,
       selectedThreadUiStatus: chat.selectedThreadUiStatus,
       timelineItems: chat.timelineItems,
     }),
-    [chat.events, chat.selectedThreadUiStatus, chat.timelineItems],
+    [chat.events, chat.selectedThreadUiStatus, chat.timelineItems, thinkingActive],
   );
   const showThinkingPlaceholder = shouldShowThinkingPlaceholder({
     selectedThreadUiStatus: chat.selectedThreadUiStatus,
