@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { House, Keyboard, LayoutGrid, LoaderCircle, Lock, Maximize2, Minimize2, RefreshCw, Smartphone } from "lucide-react";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
@@ -2712,6 +2712,18 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const showMobileKeyboardBridge = keyboardUiState.showMobileKeyboardBridge;
   const keyboardButtonActive = keyboardUiState.keyboardButtonActive;
 
+  const showMobileSimulatorKeyboard = () => {
+    if (!showMobileViewerControls) {
+      return;
+    }
+
+    requestSoftwareKeyboardVisible(true, "toggle");
+  };
+  const releaseMobileControlButton = (event: MouseEvent<HTMLButtonElement>) => {
+    event.currentTarget.blur();
+  };
+  const mobileControlButtonClass = "h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-black/45 hover:text-white/80 active:bg-white/10 active:text-white";
+
   return (
     <div
       ref={rootRef}
@@ -2785,10 +2797,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             type="button"
             variant="ghost"
             size="icon"
-            className="h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white"
+            className={mobileControlButtonClass}
             aria-label="iOS Shake"
             title="iOS Shake"
-            onClick={() => sendControl({ t: "system", name: "shake" })}
+            onClick={(event) => {
+              releaseMobileControlButton(event);
+              sendControl({ t: "system", name: "shake" });
+            }}
           >
             <Smartphone className="h-4 w-4" />
           </Button>
@@ -2796,10 +2811,27 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             type="button"
             variant="ghost"
             size="icon"
-            className="h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white"
+            className={mobileControlButtonClass}
+            aria-label="Show iOS simulator keyboard"
+            title="Show iOS simulator keyboard"
+            onClick={(event) => {
+              releaseMobileControlButton(event);
+              showMobileSimulatorKeyboard();
+            }}
+          >
+            <Keyboard className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={mobileControlButtonClass}
             aria-label={viewerExpanded ? "Exit iOS fullscreen" : "iOS fullscreen"}
             title={viewerExpanded ? "Exit iOS fullscreen" : "iOS fullscreen"}
-            onClick={() => setViewerExpanded((current) => !current)}
+            onClick={(event) => {
+              releaseMobileControlButton(event);
+              setViewerExpanded((current) => !current);
+            }}
           >
             {viewerExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
           </Button>
@@ -2807,10 +2839,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             type="button"
             variant="ghost"
             size="icon"
-            className="h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white"
+            className={mobileControlButtonClass}
             aria-label="iOS Power"
             title="iOS Power"
-            onClick={() => sendControl({ t: "button", button: "lock" })}
+            onClick={(event) => {
+              releaseMobileControlButton(event);
+              sendControl({ t: "button", button: "lock" });
+            }}
           >
             <Lock className="h-4 w-4" />
           </Button>

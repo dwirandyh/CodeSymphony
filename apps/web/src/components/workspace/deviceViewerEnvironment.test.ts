@@ -34,23 +34,23 @@ describe("deviceViewerEnvironment", () => {
   });
 
   describe("shouldShowMobileDeviceViewerControls", () => {
-    it("shows controls only for mobile LAN browser access", () => {
-      expect(shouldShowMobileDeviceViewerControls({
-        coarsePointer: true,
-        hostname: "192.168.1.7",
-        protocol: "http:",
-        userAgent: "Mozilla/5.0 (Android 15)",
-      })).toBe(true);
-    });
-
-    it("hides controls for localhost or desktop access", () => {
+    it("shows controls for mobile browser access", () => {
       expect(shouldShowMobileDeviceViewerControls({
         coarsePointer: true,
         hostname: "localhost",
         protocol: "http:",
         userAgent: "Mozilla/5.0 (Android 15)",
-      })).toBe(false);
+      })).toBe(true);
 
+      expect(shouldShowMobileDeviceViewerControls({
+        coarsePointer: true,
+        hostname: "codesymphony.example.com",
+        protocol: "https:",
+        userAgent: "Mozilla/5.0 (Linux; Android 15; Pixel 9)",
+      })).toBe(true);
+    });
+
+    it("hides controls for desktop access", () => {
       expect(shouldShowMobileDeviceViewerControls({
         coarsePointer: false,
         hostname: "192.168.1.7",

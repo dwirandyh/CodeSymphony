@@ -54,7 +54,6 @@ export function isLikelyMobileUserAgent(userAgent: string, coarsePointer: boolea
 
 export function shouldShowMobileDeviceViewerControls(context: MobileDeviceViewerControlContext): boolean {
   return (context.protocol === "http:" || context.protocol === "https:")
-    && isLikelyLanHost(context.hostname)
     && isLikelyMobileUserAgent(context.userAgent, context.coarsePointer);
 }
 
