@@ -1139,6 +1139,8 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to write the Android clipboard");
     }
   },
+  readIosSimulatorClipboard: (sessionId: string) =>
+    request<ClipboardText>(`/device-streams/${encodeURIComponent(sessionId)}/ios-simulator/clipboard`).then((response) => response.text),
 
   // ── Model Providers ──
 

@@ -7,16 +7,28 @@ const { getMobileDeviceViewerControlsFlagMock, supportsAndroidNativeViewerMock }
   getMobileDeviceViewerControlsFlagMock: vi.fn(),
   supportsAndroidNativeViewerMock: vi.fn(),
 }));
-const { sendDeviceControlMock } = vi.hoisted(() => ({
+const {
+  readAndroidClipboardMock,
+  readHostClipboardMock,
+  sendDeviceControlMock,
+  writeAndroidClipboardMock,
+  writeHostClipboardMock,
+} = vi.hoisted(() => ({
+  readAndroidClipboardMock: vi.fn(),
+  readHostClipboardMock: vi.fn(),
   sendDeviceControlMock: vi.fn(),
+  writeAndroidClipboardMock: vi.fn(),
+  writeHostClipboardMock: vi.fn(),
 }));
 
 vi.mock("../../lib/api", () => ({
   api: {
-    readAndroidClipboard: vi.fn().mockResolvedValue(""),
+    readAndroidClipboard: readAndroidClipboardMock,
+    readHostClipboard: readHostClipboardMock,
     runtimeBaseUrl: "http://127.0.0.1:4331",
     sendDeviceControl: sendDeviceControlMock,
-    writeAndroidClipboard: vi.fn().mockResolvedValue(undefined),
+    writeAndroidClipboard: writeAndroidClipboardMock,
+    writeHostClipboard: writeHostClipboardMock,
   },
 }));
 
@@ -56,8 +68,12 @@ beforeEach(() => {
   root = createRoot(container);
   vi.clearAllMocks();
   getMobileDeviceViewerControlsFlagMock.mockReturnValue(false);
+  readAndroidClipboardMock.mockResolvedValue("");
+  readHostClipboardMock.mockResolvedValue("");
   supportsAndroidNativeViewerMock.mockReturnValue(false);
   sendDeviceControlMock.mockResolvedValue(undefined);
+  writeAndroidClipboardMock.mockResolvedValue(undefined);
+  writeHostClipboardMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -77,6 +93,96 @@ describe("AndroidDeviceViewer", () => {
     expect(container.querySelector('textarea[aria-label="Android keyboard bridge"]')).toBeNull();
     expect(container.querySelector('button[aria-label="Show Android keyboard bridge"]')).toBeNull();
     expect(container.querySelector('button[aria-label="Android fullscreen"]')).not.toBeNull();
+  });
+
+  it("copies the Android clipboard into the browser clipboard on mobile browsers", async () => {
+    getMobileDeviceViewerControlsFlagMock.mockReturnValue(true);
+    readAndroidClipboardMock.mockResolvedValue("copied from android");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, "clipboard")
+      ?? Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    try {
+      act(() => {
+        renderViewer();
+      });
+
+      const copyButton = container.querySelector<HTMLButtonElement>('button[aria-label="Copy Android clipboard"]');
+      expect(copyButton).not.toBeNull();
+
+      await act(async () => {
+        copyButton?.click();
+        await Promise.resolve();
+      });
+
+      expect(writeText).toHaveBeenCalledWith("copied from android");
+      expect(writeHostClipboardMock).not.toHaveBeenCalled();
+    } finally {
+      if (clipboardDescriptor) {
+        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "clipboard");
+      }
+    }
+  });
+
+  it("retries cached Android clipboard text synchronously after a blocked browser copy", async () => {
+    getMobileDeviceViewerControlsFlagMock.mockReturnValue(true);
+    readAndroidClipboardMock.mockResolvedValue("cached android clipboard");
+    const execCommand = vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, "clipboard")
+      ?? Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(document, "execCommand");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+
+    try {
+      act(() => {
+        renderViewer();
+      });
+
+      const copyButton = container.querySelector<HTMLButtonElement>('button[aria-label="Copy Android clipboard"]');
+      expect(copyButton).not.toBeNull();
+
+      await act(async () => {
+        copyButton?.click();
+        await Promise.resolve();
+      });
+
+      expect(readAndroidClipboardMock).toHaveBeenCalledTimes(1);
+      expect(execCommand).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        copyButton?.click();
+        await Promise.resolve();
+      });
+
+      expect(readAndroidClipboardMock).toHaveBeenCalledTimes(1);
+      expect(execCommand).toHaveBeenCalledTimes(2);
+    } finally {
+      if (clipboardDescriptor) {
+        Object.defineProperty(navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(navigator, "clipboard");
+      }
+      if (execCommandDescriptor) {
+        Object.defineProperty(document, "execCommand", execCommandDescriptor);
+      } else {
+        Reflect.deleteProperty(document, "execCommand");
+      }
+    }
   });
 
   it("batches consecutive keyboard characters into one Android text control", async () => {

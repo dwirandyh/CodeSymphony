@@ -46,6 +46,7 @@ const DISCOVERY_TIMEOUT_MS = 5_000;
 const ANDROID_DEVICE_STALE_GRACE_MS = 20_000;
 const ANDROID_DEVICE_RECOVERY_COOLDOWN_MS = 8_000;
 const IOS_SIMULATOR_BRIDGE_READY_TIMEOUT_MS = 15_000;
+const IOS_SIMULATOR_CLIPBOARD_TIMEOUT_MS = 4_000;
 const ANDROID_CLIPBOARD_TIMEOUT_MS = 4_000;
 const ANDROID_CLIPBOARD_HELPER_BUILD_TIMEOUT_MS = 15_000;
 const ANDROID_CLIPBOARD_HELPER_DEVICE_PATH = "/data/local/tmp/codesymphony-clipboard.dex";
@@ -1384,6 +1385,25 @@ export function createDeviceService(logService?: RuntimeLogService) {
     return captureIosSimulatorScreenshot(session.iosUdid);
   }
 
+  async function readIosSimulatorClipboard(sessionId: string): Promise<string> {
+    const session = getNativeIosControlSession(sessionId);
+    if (!session?.iosUdid) {
+      throw new Error("iOS simulator clipboard is only available for native iOS simulator sessions.");
+    }
+
+    const { stdout } = await execFile("xcrun", [
+      "simctl",
+      "pbpaste",
+      session.iosUdid,
+    ], {
+      encoding: "utf8",
+      env: managedSubprocessEnv,
+      timeout: IOS_SIMULATOR_CLIPBOARD_TIMEOUT_MS,
+    });
+
+    return stdout;
+  }
+
   function resolveAndroidSessionSerial(session: InternalStreamSession): string {
     if (session.platform !== "android") {
       throw new Error("Android clipboard is only available for Android sessions.");
@@ -1962,6 +1982,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
     attachIosNativeVideoClient,
     getNativeIosStatus,
     getNativeIosScreenshot,
+    readIosSimulatorClipboard,
     readAndroidClipboard,
     writeAndroidClipboard,
     sendControl,

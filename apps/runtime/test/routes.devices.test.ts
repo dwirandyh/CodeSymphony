@@ -7,6 +7,7 @@ describe("device routes", () => {
   let app: FastifyInstance;
   const getNativeIosStatus = vi.fn();
   const readAndroidClipboard = vi.fn();
+  const readIosSimulatorClipboard = vi.fn();
   const writeAndroidClipboard = vi.fn();
 
   beforeEach(async () => {
@@ -16,6 +17,7 @@ describe("device routes", () => {
     app.decorate("deviceService", {
       getNativeIosStatus,
       readAndroidClipboard,
+      readIosSimulatorClipboard,
       writeAndroidClipboard,
     } as never);
     app.decorate("logService", {
@@ -62,6 +64,19 @@ describe("device routes", () => {
       paste: true,
       text: "host to android",
     });
+  });
+
+  it("GET /api/device-streams/:sessionId/ios-simulator/clipboard returns simulator clipboard text", async () => {
+    readIosSimulatorClipboard.mockResolvedValue("ios-simulator-clipboard");
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/device-streams/session-1/ios-simulator/clipboard",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.text).toBe("ios-simulator-clipboard");
+    expect(readIosSimulatorClipboard).toHaveBeenCalledWith("session-1");
   });
 
   it("GET /api/device-streams/:sessionId/native/status returns iOS keyboard sync fields", async () => {

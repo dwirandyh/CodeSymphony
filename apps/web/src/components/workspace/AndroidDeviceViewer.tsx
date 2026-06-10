@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Clipboard, Copy, House, Keyboard, LayoutGrid, LoaderCircle, Maximize2, Minimize2, Power, Smartphone } from "lucide-react";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
+import { writeTextToBrowserClipboard } from "../../lib/browserClipboard";
 import { debugLog } from "../../lib/debugLog";
 import { createDeviceStreamMetrics } from "../../lib/deviceStreamMetrics";
 import { cn } from "../../lib/utils";
@@ -163,6 +164,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
   const decoderCodecRef = useRef<string | null>(null);
   const feedbackTimerRef = useRef<number | null>(null);
   const pendingClipboardRequestRef = useRef<PendingClipboardRequest | null>(null);
+  const pendingBrowserClipboardTextRef = useRef<string | null>(null);
   const controlQueueRef = useRef<Promise<void>>(Promise.resolve());
   const lastShortcutPasteAtRef = useRef(0);
   const restartTimerRef = useRef<number | null>(null);
@@ -588,6 +590,15 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
     }
   };
 
+  const writeInteractiveClipboardText = async (text: string): Promise<void> => {
+    if (showMobileViewerControls) {
+      await writeTextToBrowserClipboard(text);
+      return;
+    }
+
+    await writeHostClipboardText(text);
+  };
+
   const autoSyncDeviceClipboardToHost = async (text: string) => {
     if (autoSyncedDeviceClipboardTextRef.current === text) {
       return;
@@ -642,6 +653,18 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
   };
 
   const handleCopyFromDeviceClipboard = async () => {
+    const pendingBrowserClipboardText = pendingBrowserClipboardTextRef.current;
+    if (pendingBrowserClipboardText !== null) {
+      try {
+        await writeInteractiveClipboardText(pendingBrowserClipboardText);
+        pendingBrowserClipboardTextRef.current = null;
+        showInteractionFeedback(pendingBrowserClipboardText.length > 0 ? "Copied Android clipboard." : "Android clipboard is empty.");
+      } catch (copyError) {
+        showInteractionFeedback(copyError instanceof Error ? copyError.message : "Failed to copy Android clipboard.");
+      }
+      return;
+    }
+
     debugLog("android.viewer", "clipboard.copy_from_device.start", {
       sessionId,
     });
@@ -651,15 +674,26 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
         requestFromViewer: requestDeviceClipboard,
         sessionId,
       });
-      await writeHostClipboardText(text);
-      focusKeyboardBridge();
-      debugLog("android.viewer", "clipboard.copy_from_device.success", {
-        charCount: text.length,
-        sessionId,
-        transport,
-      });
-      showInteractionFeedback(text.length > 0 ? "Copied Android clipboard." : "Android clipboard is empty.");
+      try {
+        await writeInteractiveClipboardText(text);
+        pendingBrowserClipboardTextRef.current = null;
+        focusKeyboardBridge();
+        debugLog("android.viewer", "clipboard.copy_from_device.success", {
+          charCount: text.length,
+          sessionId,
+          transport,
+        });
+        showInteractionFeedback(text.length > 0 ? "Copied Android clipboard." : "Android clipboard is empty.");
+      } catch (writeError) {
+        pendingBrowserClipboardTextRef.current = text;
+        debugLog("android.viewer", "clipboard.copy_from_device.write_error", {
+          message: writeError instanceof Error ? writeError.message : String(writeError),
+          sessionId,
+        });
+        showInteractionFeedback("Clipboard ready. Tap copy again.");
+      }
     } catch (copyError) {
+      pendingBrowserClipboardTextRef.current = null;
       debugLog("android.viewer", "clipboard.copy_from_device.error", {
         message: copyError instanceof Error ? copyError.message : String(copyError),
         sessionId,

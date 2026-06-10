@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { House, Keyboard, LayoutGrid, LoaderCircle, Lock, Maximize2, Minimize2, RefreshCw, Smartphone } from "lucide-react";
+import { Copy, House, Keyboard, LayoutGrid, LoaderCircle, Lock, Maximize2, Minimize2, RefreshCw, Smartphone } from "lucide-react";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
+import { writeTextToBrowserClipboard } from "../../lib/browserClipboard";
 import { debugLog } from "../../lib/debugLog";
 import { createDeviceStreamMetrics } from "../../lib/deviceStreamMetrics";
 import { cn } from "../../lib/utils";
@@ -104,6 +105,7 @@ const IOS_LIVE_CALIBRATION_RETRY_DELAY_MS = 900;
 const IOS_LIVE_ALIGNMENT_ASPECT_TOLERANCE = 0.012;
 const IOS_LIVE_ALIGNMENT_FULL_FRAME_TOLERANCE_PX = 2;
 const IOS_MAX_RENDER_PIXEL_RATIO = 2;
+const IOS_CLIPBOARD_FEEDBACK_TIMEOUT_MS = 2_200;
 const VIDEO_CHUNK_INTERVAL_US = 16_667;
 const IOS_SPECIAL_KEY_MAP: Record<string, string> = {
   Backspace: "DELETE",
@@ -487,6 +489,8 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const liveCalibrationKeyRef = useRef("");
   const liveCalibrationAttemptAtRef = useRef(0);
   const liveCalibrationRetryTimerRef = useRef<number | null>(null);
+  const clipboardFeedbackTimerRef = useRef<number | null>(null);
+  const pendingClipboardTextRef = useRef<string | null>(null);
   const liveViewportRef = useRef<ViewportRect | null>(null);
   const redrawLiveFrameRef = useRef<(() => void) | null>(null);
   const keyboardActiveRef = useRef(false);
@@ -521,6 +525,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const [viewerExpanded, setViewerExpanded] = useState(false);
   const [keyboardBridgeFocused, setKeyboardBridgeFocused] = useState(false);
   const [keyboardSyncAvailable, setKeyboardSyncAvailable] = useState(false);
+  const [clipboardMessage, setClipboardMessage] = useState<string | null>(null);
   const [softwareKeyboardVisible, setSoftwareKeyboardVisible] = useState(false);
   const showMobileViewerControls = useMemo(() => getMobileDeviceViewerControlsFlag(), []);
   const canUseKeyboardBridge = !showMobileViewerControls;
@@ -568,6 +573,65 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     });
   };
 
+  const showClipboardFeedback = (message: string) => {
+    setClipboardMessage(message);
+    if (clipboardFeedbackTimerRef.current != null) {
+      window.clearTimeout(clipboardFeedbackTimerRef.current);
+    }
+
+    clipboardFeedbackTimerRef.current = window.setTimeout(() => {
+      clipboardFeedbackTimerRef.current = null;
+      setClipboardMessage(null);
+    }, IOS_CLIPBOARD_FEEDBACK_TIMEOUT_MS);
+  };
+
+  const copyIosSimulatorClipboardToBrowser = async () => {
+    const pendingClipboardText = pendingClipboardTextRef.current;
+    if (pendingClipboardText !== null) {
+      try {
+        await writeTextToBrowserClipboard(pendingClipboardText);
+        pendingClipboardTextRef.current = null;
+        showClipboardFeedback(pendingClipboardText.length > 0 ? "Copied iOS simulator clipboard." : "iOS simulator clipboard is empty.");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to copy the iOS simulator clipboard.";
+        showClipboardFeedback(message);
+      }
+      return;
+    }
+
+    debugLog("ios.viewer", "clipboard.copy_from_simulator.start", {
+      sessionId,
+    });
+    try {
+      const text = await api.readIosSimulatorClipboard(sessionId);
+      try {
+        await writeTextToBrowserClipboard(text);
+        pendingClipboardTextRef.current = null;
+        debugLog("ios.viewer", "clipboard.copy_from_simulator.success", {
+          charCount: text.length,
+          sessionId,
+        });
+        showClipboardFeedback(text.length > 0 ? "Copied iOS simulator clipboard." : "iOS simulator clipboard is empty.");
+      } catch (writeError) {
+        pendingClipboardTextRef.current = text;
+        const message = writeError instanceof Error ? writeError.message : String(writeError);
+        debugLog("ios.viewer", "clipboard.copy_from_simulator.write_error", {
+          message,
+          sessionId,
+        });
+        showClipboardFeedback("Clipboard ready. Tap copy again.");
+      }
+    } catch (readError) {
+      pendingClipboardTextRef.current = null;
+      const message = readError instanceof Error ? readError.message : "Failed to copy the iOS simulator clipboard.";
+      debugLog("ios.viewer", "clipboard.copy_from_simulator.error", {
+        message,
+        sessionId,
+      });
+      showClipboardFeedback(message);
+    }
+  };
+
   useEffect(() => {
     const instanceId = viewerInstanceIdRef.current;
     debugLog("ios.viewer", "mount", {
@@ -580,6 +644,10 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         instanceId,
         sessionId,
       });
+      if (clipboardFeedbackTimerRef.current != null) {
+        window.clearTimeout(clipboardFeedbackTimerRef.current);
+        clipboardFeedbackTimerRef.current = null;
+      }
     };
   }, [sessionId]);
 
@@ -2791,6 +2859,14 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         {statusLabel}
       </div>
 
+      {clipboardMessage ? (
+        <div className="pointer-events-none absolute inset-x-0 top-4 z-20 flex justify-center px-4">
+          <div className="rounded-full border border-white/10 bg-black/55 px-3 py-1 text-[11px] font-medium text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] backdrop-blur-md">
+            {clipboardMessage}
+          </div>
+        </div>
+      ) : null}
+
       {showMobileViewerControls ? (
         <div className="absolute right-4 top-4 z-20 flex items-center gap-1">
           <Button
@@ -2820,6 +2896,20 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             }}
           >
             <Keyboard className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={mobileControlButtonClass}
+            aria-label="Copy iOS simulator clipboard"
+            title="Copy iOS simulator clipboard"
+            onClick={(event) => {
+              releaseMobileControlButton(event);
+              void copyIosSimulatorClipboardToBrowser();
+            }}
+          >
+            <Copy className="h-4 w-4" />
           </Button>
           <Button
             type="button"

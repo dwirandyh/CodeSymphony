@@ -526,6 +526,17 @@ export async function registerDeviceRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get("/device-streams/:sessionId/ios-simulator/clipboard", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    try {
+      const text = await app.deviceService.readIosSimulatorClipboard(sessionId);
+      return { data: { text } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to read the iOS simulator clipboard";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.get("/device-streams/:sessionId/viewer", async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string };
     const viewerSession = app.deviceService.getViewerSession(sessionId);
