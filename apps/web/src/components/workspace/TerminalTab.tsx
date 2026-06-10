@@ -1,4 +1,6 @@
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronDown,
   ChevronUp,
   Search,
@@ -7,6 +9,7 @@ import {
 import type { ISearchOptions } from "@xterm/addon-search";
 import {
   forwardRef,
+  useCallback,
   useDeferredValue,
   useEffect,
   useImperativeHandle,
@@ -72,6 +75,35 @@ function splitTerminalTitleBraillePrefix(title: string): {
     braillePrefix: match[1] ?? null,
     label: match[2] ?? title,
   };
+}
+
+function toCtrlChar(data: string): string | null {
+  if (data.length !== 1) {
+    return null;
+  }
+
+  const char = data.toUpperCase();
+  if (char >= "A" && char <= "Z") {
+    return String.fromCharCode(char.charCodeAt(0) - 64);
+  }
+
+  if (char === " ") {
+    return "\u0000";
+  }
+
+  if (data === "[") {
+    return "\u001b";
+  }
+
+  if (data === "\\") {
+    return "\u001c";
+  }
+
+  if (data === "]") {
+    return "\u001d";
+  }
+
+  return null;
 }
 
 function hasDroppableContent(dataTransfer: DataTransfer | null): boolean {
@@ -147,8 +179,10 @@ function readFileAsBase64(file: File): Promise<string> {
 interface TerminalTabProps {
   sessionId: string;
   cwd: string | null;
+  mobileBottomOffset?: number;
   onOpenFile?: (path: string) => void | Promise<void>;
   onSessionExit?: (event: { exitCode: number; signal: number }) => void;
+  showMobileKeyboardToolbar?: boolean;
   transformInput?: (data: string) => string;
 }
 
@@ -160,8 +194,10 @@ export interface TerminalTabHandle {
 export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(function TerminalTab({
   sessionId,
   cwd,
+  mobileBottomOffset = 0,
   onOpenFile,
   onSessionExit,
+  showMobileKeyboardToolbar = false,
   transformInput,
 }: TerminalTabProps, ref) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -170,6 +206,9 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
   const onSessionExitRef = useRef(onSessionExit);
   const onOpenFileRef = useRef(onOpenFile);
   const transformInputRef = useRef(transformInput);
+  const mobileKeyboardToolbarEnabledRef = useRef(showMobileKeyboardToolbar);
+  const ctrlArmedRef = useRef(false);
+  const ctrlLockedRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [connected, setConnected] = useState(false);
   const [hasConnectedOnce, setHasConnectedOnce] = useState(false);
@@ -180,6 +219,9 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [searchHasMatch, setSearchHasMatch] = useState<boolean | null>(null);
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
+  const [ctrlArmed, setCtrlArmed] = useState(false);
+  const [ctrlLocked, setCtrlLocked] = useState(false);
+  const [mobileToolbarMoreOpen, setMobileToolbarMoreOpen] = useState(false);
   const dragDepthRef = useRef(0);
   const nativeDesktopDropListenerReadyRef = useRef(false);
   const lastNativeDesktopDropAtRef = useRef<number | null>(null);
@@ -193,10 +235,43 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
     runtimeRef.current?.setOpenFileHandler(onOpenFile ?? null);
   }, [onOpenFile]);
 
+  const updateCtrlState = useCallback((nextArmed: boolean, nextLocked: boolean) => {
+    ctrlArmedRef.current = nextArmed;
+    ctrlLockedRef.current = nextLocked;
+    setCtrlArmed(nextArmed);
+    setCtrlLocked(nextLocked);
+  }, []);
+
+  const transformTerminalInput = useCallback((data: string) => {
+    const baseData = transformInputRef.current ? transformInputRef.current(data) : data;
+    if (!mobileKeyboardToolbarEnabledRef.current || (!ctrlArmedRef.current && !ctrlLockedRef.current)) {
+      return baseData;
+    }
+
+    const ctrlChar = toCtrlChar(baseData);
+    if (!ctrlChar) {
+      return baseData;
+    }
+
+    if (ctrlArmedRef.current && !ctrlLockedRef.current) {
+      updateCtrlState(false, false);
+    }
+
+    return ctrlChar;
+  }, [updateCtrlState]);
+
   useEffect(() => {
     transformInputRef.current = transformInput;
-    runtimeRef.current?.setTransformInput(transformInput);
-  }, [transformInput]);
+    runtimeRef.current?.setTransformInput(transformTerminalInput);
+  }, [transformInput, transformTerminalInput]);
+
+  useEffect(() => {
+    mobileKeyboardToolbarEnabledRef.current = showMobileKeyboardToolbar;
+    if (!showMobileKeyboardToolbar) {
+      updateCtrlState(false, false);
+      setMobileToolbarMoreOpen(false);
+    }
+  }, [showMobileKeyboardToolbar, updateCtrlState]);
 
   useImperativeHandle(ref, () => ({
     sendInput: (data: string) => {
@@ -411,7 +486,7 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
 
     const runtime = getOrCreateTerminalRuntime(sessionId, cwd, container);
     runtimeRef.current = runtime;
-    runtime.setTransformInput(transformInputRef.current);
+    runtime.setTransformInput(transformTerminalInput);
     runtime.setOpenFileHandler(onOpenFileRef.current ?? null);
     runtime.attach(container);
     runtime.scheduleFitBurst();
@@ -460,7 +535,7 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
         runtimeRef.current = null;
       }
     };
-  }, [cwd, sessionId]);
+  }, [cwd, sessionId, transformTerminalInput]);
 
   const connectionLabel = connected ? "Connected" : hasConnectedOnce ? "Reconnecting" : "Connecting";
   const connectionIndicatorClassName = connected
@@ -469,11 +544,76 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
       ? "bg-amber-300"
       : "bg-slate-300";
   const terminalTitleParts = splitTerminalTitleBraillePrefix(terminalTitle);
+  const mobileKeyboardToolbarVisible = showMobileKeyboardToolbar && mobileBottomOffset > 0;
+  const mobileToolbarReservedHeight = mobileToolbarMoreOpen ? "5.75rem" : "3.5rem";
+  const rootStyle = mobileKeyboardToolbarVisible
+    ? { paddingBottom: `calc(var(--cs-mobile-keyboard-offset, 0px) + ${mobileToolbarReservedHeight})` }
+    : undefined;
+  const ctrlActive = ctrlArmed || ctrlLocked;
+
+  const keepTerminalFocus = () => {
+    window.requestAnimationFrame(() => {
+      runtimeRef.current?.focus();
+    });
+  };
+
+  const sendMobileToolbarInput = (data: string) => {
+    runtimeRef.current?.writeInput(data);
+    runtimeRef.current?.focus();
+  };
+
+  const runMobileToolbarAction = (action: () => void) => {
+    action();
+    keepTerminalFocus();
+  };
+
+  const createMobileToolbarPressHandlers = (action: () => void) => ({
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      runMobileToolbarAction(action);
+    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+
+      event.preventDefault();
+      runMobileToolbarAction(action);
+    },
+  });
+
+  const toggleCtrl = () => {
+    setMobileToolbarMoreOpen(false);
+    if (ctrlLockedRef.current) {
+      updateCtrlState(false, false);
+      return;
+    }
+
+    if (ctrlArmedRef.current) {
+      updateCtrlState(false, true);
+      return;
+    }
+
+    updateCtrlState(true, false);
+  };
+
+  const sendArrow = (direction: "up" | "down" | "left" | "right") => {
+    const keyMap: Record<"up" | "down" | "left" | "right", string> = {
+      up: "\u001b[A",
+      down: "\u001b[B",
+      right: "\u001b[C",
+      left: "\u001b[D",
+    };
+    sendMobileToolbarInput(keyMap[direction]);
+    setMobileToolbarMoreOpen(false);
+  };
 
   return (
     <div
       ref={rootRef}
+      data-testid="terminal-tab-root"
       className="relative flex h-full min-w-0 flex-1 flex-col bg-[#0f1218]"
+      style={rootStyle}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -627,6 +767,102 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
         ref={terminalContainerRef}
         className="terminal-scrollbars-thin min-h-0 min-w-0 flex-1 overflow-hidden bg-[#0f1218]"
       />
+      {mobileKeyboardToolbarVisible ? (
+        <div
+          data-testid="terminal-mobile-keyboard-toolbar"
+          className="fixed inset-x-0 z-40 border-t border-border/40 bg-[hsl(220,18%,10%)]/95 px-2 py-1.5 shadow-[0_-10px_30px_rgba(0,0,0,0.28)] backdrop-blur-md lg:hidden"
+          style={{ bottom: "var(--cs-mobile-keyboard-offset, 0px)" }}
+        >
+          <div className="grid grid-cols-6 gap-1">
+            <button
+              type="button"
+              {...createMobileToolbarPressHandlers(toggleCtrl)}
+              className={cn(
+                "inline-flex h-9 items-center justify-center rounded-lg border text-[11px] font-semibold transition-colors",
+                ctrlActive
+                  ? "border-primary/60 bg-primary/12 text-primary"
+                  : "border-transparent text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
+              )}
+              aria-pressed={ctrlActive}
+              title={ctrlLocked ? "Ctrl locked" : ctrlArmed ? "Ctrl armed" : "Ctrl"}
+            >
+              CTRL
+            </button>
+            <button
+              type="button"
+              {...createMobileToolbarPressHandlers(() => {
+                sendMobileToolbarInput("\t");
+                setMobileToolbarMoreOpen(false);
+              })}
+              className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+              title="Tab"
+            >
+              <span className="text-[11px] font-semibold">TAB</span>
+            </button>
+            <button
+              type="button"
+              {...createMobileToolbarPressHandlers(() => {
+                sendMobileToolbarInput("\u001b");
+                setMobileToolbarMoreOpen(false);
+              })}
+              className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+              title="Escape"
+            >
+              <span className="text-[11px] font-semibold">ESC</span>
+            </button>
+            <button
+              type="button"
+              {...createMobileToolbarPressHandlers(() => sendArrow("up"))}
+              className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+              title="Arrow up"
+            >
+              <ArrowUp className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              {...createMobileToolbarPressHandlers(() => sendArrow("down"))}
+              className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+              title="Arrow down"
+            >
+              <ArrowDown className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              {...createMobileToolbarPressHandlers(() => setMobileToolbarMoreOpen((current) => !current))}
+              className={cn(
+                "inline-flex h-9 items-center justify-center rounded-lg px-2 text-[12px] font-semibold transition-colors",
+                mobileToolbarMoreOpen ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
+              )}
+              title="More terminal keys"
+            >
+              <span>...</span>
+            </button>
+          </div>
+          {mobileToolbarMoreOpen ? (
+            <div className="mt-1 grid grid-cols-2 gap-1 border-t border-border/30 pt-1.5">
+              {[
+                { label: "Left", action: () => sendArrow("left") },
+                { label: "Right", action: () => sendArrow("right") },
+                { label: "Ctrl+C", action: () => sendMobileToolbarInput("\u0003") },
+                { label: "Ctrl+D", action: () => sendMobileToolbarInput("\u0004") },
+                { label: "Ctrl+L", action: () => sendMobileToolbarInput("\u000c") },
+              ].map((action) => (
+                <button
+                  key={action.label}
+                  type="button"
+                  {...createMobileToolbarPressHandlers(() => {
+                    action.action();
+                    setMobileToolbarMoreOpen(false);
+                  })}
+                  className="inline-flex h-8 items-center justify-center rounded-lg text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div
         className={cn(
           "pointer-events-none absolute inset-0 bg-sky-400/10 ring-1 ring-inset ring-sky-400/30 transition-opacity duration-100",

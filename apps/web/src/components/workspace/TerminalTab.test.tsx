@@ -254,6 +254,42 @@ describe("TerminalTab", () => {
     expect(indicator?.getAttribute("aria-label")).toBe("Connecting");
   });
 
+  it("keeps a mobile terminal keyboard toolbar above the soft keyboard", async () => {
+    act(() => {
+      root.render(
+        <TerminalTab
+          sessionId="s1"
+          cwd="/tmp"
+          showMobileKeyboardToolbar
+          mobileBottomOffset={1}
+        />,
+      );
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const rootElement = container.querySelector<HTMLElement>('[data-testid="terminal-tab-root"]');
+    const toolbar = container.querySelector<HTMLElement>('[data-testid="terminal-mobile-keyboard-toolbar"]');
+    expect(toolbar).toBeTruthy();
+    expect(toolbar?.style.bottom).toBe("var(--cs-mobile-keyboard-offset, 0px)");
+    expect(rootElement?.style.paddingBottom).toContain("var(--cs-mobile-keyboard-offset, 0px)");
+
+    const escapeButton = Array.from(toolbar?.querySelectorAll("button") ?? [])
+      .find((button) => button.title === "Escape");
+    if (!escapeButton) {
+      throw new Error("Escape button not found");
+    }
+
+    act(() => {
+      escapeButton.dispatchEvent(new Event("pointerdown", { bubbles: true, cancelable: true }));
+    });
+
+    expect(MockWebSocket.instances[0]?.send).toHaveBeenCalledWith("\u001b");
+    expect(mockTerminal.focus).toHaveBeenCalled();
+  });
+
   it("creates terminal once and loads expected addons", () => {
     act(() => {
       root.render(<TerminalTab sessionId="test-session" cwd="/tmp" />);
@@ -667,6 +703,60 @@ describe("TerminalTab", () => {
       .filter(([message]) => typeof message === "string" && !message.startsWith("{"));
     expect(inputSends).toEqual([["\u0003"]]);
     expect(MockWebSocket.instances[0]?.send.mock.calls).not.toContainEqual(["c"]);
+  });
+
+  it("drops malformed SGR mouse reports with NaN coordinates before they reach the PTY", async () => {
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    act(() => {
+      terminalDataHandler?.("\x1b[<0;NaN;NaNM");
+    });
+
+    expect(MockWebSocket.instances[0]?.send.mock.calls).not.toContainEqual(["\x1b[<0;NaN;NaNM"]);
+  });
+
+  it("sends only the latest Android beforeinput text when xterm reports cumulative textarea data", async () => {
+    const userAgentDescriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
+    Object.defineProperty(Navigator.prototype, "userAgent", {
+      configurable: true,
+      get: () => "Mozilla/5.0 (Linux; Android 14)",
+    });
+
+    try {
+      act(() => {
+        root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+      });
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+
+      const firstBeforeInput = new Event("beforeinput", { bubbles: true, cancelable: true });
+      Object.defineProperty(firstBeforeInput, "data", { value: "a" });
+      const secondBeforeInput = new Event("beforeinput", { bubbles: true, cancelable: true });
+      Object.defineProperty(secondBeforeInput, "data", { value: "b" });
+
+      act(() => {
+        mockTextarea.dispatchEvent(firstBeforeInput);
+        terminalDataHandler?.("a");
+        mockTextarea.dispatchEvent(secondBeforeInput);
+        terminalDataHandler?.("ab");
+      });
+
+      const inputSends = MockWebSocket.instances[0]?.send.mock.calls
+        .filter(([message]) => typeof message === "string" && !message.startsWith("{"));
+      expect(inputSends).toEqual([["a"], ["b"]]);
+    } finally {
+      if (userAgentDescriptor) {
+        Object.defineProperty(Navigator.prototype, "userAgent", userAgentDescriptor);
+      }
+    }
   });
 
   it("refreshes after fullscreen terminal chunks finish writing", async () => {

@@ -27,6 +27,7 @@ const PARKED_TERMINAL_CONTAINER_ID = "cs-terminal-runtime-parking";
 const MAX_TERMINAL_TITLE_LENGTH = 32;
 const FULLSCREEN_REDRAW_SEQUENCE_PATTERN = /\x1b\[\?(?:1049[hl]|2026l)/u;
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
+const MALFORMED_SGR_MOUSE_REPORT_PATTERN = /^\x1b\[<\d+;(?:\d+|NaN);(?:\d+|NaN)[Mm]$/u;
 // Entering the alternate screen buffer is how full-screen TUIs (opencode,
 // vim, etc.) start. Some TUIs (opentui) defer their first real frame until a
 // terminal capability query times out (~seconds). The reconnect path already
@@ -327,6 +328,10 @@ function detectSplitAlternateScreenEntry(entry: TerminalRuntimeEntry, chunk: str
   const scanWindow = entry.modeScanTail + chunk;
   entry.modeScanTail = scanWindow.slice(-ALT_SCREEN_SCAN_TAIL);
   return ALT_SCREEN_ENTER_PATTERN.test(scanWindow);
+}
+
+function isMalformedSgrMouseReport(data: string): boolean {
+  return data.includes("NaN") && MALFORMED_SGR_MOUSE_REPORT_PATTERN.test(data);
 }
 
 function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
@@ -1109,12 +1114,36 @@ function createTerminalRuntime(
     }, 0);
   };
 
+  const textarea = terminal.textarea;
+  const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+  let pendingAndroidBeforeInputData: string | null = null;
+
+  const resolveAndroidInputData = (data: string): string => {
+    if (!isAndroid || !pendingAndroidBeforeInputData) {
+      return data;
+    }
+
+    const latestData = pendingAndroidBeforeInputData;
+    pendingAndroidBeforeInputData = null;
+    if (data !== latestData && data.endsWith(latestData)) {
+      return latestData;
+    }
+
+    return data;
+  };
+
   terminal.onData((data) => {
     if (suppressOriginalInputIfHandled(data)) {
+      pendingAndroidBeforeInputData = null;
       return;
     }
 
-    const nextData = entry.transformInput ? entry.transformInput(data) : data;
+    if (isMalformedSgrMouseReport(data)) {
+      return;
+    }
+
+    const inputData = resolveAndroidInputData(data);
+    const nextData = entry.transformInput ? entry.transformInput(inputData) : inputData;
     if (nextData.length === 0) {
       return;
     }
@@ -1187,9 +1216,6 @@ function createTerminalRuntime(
     setTerminalTitle(entry, title);
   });
 
-  const textarea = terminal.textarea;
-  const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
-
   const handleBeforeInput = (event: InputEvent) => {
     if (isAndroid) {
       debugLog("terminal.input", "beforeinput", {
@@ -1204,10 +1230,16 @@ function createTerminalRuntime(
       return;
     }
 
+    if (isAndroid) {
+      pendingAndroidBeforeInputData = event.data;
+    }
+
     const nextData = entry.transformInput ? entry.transformInput(event.data) : event.data;
     if (nextData === event.data || nextData.length === 0) {
       return;
     }
+
+    pendingAndroidBeforeInputData = null;
 
     entry.suppressedInput = {
       active: true,

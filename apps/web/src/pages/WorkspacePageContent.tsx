@@ -4636,7 +4636,9 @@ export function WorkspacePage() {
                       key={activeTerminalTab.id}
                       sessionId={activeTerminalTab.sessionId}
                       cwd={repos.selectedWorktree?.path ?? null}
+                      mobileBottomOffset={mobileKeyboardOffset}
                       onOpenFile={(path) => void openReadFile(path)}
+                      showMobileKeyboardToolbar={!desktopLayout}
                     />
                   </Suspense>
                 </div>
