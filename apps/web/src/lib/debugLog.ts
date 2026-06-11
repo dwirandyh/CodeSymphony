@@ -195,11 +195,11 @@ function scheduleForcedDebugLogFlush() {
 
   forcedFlushTimer = setTimeout(() => {
     forcedFlushTimer = null;
-    void flushPendingForcedDebugLogs();
+    void flushPendingDebugLogs();
   }, FORCED_DEBUG_LOG_RETRY_MS);
 }
 
-async function flushPendingForcedDebugLogs() {
+export async function flushPendingDebugLogs() {
   if (typeof window === "undefined" || forcedFlushInFlight || pendingForcedEntries.length === 0) {
     return;
   }
@@ -258,7 +258,7 @@ export function debugLog(source: string, message: string, data?: unknown, option
     if (pendingForcedEntries.length > 200) {
       pendingForcedEntries = pendingForcedEntries.slice(-200);
     }
-    void flushPendingForcedDebugLogs();
+    void flushPendingDebugLogs();
     return;
   }
 

@@ -1,4 +1,5 @@
 export * from "./workflow.js";
+export * from "./terminalDiagnostics.js";
 export type {
   WorkspaceSyncEvent,
   WorkspaceSyncEventType,

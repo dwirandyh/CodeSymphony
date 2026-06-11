@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
-import type { TerminalTab } from "@codesymphony/shared-types";
+import { summarizeTerminalData, type TerminalTab } from "@codesymphony/shared-types";
 import { buildClaudeRuntimeEnv } from "../claude/shellEnv.js";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
 import { HeadlessEmulator, DEFAULT_MODES, type TerminalSnapshot } from "./headlessEmulator.js";
 import { isPtyIoError, spawnPty, type PtyProcess } from "./ptyBackend.js";
 
 const MAX_SCROLLBACK_BYTES = 50_000;
+const TERMINAL_TYPING_DEBUG_PREFIX = "[DEBUG-terminal-typing]";
 
 interface TerminalSession {
     id: string;
@@ -25,6 +26,7 @@ interface TerminalSession {
     emulator: HeadlessEmulator;
     lastResize: { cols: number; rows: number } | null;
     lastLoggedAlternateScreen: boolean;
+    outputSeq: number;
 }
 
 interface SpawnOptions {
@@ -144,6 +146,42 @@ function normalizeCwd(cwd?: string): string | undefined {
 
 function isWorkspaceTerminalSessionId(sessionId: string): boolean {
     return /(?:^|:)terminal(?:$|:)/u.test(sessionId) || /^default:\d+$/u.test(sessionId);
+}
+
+function resolveWorktreeId(sessionId: string): string | undefined {
+    return sessionId.includes(":") ? sessionId.split(":", 1)[0] : undefined;
+}
+
+function appendTerminalInputDebugLog(
+    message: string,
+    sessionId: string,
+    data: Record<string, unknown>,
+): void {
+    appendRuntimeDebugLog({
+        source: "terminal.input",
+        message: `${TERMINAL_TYPING_DEBUG_PREFIX} ${message}`,
+        data: {
+            sessionId,
+            worktreeId: resolveWorktreeId(sessionId),
+            ...data,
+        },
+    });
+}
+
+function appendTerminalOutputDebugLog(
+    message: string,
+    sessionId: string,
+    data: Record<string, unknown>,
+): void {
+    appendRuntimeDebugLog({
+        source: "terminal.output",
+        message: `${TERMINAL_TYPING_DEBUG_PREFIX} ${message}`,
+        data: {
+            sessionId,
+            worktreeId: resolveWorktreeId(sessionId),
+            ...data,
+        },
+    });
 }
 
 // Detect terminal capability queries a full-screen TUI sends at startup and may
@@ -280,7 +318,7 @@ export function createTerminalService(prisma: PrismaClient) {
 
         const { ptyProcess, resolvedCwd } = spawnProcess(normalizedCwd, options);
 
-        const sessionWorktreeId = sessionId.includes(":") ? sessionId.split(":", 1)[0] : undefined;
+        const sessionWorktreeId = resolveWorktreeId(sessionId);
 
         const emulator = new HeadlessEmulator({
             cols: existing?.lastResize?.cols ?? 80,
@@ -306,6 +344,7 @@ export function createTerminalService(prisma: PrismaClient) {
             emulator,
             lastResize: existing?.lastResize ?? null,
             lastLoggedAlternateScreen: false,
+            outputSeq: 0,
         };
 
         // The headless emulator answers terminal capability queries (DA1/DSR,
@@ -339,6 +378,13 @@ export function createTerminalService(prisma: PrismaClient) {
         });
 
         ptyProcess.onData((data) => {
+            appendTerminalOutputDebugLog("service.pty.output", sessionId, {
+                outputSeq: ++session.outputSeq,
+                listenerCount: session.listeners.size,
+                active: session.active,
+                outputSummary: summarizeTerminalData(data),
+            });
+
             // Buffer output for replay on reconnect
             session.scrollback.push(data);
             session.scrollbackSize += data.length;
@@ -427,13 +473,32 @@ export function createTerminalService(prisma: PrismaClient) {
 
     function write(sessionId: string, data: string): void {
         const session = sessions.get(sessionId);
-        if (!session?.active) {
+        const inputSummary = summarizeTerminalData(data);
+        if (!session) {
+            appendTerminalInputDebugLog("service.write.skippedNoSession", sessionId, {
+                inputSummary,
+            });
+            return;
+        }
+        if (!session.active) {
+            appendTerminalInputDebugLog("service.write.skippedInactive", sessionId, {
+                inputSummary,
+            });
             return;
         }
 
         try {
             session.ptyProcess.write(data);
+            appendTerminalInputDebugLog("service.write.ptyWriteOk", sessionId, {
+                active: session.active,
+                inputSummary,
+            });
         } catch (error) {
+            appendTerminalInputDebugLog("service.write.ptyWriteError", sessionId, {
+                active: session.active,
+                inputSummary,
+                message: error instanceof Error ? error.message : String(error),
+            });
             handlePtyIoFailure(sessionId, session, error);
         }
     }

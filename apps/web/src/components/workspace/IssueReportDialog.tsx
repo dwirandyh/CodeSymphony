@@ -4,6 +4,7 @@ import { Bug, CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
+import { flushPendingDebugLogs } from "../../lib/debugLog";
 
 type IssueReportDialogProps = {
   open: boolean;
@@ -48,6 +49,13 @@ export function IssueReportDialog({
     setSubmitting(true);
     setError(null);
     try {
+      // [DEBUG-pty-typing] Flush all pending debug entries to server before
+      // creating the issue report, so terminal input diagnostics are captured.
+      try {
+        await flushPendingDebugLogs();
+      } catch {
+        // Best-effort flush; don't block the report.
+      }
       const createdReport = await api.createIssueReport({
         description: trimmedDescription,
         repositoryId,

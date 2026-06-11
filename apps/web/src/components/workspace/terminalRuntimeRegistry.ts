@@ -9,6 +9,12 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import type { IDisposable, ILink } from "@xterm/xterm";
+import {
+  resolveComposedTerminalInput,
+  summarizeTerminalData,
+  TERMINAL_IME_DEDUP_WINDOW_MS,
+  type TerminalDataSummary,
+} from "@codesymphony/shared-types";
 import { debugLog } from "../../lib/debugLog";
 import { resolveRuntimeApiBase } from "../../lib/runtimeUrl";
 import { parseFileLocation } from "../../lib/worktree";
@@ -28,6 +34,7 @@ const MAX_TERMINAL_TITLE_LENGTH = 32;
 const FULLSCREEN_REDRAW_SEQUENCE_PATTERN = /\x1b\[\?(?:1049[hl]|2026l)/u;
 const ALT_SCREEN_ENTER = "\x1b[?1049h";
 const MALFORMED_SGR_MOUSE_REPORT_PATTERN = /^\x1b\[<\d+;(?:\d+|NaN);(?:\d+|NaN)[Mm]$/u;
+const TERMINAL_TYPING_DEBUG_PREFIX = "[DEBUG-terminal-typing]";
 // Entering the alternate screen buffer is how full-screen TUIs (opencode,
 // vim, etc.) start. Some TUIs (opentui) defer their first real frame until a
 // terminal capability query times out (~seconds). The reconnect path already
@@ -131,6 +138,7 @@ type TerminalRuntimeEntry = {
   redrawTimerIds: number[];
   diagFrameCount: number;
   diagByteCount: number;
+  inputSeq: number;
   forceRefreshWritesRemaining: number;
   modeScanTail: string;
   onAlternateScreen: boolean;
@@ -149,6 +157,50 @@ type TerminalRuntimeEntry = {
     active: boolean;
     originalData: string | null;
     resetTimerId: number | null;
+  };
+};
+
+type TerminalInputDiagnostics = {
+  stage: string;
+  rawSummary?: TerminalDataSummary | null;
+  inputSummary?: TerminalDataSummary | null;
+  nextSummary?: TerminalDataSummary | null;
+  inputType?: string | null;
+  defaultPrevented?: boolean;
+  transformed?: boolean;
+  suppressed?: boolean;
+  dropped?: boolean;
+  dropReason?: string;
+  sendAttempted?: boolean;
+  sent?: boolean;
+  pendingAndroidBeforeInput?: boolean;
+  textareaValueSummary?: TerminalDataSummary | null;
+  keyboard?: {
+    keyKind: "character" | "named";
+    keyName: string | null;
+    keySummary: TerminalDataSummary | null;
+    altKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    shiftKey: boolean;
+    repeat: boolean;
+    isComposing: boolean;
+    defaultPrevented: boolean;
+  };
+  // [DEBUG-pty-typing] Additional diagnostic fields
+  clientSendSeq?: number;
+  documentHasFocus?: boolean | null;
+  composedLength?: number;
+  recoveredLength?: number;
+  focusStealer?: {
+    tag: string | null;
+    id: string | null;
+    className: string | null;
+    role: string | null;
+    isTextarea: boolean;
+    isInput: boolean;
+    dataTestId: string | null;
+    noActiveElement?: boolean;
   };
 };
 
@@ -334,7 +386,71 @@ function isMalformedSgrMouseReport(data: string): boolean {
   return data.includes("NaN") && MALFORMED_SGR_MOUSE_REPORT_PATTERN.test(data);
 }
 
+function summarizeMaybeTerminalData(data: string | null | undefined): TerminalDataSummary | null {
+  return typeof data === "string" ? summarizeTerminalData(data) : null;
+}
+
+function summarizeTextareaValue(textarea: HTMLTextAreaElement | null | undefined): TerminalDataSummary | null {
+  return textarea ? summarizeTerminalData(textarea.value) : null;
+}
+
+function getSocketReadyState(webSocket: WebSocket | null): number | null {
+  return webSocket?.readyState ?? null;
+}
+
+function summarizeKeyboardEvent(event: KeyboardEvent): TerminalInputDiagnostics["keyboard"] {
+  const isCharacter = event.key.length === 1;
+  return {
+    keyKind: isCharacter ? "character" : "named",
+    keyName: isCharacter ? null : event.key,
+    keySummary: isCharacter ? summarizeTerminalData(event.key) : null,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    repeat: event.repeat,
+    isComposing: event.isComposing,
+    defaultPrevented: event.defaultPrevented,
+  };
+}
+
+function logTerminalInputDiagnostics(
+  entry: TerminalRuntimeEntry,
+  message: string,
+  diagnostics: TerminalInputDiagnostics,
+): void {
+  const textarea = entry.terminal.textarea;
+  const activeElement = typeof document === "undefined" ? null : document.activeElement;
+  // [DEBUG-pty-typing] Always force-send to bypass source filters
+  debugLog("terminal.typing", `${TERMINAL_TYPING_DEBUG_PREFIX} ${message}`, {
+    sessionId: entry.sessionId,
+    inputSeq: ++entry.inputSeq,
+    socketReadyState: getSocketReadyState(entry.webSocket),
+    connected: entry.connected,
+    streamReady: entry.streamReady,
+    pendingOutputChunks: entry.pendingData.length,
+    pendingAndroidBeforeInput: false,
+    textareaPresent: textarea !== null,
+    textareaFocused: textarea !== null && activeElement === textarea,
+    activeElementTag: activeElement instanceof HTMLElement ? activeElement.tagName.toLowerCase() : null,
+    documentHasFocus: typeof document === "undefined" ? null : document.hasFocus(),
+    textareaValueSummary: summarizeTextareaValue(textarea),
+    ...diagnostics,
+  }, { force: true });
+}
+
 function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
+  // [DEBUG-pty-typing] Log every output during active typing (inputSeq > 0)
+  if (entry.inputSeq > 0 && entry.diagFrameCount <= 10) {
+    debugLog("terminal.output", "[DEBUG-pty-typing] writeOutput.duringTyping", {
+      sessionId: entry.sessionId,
+      inputSeq: entry.inputSeq,
+      outputFrame: entry.diagFrameCount,
+      chunkBytes: chunk.length,
+      outputSummary: summarizeTerminalData(chunk),
+      streamReady: entry.streamReady,
+    }, { force: true });
+  }
   const entersAlternateScreen = detectSplitAlternateScreenEntry(entry, chunk);
   if (entersAlternateScreen) {
     entry.forceRefreshWritesRemaining = Math.max(entry.forceRefreshWritesRemaining, 8);
@@ -461,12 +577,16 @@ function applyAttachSnapshot(entry: TerminalRuntimeEntry, frame: TerminalAttachF
   const onAlternateScreen = frame.modes?.alternateScreen === true;
   entry.onAlternateScreen = onAlternateScreen;
 
+  // [DEBUG-pty-typing] Log inputSeq at snapshot time to detect snapshot-overwrite-during-typing
   debugLog("terminal.render", "attach.snapshot", {
     sessionId: entry.sessionId,
     alternateScreen: onAlternateScreen,
     snapshotBytes: frame.snapshotAnsi.length,
     rehydrateBytes: frame.rehydrateSequences.length,
-  });
+    inputSeqAtSnapshot: entry.inputSeq,
+    streamReadyBeforeSnapshot: entry.streamReady,
+    pendingOutputAtSnapshot: entry.pendingData.length,
+  }, { force: true });
 
   const finalizeRestore = () => {
     if (entry.disposed) {
@@ -888,6 +1008,15 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
       // Not an internal event payload; treat as terminal output.
     }
 
+    debugLog("terminal.output", `${TERMINAL_TYPING_DEBUG_PREFIX} client.ws.output`, {
+      sessionId: entry.sessionId,
+      frame: entry.diagFrameCount,
+      socketReadyState: nextWebSocket.readyState,
+      streamReady: entry.streamReady,
+      pendingOutputChunks: entry.pendingData.length,
+      outputSummary: summarizeTerminalData(chunk),
+    });
+
     // Hold live output until the attach snapshot has been applied, then flush
     // in order so the restored screen is never clobbered by mid-restore writes.
     if (!entry.streamReady) {
@@ -1062,6 +1191,7 @@ function createTerminalRuntime(
     redrawTimerIds: [],
     diagFrameCount: 0,
     diagByteCount: 0,
+    inputSeq: 0,
     forceRefreshWritesRemaining: 0,
     modeScanTail: "",
     onAlternateScreen: false,
@@ -1111,12 +1241,18 @@ function createTerminalRuntime(
     }
     entry.suppressedInput.resetTimerId = window.setTimeout(() => {
       clearSuppressedInput();
-    }, 0);
+    }, TERMINAL_IME_DEDUP_WINDOW_MS);
+  };
+
+  const trackComposingText = (nextValue: string) => {
+    lastComposingText = nextValue;
   };
 
   const textarea = terminal.textarea;
   const isAndroid = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
   let pendingAndroidBeforeInputData: string | null = null;
+  let lastComposingText: string = "";
+  let isComposing: boolean = false;
 
   const resolveAndroidInputData = (data: string): string => {
     if (!isAndroid || !pendingAndroidBeforeInputData) {
@@ -1133,33 +1269,73 @@ function createTerminalRuntime(
   };
 
   terminal.onData((data) => {
+    if (isComposing) {
+      logTerminalInputDiagnostics(entry, "client.onData.suppressedDuringComposition", {
+        stage: "onData",
+        rawSummary: summarizeTerminalData(data),
+        suppressed: true,
+        dropReason: "ime-composition-in-progress",
+        pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+      });
+      return;
+    }
+
     if (suppressOriginalInputIfHandled(data)) {
+      logTerminalInputDiagnostics(entry, "client.onData.suppressed", {
+        stage: "onData",
+        rawSummary: summarizeTerminalData(data),
+        suppressed: true,
+        pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+      });
       pendingAndroidBeforeInputData = null;
       return;
     }
 
     if (isMalformedSgrMouseReport(data)) {
+      logTerminalInputDiagnostics(entry, "client.onData.dropMalformedMouse", {
+        stage: "onData",
+        rawSummary: summarizeTerminalData(data),
+        dropped: true,
+        dropReason: "malformed-sgr-mouse-report",
+        pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+      });
       return;
     }
 
     const inputData = resolveAndroidInputData(data);
     const nextData = entry.transformInput ? entry.transformInput(inputData) : inputData;
     if (nextData.length === 0) {
+      logTerminalInputDiagnostics(entry, "client.onData.dropEmpty", {
+        stage: "onData",
+        rawSummary: summarizeTerminalData(data),
+        inputSummary: summarizeTerminalData(inputData),
+        nextSummary: summarizeTerminalData(nextData),
+        transformed: nextData !== inputData,
+        dropped: true,
+        dropReason: "empty-transformed-input",
+        pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+      });
       return;
     }
 
-    if (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent) && data.length <= 2) {
-      debugLog("terminal.input", "onData", {
-        sessionId,
-        raw: data,
-        rawCode: data.length === 1 ? data.charCodeAt(0) : null,
-        next: nextData,
-        nextCode: nextData.length === 1 ? nextData.charCodeAt(0) : null,
-      });
-    }
+    const socketReadyState = getSocketReadyState(entry.webSocket);
+    const sent = socketReadyState === WebSocket.OPEN;
+    // [DEBUG-pty-typing] Track the full input sequence for round-trip matching
+    const clientSendSeq = ++entry.diagFrameCount;
+    logTerminalInputDiagnostics(entry, "client.onData.send", {
+      stage: "onData",
+      rawSummary: summarizeTerminalData(data),
+      inputSummary: summarizeTerminalData(inputData),
+      nextSummary: summarizeTerminalData(nextData),
+      transformed: nextData !== inputData,
+      sendAttempted: true,
+      sent,
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+      clientSendSeq,
+    });
 
-    if (entry.webSocket?.readyState === WebSocket.OPEN) {
-      entry.webSocket.send(nextData);
+    if (sent) {
+      entry.webSocket?.send(nextData);
     }
   });
   const keyDisposable = terminal.onKey(({ domEvent }) => {
@@ -1217,16 +1393,30 @@ function createTerminalRuntime(
   });
 
   const handleBeforeInput = (event: InputEvent) => {
-    if (isAndroid) {
-      debugLog("terminal.input", "beforeinput", {
-        sessionId,
-        data: event.data ?? null,
-        inputType: event.inputType ?? null,
-        defaultPrevented: event.defaultPrevented,
-      });
+    logTerminalInputDiagnostics(entry, "client.beforeinput", {
+      stage: "beforeinput",
+      rawSummary: summarizeMaybeTerminalData(event.data),
+      inputType: event.inputType ?? null,
+      defaultPrevented: event.defaultPrevented,
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+    });
+
+    if (event.defaultPrevented) {
+      return;
     }
 
-    if (event.defaultPrevented || typeof event.data !== "string" || event.data.length === 0) {
+    if (
+      isComposing
+      && event.inputType === "insertReplacementText"
+      && typeof event.data === "string"
+      && event.data.length > 0
+    ) {
+      trackComposingText(event.data);
+      event.preventDefault();
+      return;
+    }
+
+    if (typeof event.data !== "string" || event.data.length === 0) {
       return;
     }
 
@@ -1252,24 +1442,43 @@ function createTerminalRuntime(
       textarea.value = "";
     }
 
-    if (entry.webSocket?.readyState === WebSocket.OPEN) {
-      entry.webSocket.send(nextData);
+    const socketReadyState = getSocketReadyState(entry.webSocket);
+    const sent = socketReadyState === WebSocket.OPEN;
+    logTerminalInputDiagnostics(entry, "client.beforeinput.send", {
+      stage: "beforeinput",
+      rawSummary: summarizeTerminalData(event.data),
+      nextSummary: summarizeTerminalData(nextData),
+      inputType: event.inputType ?? null,
+      defaultPrevented: event.defaultPrevented,
+      transformed: true,
+      sendAttempted: true,
+      sent,
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+    });
+    if (sent) {
+      entry.webSocket?.send(nextData);
     }
   };
 
   const handleInput = (event: Event) => {
+    const inputEvent = event as InputEvent;
+    logTerminalInputDiagnostics(entry, "client.input", {
+      stage: "input",
+      rawSummary: summarizeMaybeTerminalData(inputEvent.data),
+      inputType: inputEvent.inputType ?? null,
+      defaultPrevented: inputEvent.defaultPrevented,
+      suppressed: entry.suppressedInput.active,
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+    });
+
     if (!isAndroid) {
+      // Track composing text on non-Android too, so handleCompositionEnd
+      // can recover input when xterm.js clears the textarea first.
+      if (isComposing && textarea) {
+        trackComposingText(textarea.value);
+      }
       return;
     }
-
-    const inputEvent = event as InputEvent;
-    debugLog("terminal.input", "input", {
-      sessionId,
-      data: inputEvent.data ?? null,
-      inputType: inputEvent.inputType ?? null,
-      value: textarea?.value ?? null,
-      defaultPrevented: inputEvent.defaultPrevented,
-    });
 
     if (entry.suppressedInput.active) {
       inputEvent.preventDefault();
@@ -1286,32 +1495,171 @@ function createTerminalRuntime(
   };
 
   const handleCompositionStart = () => {
+    isComposing = true;
+    lastComposingText = "";
+    logTerminalInputDiagnostics(entry, "client.composition.start", {
+      stage: "compositionstart",
+      suppressed: entry.suppressedInput.active,
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+    });
     if (entry.suppressedInput.active && textarea) {
       textarea.value = "";
     }
   };
 
-  const handleCompositionEnd = () => {
-    if (!entry.suppressedInput.active) {
-      return;
+  const handleCompositionUpdate = (event: CompositionEvent) => {
+    if (typeof event.data === "string" && event.data.length > 0) {
+      trackComposingText(event.data);
+    } else if (textarea) {
+      trackComposingText(textarea.value);
     }
+    logTerminalInputDiagnostics(entry, "client.composition.update", {
+      stage: "compositionupdate",
+      suppressed: entry.suppressedInput.active,
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+    });
+  };
 
-    if (textarea) {
-      textarea.value = "";
-    }
+  const handleCompositionEnd = (event: CompositionEvent) => {
+    isComposing = false;
+    logTerminalInputDiagnostics(entry, "client.composition.end", {
+      stage: "compositionend",
+      suppressed: entry.suppressedInput.active,
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+    });
 
-    queueMicrotask(() => {
+    if (entry.suppressedInput.active) {
+      lastComposingText = "";
+      // Ctrl-transform path: just clear up.
       if (textarea) {
         textarea.value = "";
       }
-      clearSuppressedInput();
+      queueMicrotask(() => {
+        if (textarea) {
+          textarea.value = "";
+        }
+        clearSuppressedInput();
+      });
+      return;
+    }
+
+    // Normal IME composition end. On macOS with CJK input methods, xterm.js
+    // may not emit the composed text through its internal onData handler.
+    // Read any remaining textarea value (the composed text) and send it
+    // directly to the PTY via WebSocket, then clear the textarea.
+    // Arm suppressedInput so that if xterm's internal handler ALSO emits the
+    // same text via onData, it gets deduplicated.
+    if (!textarea) {
+      lastComposingText = "";
+      return;
+    }
+
+    const composed = resolveComposedTerminalInput(
+      event.data ?? "",
+      textarea.value,
+      lastComposingText,
+    );
+    if (composed !== textarea.value && composed !== (event.data ?? "")) {
+      logTerminalInputDiagnostics(entry, "client.composition.end.recovered", {
+        stage: "compositionend",
+        recoveredLength: composed.length,
+      });
+    }
+    lastComposingText = "";
+    if (composed.length > 0) {
+      const socketReadyState = getSocketReadyState(entry.webSocket);
+      const sent = socketReadyState === WebSocket.OPEN;
+      logTerminalInputDiagnostics(entry, "client.composition.end.send", {
+        stage: "compositionend",
+        composedLength: composed.length,
+        sendAttempted: true,
+        sent,
+      });
+      if (sent) {
+        entry.webSocket?.send(composed);
+      }
+      // Arm dedup: if xterm's onData fires with the exact same composed text,
+      // suppressOriginalInputIfHandled will match and drop the duplicate.
+      entry.suppressedInput = {
+        active: true,
+        originalData: composed,
+        resetTimerId: null,
+      };
+      scheduleSuppressedInputReset();
+      textarea.value = "";
+    }
+  };
+
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (isComposing && textarea) {
+      trackComposingText(textarea.value);
+    }
+    logTerminalInputDiagnostics(entry, "client.keydown", {
+      stage: "keydown",
+      keyboard: summarizeKeyboardEvent(event),
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+    });
+  };
+
+  const handleTextareaFocus = () => {
+    // [DEBUG-pty-typing] Log full focus context on focus gain
+    logTerminalInputDiagnostics(entry, "client.textarea.focus", {
+      stage: "focus",
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+      documentHasFocus: typeof document !== "undefined" ? document.hasFocus() : null,
+    });
+  };
+
+  const handleTextareaBlur = () => {
+    // [DEBUG-pty-typing] Capture what element stole focus from the xterm textarea
+    const activeEl = typeof document !== "undefined" ? document.activeElement : null;
+    const stealInfo = activeEl
+      ? {
+          tag: activeEl instanceof HTMLElement ? activeEl.tagName.toLowerCase() : null,
+          id: (activeEl instanceof HTMLElement ? activeEl.id : null) ?? null,
+          className: activeEl instanceof HTMLElement ? (activeEl.className?.substring?.(0, 80) ?? null) : null,
+          role: (activeEl instanceof HTMLElement ? activeEl.getAttribute("role") : null) ?? null,
+          isTextarea: activeEl instanceof HTMLTextAreaElement,
+          isInput: activeEl instanceof HTMLInputElement,
+          dataTestId: (activeEl instanceof HTMLElement ? activeEl.getAttribute("data-testid") : null) ?? null,
+        }
+      : { tag: null as string | null, noActiveElement: true, id: null as string | null, className: null as string | null, role: null as string | null, isTextarea: false, isInput: false, dataTestId: null as string | null };
+    logTerminalInputDiagnostics(entry, "client.textarea.blur", {
+      stage: "blur",
+      pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+      focusStealer: stealInfo,
     });
   };
 
   textarea?.addEventListener("beforeinput", handleBeforeInput);
   textarea?.addEventListener("input", handleInput, true);
   textarea?.addEventListener("compositionstart", handleCompositionStart, true);
+  textarea?.addEventListener("compositionupdate", handleCompositionUpdate, true);
   textarea?.addEventListener("compositionend", handleCompositionEnd, true);
+  textarea?.addEventListener("keydown", handleKeyDown, true);
+  textarea?.addEventListener("focus", handleTextareaFocus);
+  textarea?.addEventListener("blur", handleTextareaBlur);
+
+  // [DEBUG-pty-typing] Container-level keydown to detect keystrokes reaching
+  // the terminal div but bypassing the xterm textarea (focus not on textarea).
+  const handleContainerKeydown = (event: KeyboardEvent) => {
+    const isTextareaFocused = textarea && document.activeElement === textarea;
+    if (!isTextareaFocused) {
+      debugLog("terminal.typing", "[DEBUG-pty-typing] container.keydown.textarea-not-focused", {
+        sessionId: entry.sessionId,
+        key: event.key,
+        code: event.code,
+        inputSeq: entry.inputSeq,
+        textareaFocused: false,
+        activeElementTag: document.activeElement instanceof HTMLElement ? document.activeElement.tagName.toLowerCase() : null,
+        activeElementDataTestId: document.activeElement instanceof HTMLElement ? document.activeElement.getAttribute("data-testid") : null,
+        connected: entry.connected,
+        streamReady: entry.streamReady,
+      }, { force: true });
+    }
+  };
+  const wrapperElement = entry.wrapper;
+  wrapperElement?.addEventListener("keydown", handleContainerKeydown, true);
 
   if (container) {
     fitTerminalRuntime(entry);
@@ -1349,6 +1697,9 @@ function createTerminalRuntime(
       scheduleFitBurst(entry);
     },
     focus() {
+      logTerminalInputDiagnostics(entry, "client.focus.requested", {
+        stage: "focus",
+      });
       terminal.focus();
     },
     paste(text) {
@@ -1356,8 +1707,16 @@ function createTerminalRuntime(
       terminal.paste(text);
     },
     writeInput(data) {
-      if (entry.webSocket?.readyState === WebSocket.OPEN) {
-        entry.webSocket.send(data);
+      const socketReadyState = getSocketReadyState(entry.webSocket);
+      const sent = socketReadyState === WebSocket.OPEN;
+      logTerminalInputDiagnostics(entry, "client.writeInput.send", {
+        stage: "writeInput",
+        nextSummary: summarizeTerminalData(data),
+        sendAttempted: true,
+        sent,
+      });
+      if (sent) {
+        entry.webSocket?.send(data);
       }
     },
     writeLocalMessage(message, colorAnsiCode = 31) {
@@ -1424,7 +1783,11 @@ function createTerminalRuntime(
         entry.webSocket = null;
       }
       clearSuppressedInput();
+      textarea?.removeEventListener("blur", handleTextareaBlur);
+      textarea?.removeEventListener("focus", handleTextareaFocus);
+      textarea?.removeEventListener("keydown", handleKeyDown, true);
       textarea?.removeEventListener("compositionend", handleCompositionEnd, true);
+      textarea?.removeEventListener("compositionupdate", handleCompositionUpdate, true);
       textarea?.removeEventListener("compositionstart", handleCompositionStart, true);
       textarea?.removeEventListener("input", handleInput, true);
       textarea?.removeEventListener("beforeinput", handleBeforeInput);

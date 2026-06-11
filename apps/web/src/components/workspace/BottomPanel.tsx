@@ -50,6 +50,7 @@ type BottomPanelContentProps = Omit<BottomPanelBodyProps, "activeTab" | "collaps
 
 type BottomPanelBodyProps = {
     collapsed: boolean;
+    hidden: boolean;
     height: number;
     panelRef: RefObject<HTMLDivElement>;
     activeTab: string;
@@ -72,6 +73,7 @@ const BottomPanelContent = memo(function BottomPanelContent({
     onOpenReadFile,
     worktreeId,
     worktreePath,
+    hidden,
 }: BottomPanelContentProps) {
     return (
         <>
@@ -84,13 +86,15 @@ const BottomPanelContent = memo(function BottomPanelContent({
             </TabsContent>
 
             <TabsContent value="terminal" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
-                <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
-                    <TerminalTab
-                        sessionId={worktreeId ? `${worktreeId}:terminal` : "default"}
-                        cwd={worktreePath}
-                        onOpenFile={onOpenReadFile}
-                    />
-                </Suspense>
+                {!hidden ? (
+                    <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+                        <TerminalTab
+                            sessionId={worktreeId ? `${worktreeId}:terminal` : "default"}
+                            cwd={worktreePath}
+                            onOpenFile={onOpenReadFile}
+                        />
+                    </Suspense>
+                ) : null}
             </TabsContent>
 
             <TabsContent value="run" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
@@ -416,6 +420,7 @@ export const BottomPanel = memo(function BottomPanel({
                 <BottomPanelBody
                     activeTab={activeTab}
                     collapsed={collapsed}
+                    hidden={hidden}
                     height={height}
                     panelRef={panelRef}
                     {...renderedContentProps}

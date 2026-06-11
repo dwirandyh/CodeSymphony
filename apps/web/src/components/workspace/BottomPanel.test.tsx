@@ -189,6 +189,20 @@ describe("BottomPanel", () => {
     expect(container.textContent).toContain("No run session active.");
   });
 
+  it("does not mount the bottom-panel terminal while hidden for workspace terminal tabs", () => {
+    act(() => {
+      root.render(<BottomPanel {...baseProps} collapsed={false} activeTab="terminal" hidden />);
+    });
+    expect(container.querySelector('[data-testid="mock-terminal"]')).toBeNull();
+  });
+
+  it("mounts the bottom-panel terminal when not hidden", () => {
+    act(() => {
+      root.render(<BottomPanel {...baseProps} collapsed={false} activeTab="terminal" hidden={false} />);
+    });
+    expect(container.querySelector('[data-testid="mock-terminal"]')).not.toBeNull();
+  });
+
   it("keeps rendering the last run session after it is no longer active", () => {
     act(() => {
       root.render(

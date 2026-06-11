@@ -44,9 +44,12 @@ vi.mock("../src/services/ptyBackend.js", async () => {
 
 vi.mock("node:fs", () => ({
   existsSync: vi.fn(() => true),
+  appendFileSync: vi.fn(),
   copyFileSync: vi.fn(),
   mkdirSync: vi.fn(),
   chmodSync: vi.fn(),
+  statSync: vi.fn(() => ({ size: 0 })),
+  writeFileSync: vi.fn(),
 }));
 
 vi.mock("../src/claude/shellEnv.js", () => ({
@@ -54,6 +57,7 @@ vi.mock("../src/claude/shellEnv.js", () => ({
 }));
 
 import { buildClaudeRuntimeEnv } from "../src/claude/shellEnv.js";
+import { getRuntimeDebugEntries, resetRuntimeDebugLog } from "../src/routes/debug.js";
 import { buildExecShellArgs, createTerminalService } from "../src/services/terminalService";
 
 type FakeTerminalTabRow = {
@@ -126,6 +130,7 @@ describe("terminalService", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetRuntimeDebugLog();
     fakePrisma = createFakePrisma();
     service = createTerminalService(fakePrisma as never);
   });
@@ -368,6 +373,25 @@ describe("terminalService", () => {
       expect(pty.write).toHaveBeenCalledWith("ls\r");
     });
 
+    it("logs sanitized pty write diagnostics", () => {
+      service.spawn("wt1:terminal:1", "/tmp");
+      service.write("wt1:terminal:1", "secret-token");
+
+      const writeLog = getRuntimeDebugEntries().find(
+        (entry) => entry.source === "terminal.input" && entry.message === "[DEBUG-terminal-typing] service.write.ptyWriteOk",
+      );
+      expect(writeLog?.data).toMatchObject({
+        sessionId: "wt1:terminal:1",
+        worktreeId: "wt1",
+        inputSummary: {
+          kind: "printable",
+          byteLength: 12,
+          printableAsciiCount: 12,
+        },
+      });
+      expect(JSON.stringify(writeLog?.data)).not.toContain("secret-token");
+    });
+
     it("does nothing for non-existent session", () => {
       expect(() => service.write("nonexistent", "data")).not.toThrow();
     });
@@ -394,6 +418,27 @@ describe("terminalService", () => {
 
       currentMockPty._emit("data", "hello");
       expect(listener).toHaveBeenCalledWith("hello");
+    });
+
+    it("logs sanitized pty output diagnostics", () => {
+      service.spawn("wt1:terminal:1", "/tmp");
+
+      currentMockPty._emit("data", "secret output\n");
+
+      const outputLog = getRuntimeDebugEntries().find(
+        (entry) => entry.source === "terminal.output" && entry.message === "[DEBUG-terminal-typing] service.pty.output",
+      );
+      expect(outputLog?.data).toMatchObject({
+        sessionId: "wt1:terminal:1",
+        worktreeId: "wt1",
+        outputSeq: 1,
+        outputSummary: {
+          kind: "paste",
+          byteLength: 14,
+          lineBreakCount: 1,
+        },
+      });
+      expect(JSON.stringify(outputLog?.data)).not.toContain("secret output");
     });
 
     it("returns noop for non-existent session", () => {

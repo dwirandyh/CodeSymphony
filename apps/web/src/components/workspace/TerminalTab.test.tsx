@@ -233,6 +233,7 @@ beforeEach(() => {
   registeredLinkProvider = null;
   webglContextLossHandler = null;
   MockWebSocket.instances = [];
+  window.__CS_DEBUG_LOG__ = [];
   writeTerminalDropFiles.mockReset();
   mockTerminal.buffer.active.getLine.mockReturnValue(null);
 });
@@ -650,6 +651,80 @@ describe("TerminalTab", () => {
     expect(MockWebSocket.instances[0]?.send).toHaveBeenCalledWith("\u0001");
   });
 
+  it("logs sanitized typing diagnostics when xterm data is sent", async () => {
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    window.__CS_DEBUG_LOG__ = [];
+
+    act(() => {
+      terminalDataHandler?.("secret-token");
+    });
+
+    const inputLog = window.__CS_DEBUG_LOG__?.find(
+      (entry) => entry.source === "terminal.typing" && entry.message === "[DEBUG-terminal-typing] client.onData.send",
+    );
+    expect(inputLog?.data).toMatchObject({
+      sessionId: "s1",
+      stage: "onData",
+      rawSummary: {
+        kind: "printable",
+        byteLength: 12,
+        printableAsciiCount: 12,
+      },
+      nextSummary: {
+        kind: "printable",
+        byteLength: 12,
+      },
+      socketReadyState: 1,
+      sendAttempted: true,
+      sent: true,
+    });
+    expect(inputLog?.data).toHaveProperty("inputSeq", expect.any(Number));
+    expect(JSON.stringify(inputLog?.data)).not.toContain("secret-token");
+  });
+
+  it("logs sanitized keydown diagnostics before xterm input conversion", async () => {
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    window.__CS_DEBUG_LOG__ = [];
+
+    act(() => {
+      mockTextarea.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        key: "x",
+      }));
+    });
+
+    const keyLog = window.__CS_DEBUG_LOG__?.find(
+      (entry) => entry.source === "terminal.typing" && entry.message === "[DEBUG-terminal-typing] client.keydown",
+    );
+    expect(keyLog?.data).toMatchObject({
+      sessionId: "s1",
+      stage: "keydown",
+      keyboard: {
+        keyKind: "character",
+        keySummary: {
+          kind: "printable",
+          byteLength: 1,
+        },
+        keyName: null,
+      },
+    });
+    expect(JSON.stringify(keyLog?.data)).not.toContain('"keyName":"x"');
+  });
+
   it("intercepts beforeinput text and sends transformed control data", async () => {
     act(() => {
       root.render(
@@ -790,6 +865,38 @@ describe("TerminalTab", () => {
     });
 
     expect(mockTerminal.refresh).toHaveBeenCalledWith(0, 23);
+  });
+
+  it("logs sanitized terminal output received from the websocket", async () => {
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" />);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    deliverAttachFrame();
+    window.__CS_DEBUG_LOG__ = [];
+
+    act(() => {
+      MockWebSocket.instances[0]?.onmessage?.(new MessageEvent("message", {
+        data: "secret output\n",
+      }));
+    });
+
+    const outputLog = window.__CS_DEBUG_LOG__?.find(
+      (entry) => entry.source === "terminal.output" && entry.message === "[DEBUG-terminal-typing] client.ws.output",
+    );
+    expect(outputLog?.data).toMatchObject({
+      sessionId: "s1",
+      outputSummary: {
+        kind: "paste",
+        byteLength: 14,
+        lineBreakCount: 1,
+      },
+    });
+    expect(JSON.stringify(outputLog?.data)).not.toContain("secret output");
   });
 
   it("nudges replayed alternate-screen chunks even when the buffer is already alternate", async () => {

@@ -16,6 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { debugLog } from "../../lib/debugLog";
 import { validateAttachmentSize } from "../../lib/attachments";
 import { api } from "../../lib/api";
 import { getElectronFilePaths, isDesktopShell, isElectronDesktop } from "../../lib/desktopBridge";
@@ -518,6 +519,27 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    // [DEBUG-pty-typing] Document-level keydown: log when keys are pressed
+    // but the terminal textarea is NOT focused (indicates focus-stealing)
+    const handleDocKeydown = (event: KeyboardEvent) => {
+      const xtermTextarea = (runtime as unknown as { terminal?: { textarea?: HTMLElement | null } }).terminal?.textarea;
+      const isTerminalFocused = xtermTextarea && document.activeElement === xtermTextarea;
+      if (!isTerminalFocused && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        debugLog("terminal.typing", "[DEBUG-pty-typing] doc.keydown.textarea-not-focused", {
+          sessionId,
+          key: event.key,
+          code: event.code,
+          targetTag: (event.target as HTMLElement)?.tagName?.toLowerCase?.() ?? null,
+          targetDataTestId: (event.target as HTMLElement)?.getAttribute?.("data-testid") ?? null,
+          activeElementTag: document.activeElement instanceof HTMLElement ? document.activeElement.tagName.toLowerCase() : null,
+          activeElementDataTestId: document.activeElement instanceof HTMLElement ? document.activeElement.getAttribute("data-testid") : null,
+          activeElementRole: document.activeElement instanceof HTMLElement ? document.activeElement.getAttribute("role") : null,
+        }, { force: true });
+      }
+    };
+    document.addEventListener("keydown", handleDocKeydown, true);
+
     void document.fonts?.ready?.then(() => {
       runtime.scheduleFitBurst();
     });
@@ -527,6 +549,7 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
       disconnectTitleListener();
       disconnectSessionExitListener();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("keydown", handleDocKeydown, true);
       resizeObserver.disconnect();
       runtime.setTransformInput(undefined);
       runtime.setOpenFileHandler(null);

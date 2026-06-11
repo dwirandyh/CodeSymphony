@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { getRuntimeDebugEntries, resetRuntimeDebugLog } from "../src/routes/debug";
 import { handleTerminalWebSocket, registerTerminalRoutes } from "../src/routes/terminal";
 
 let app: FastifyInstance;
@@ -61,6 +62,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetRuntimeDebugLog();
   mockTerminalService.spawn.mockReturnValue({ resolvedCwd: "/tmp" });
   mockTerminalService.listSessions.mockReturnValue([]);
   mockTerminalService.getScrollback.mockReturnValue("");
@@ -511,6 +513,75 @@ describe("terminal routes", () => {
       })));
 
       expect(socket.send).toHaveBeenCalledTimes(2);
+    });
+
+    it("logs sanitized terminal input received over the websocket", async () => {
+      let messageHandler: ((raw: Buffer | ArrayBuffer | Buffer[]) => void | Promise<void>) | null = null;
+      const socket = {
+        close: vi.fn(),
+        on: vi.fn((event: string, listener: (...args: any[]) => void) => {
+          if (event === "message") {
+            messageHandler = listener as (raw: Buffer | ArrayBuffer | Buffer[]) => void | Promise<void>;
+          }
+        }),
+        send: vi.fn(),
+        readyState: 1,
+      };
+
+      handleTerminalWebSocket(app, socket, {
+        query: { sessionId: "wt1:terminal:1", cwd: "/tmp/wt1" },
+      });
+
+      await messageHandler?.(Buffer.from("secret-token"));
+
+      const inputLog = getRuntimeDebugEntries().find(
+        (entry) => entry.source === "terminal.input" && entry.message === "[DEBUG-terminal-typing] server.ws.input.received",
+      );
+      expect(inputLog?.data).toMatchObject({
+        sessionId: "wt1:terminal:1",
+        worktreeId: "wt1",
+        inputSummary: {
+          kind: "printable",
+          byteLength: 12,
+          printableAsciiCount: 12,
+        },
+        socketReadyState: 1,
+      });
+      expect(JSON.stringify(inputLog?.data)).not.toContain("secret-token");
+      expect(mockTerminalService.write).toHaveBeenCalledWith("wt1:terminal:1", "secret-token");
+    });
+
+    it("logs sanitized terminal output forwarded to the websocket", () => {
+      const socket = {
+        close: vi.fn(),
+        on: vi.fn(),
+        send: vi.fn(),
+        readyState: 1,
+      };
+
+      handleTerminalWebSocket(app, socket, {
+        query: { sessionId: "wt1:terminal:1", cwd: "/tmp/wt1" },
+      });
+
+      const forwardOutput = mockTerminalService.addListener.mock.calls.at(-1)?.[1] as ((data: string) => void) | undefined;
+      forwardOutput?.("secret output\n");
+
+      const outputLog = getRuntimeDebugEntries().find(
+        (entry) => entry.source === "terminal.output" && entry.message === "[DEBUG-terminal-typing] server.ws.output.forward",
+      );
+      expect(outputLog?.data).toMatchObject({
+        sessionId: "wt1:terminal:1",
+        worktreeId: "wt1",
+        socketReadyState: 1,
+        sent: true,
+        outputSummary: {
+          kind: "paste",
+          byteLength: 14,
+          lineBreakCount: 1,
+        },
+      });
+      expect(JSON.stringify(outputLog?.data)).not.toContain("secret output");
+      expect(socket.send).toHaveBeenCalledWith("secret output\n");
     });
   });
 });

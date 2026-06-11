@@ -1,7 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { RenameTerminalTabTitleInputSchema } from "@codesymphony/shared-types";
+import { RenameTerminalTabTitleInputSchema, summarizeTerminalData } from "@codesymphony/shared-types";
 import { appendRuntimeDebugLog } from "./debug.js";
+
+const TERMINAL_TYPING_DEBUG_PREFIX = "[DEBUG-terminal-typing]";
 
 const runTerminalInputSchema = z.object({
     sessionId: z.string().min(1),
@@ -108,6 +110,18 @@ export function handleTerminalWebSocket(
     const removeListener = app.terminalService.addListener(
         sessionId,
         (data: string) => {
+            const willSend = socket.readyState === 1;
+            appendRuntimeDebugLog({
+                source: "terminal.output",
+                message: `${TERMINAL_TYPING_DEBUG_PREFIX} server.ws.output.forward`,
+                data: {
+                    sessionId,
+                    worktreeId,
+                    socketReadyState: socket.readyState,
+                    sent: willSend,
+                    outputSummary: summarizeTerminalData(data),
+                },
+            });
             // Decisive delivery instrument: when the PTY emits the alt-screen
             // enter (a full-screen TUI starting), log whether we actually had an
             // open socket to send it on. Pairs with the client's
@@ -121,13 +135,13 @@ export function handleTerminalWebSocket(
                         sessionId,
                         worktreeId,
                         socketReadyState: socket.readyState,
-                        willSend: socket.readyState === 1,
+                        willSend,
                         chunkLength: data.length,
                     },
                 });
             }
             try {
-                if (socket.readyState === 1) {
+                if (willSend) {
                     socket.send(data);
                 }
             } catch (sendError) {
@@ -178,8 +192,29 @@ export function handleTerminalWebSocket(
             // Not JSON — treat as raw terminal input
         }
 
+        appendRuntimeDebugLog({
+            source: "terminal.input",
+            message: `${TERMINAL_TYPING_DEBUG_PREFIX} server.ws.input.received`,
+            data: {
+                sessionId,
+                worktreeId,
+                socketReadyState: socket.readyState,
+                initialPayloadSent,
+                inputSummary: summarizeTerminalData(message),
+            },
+        });
         const payload = sendInitialPayload();
         app.terminalService.write(sessionId, message);
+        appendRuntimeDebugLog({
+            source: "terminal.input",
+            message: `${TERMINAL_TYPING_DEBUG_PREFIX} server.ws.input.writeIssued`,
+            data: {
+                sessionId,
+                worktreeId,
+                socketReadyState: socket.readyState,
+                inputSummary: summarizeTerminalData(message),
+            },
+        });
         return payload;
     });
 
