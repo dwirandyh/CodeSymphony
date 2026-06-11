@@ -39,6 +39,18 @@ const OPENCODE_INITIAL_ACTIVITY_TIMEOUT_MS = 30_000;
 const OPENCODE_PROGRESS_STALL_TIMEOUT_MS = 45_000;
 const OPENCODE_PLAN_FILE_PATH = ".opencode/plans/opencode-plan.md";
 
+const WEB_CAPABLE_MODEL_PATTERN = /^(gpt-4|gpt-4o|gpt-5|o[1-9]|gemini|claude)/i;
+const OPENCODE_WEB_TOOL_FLAGS = {
+  skill: false,
+  webfetch: false,
+  websearch: false,
+};
+
+function isModelWebCapable(model: string): boolean {
+  const modelName = model.includes("/") ? model.split("/").slice(1).join("/") : model;
+  return WEB_CAPABLE_MODEL_PATTERN.test(modelName);
+}
+
 type OpencodeServerProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 type ToolLifecycleEntry = {
@@ -144,7 +156,11 @@ function createAbortError(): Error {
 }
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof Error && (error.name === "AbortError" || /abort|cancel/i.test(error.message));
+  return error instanceof Error && (
+    error.name === "AbortError"
+    || /^(aborted|aborterror|cancelled|canceled)$/i.test(error.message.trim())
+    || /^the operation was aborted/i.test(error.message.trim())
+  );
 }
 
 function withOpencodeSetupHint(error: unknown): unknown {
@@ -444,6 +460,14 @@ function buildOpencodeRuntimeConfig(params: {
       },
     },
   };
+  if (trimmedBaseUrl && params.providerCompatibility !== "anthropic" && !isModelWebCapable(normalizedModel)) {
+    const webDisabledPermission = { ...permission, webfetch: "deny" as const, websearch: "deny" as const };
+    config.permission = webDisabledPermission;
+    config.agent!.build!.permission = webDisabledPermission;
+    config.agent!.build!.tools = OPENCODE_WEB_TOOL_FLAGS;
+    config.agent!.plan!.permission = webDisabledPermission;
+    config.agent!.plan!.tools = OPENCODE_WEB_TOOL_FLAGS;
+  }
   const configuredMcp = loadOpencodeRuntimeMcpConfig();
   if (configuredMcp) {
     config.mcp = configuredMcp;
@@ -659,6 +683,17 @@ function summarizeStalledOpencodeSession(params: {
   return "OpenCode session stalled before producing any output. The upstream provider did not stream any events or completion signal.";
 }
 
+function formatToolNameForError(toolName: string): string {
+  const normalized = toolName.trim();
+  if (!normalized) {
+    return "tool";
+  }
+  if (/^[a-z][a-z0-9_-]*$/.test(normalized)) {
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+  return normalized;
+}
+
 function extractTextOutputFromSessionMessages(params: {
   messages: OpencodeSessionMessage[];
   existingMessageIds: Set<string>;
@@ -843,6 +878,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
   const toolLifecycleByCallId = new Map<string, ToolLifecycleEntry>();
   const repliedPermissionIds = new Set<string>();
   const activeSubtasksById = new Map<string, ActiveSubtaskEntry>();
+  const failedToolSummaries: string[] = [];
 
   let resolveCompletion: (() => void) | null = null;
   let rejectCompletion: ((error: Error) => void) | null = null;
@@ -1096,6 +1132,9 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
         ...(nextStatus === "error" ? { error: part.state.error } : {}),
         ...(metadata.isBash ? { shell: "bash" as const, isBash: true as const } : {}),
       });
+      if (nextStatus === "error") {
+        failedToolSummaries.push(`${formatToolNameForError(metadata.toolName)} failed: ${summary}`);
+      }
       lifecycle.finishedEmitted = true;
     }
 
@@ -1442,6 +1481,10 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
         fullOutput = fallbackOutput;
         await onText(fallbackOutput);
       }
+    }
+
+    if (fullOutput.trim().length === 0 && failedToolSummaries.length > 0) {
+      throw new Error(`OpenCode completed without assistant output after ${failedToolSummaries[0]}`);
     }
 
     return {

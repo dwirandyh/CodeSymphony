@@ -93,6 +93,30 @@ describe("opencode session runner config", () => {
     expect(config.agent?.plan?.permission).toEqual(config.permission);
   });
 
+  it("disables OpenCode web tools for custom OpenAI-compatible models without native web support", () => {
+    const { config, model } = __testing.buildOpencodeRuntimeConfig({
+      permissionMode: "default",
+      threadPermissionMode: "full_access",
+      model: "sumo/deepseek-v4-pro",
+      providerCompatibility: "openai",
+      providerApiKey: "test-key",
+      providerBaseUrl: "https://provider.example.com/v1",
+    });
+
+    expect(model).toEqual({
+      providerID: "codesymphony_custom",
+      modelID: "sumo/deepseek-v4-pro",
+    });
+    expect(config.permission?.webfetch).toBe("deny");
+    expect(config.permission?.websearch).toBe("deny");
+    expect(config.agent?.build?.permission?.webfetch).toBe("deny");
+    expect(config.agent?.build?.permission?.websearch).toBe("deny");
+    expect(config.agent?.plan?.permission?.webfetch).toBe("deny");
+    expect(config.agent?.plan?.permission?.websearch).toBe("deny");
+    expect(config.agent?.build?.tools).toEqual({ skill: false, webfetch: false, websearch: false });
+    expect(config.agent?.plan?.tools).toEqual({ skill: false, webfetch: false, websearch: false });
+  });
+
   it("merges configured OpenCode MCP servers into runtime config", async () => {
     const tempHome = await mkdtemp(join(tmpdir(), "opencode-mcp-home-"));
     await mkdir(join(tempHome, ".config", "opencode"), { recursive: true });
@@ -1698,6 +1722,111 @@ describe("opencode session runner config", () => {
       sessionId: "sdk-session-1",
     });
     expect(onText).toHaveBeenCalledWith("Recovered from final session message.");
+    expect(sessionMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails OpenCode runs that complete without assistant output after a tool error", async () => {
+    const spawnMock = vi.fn(() => {
+      const child = new MockOpencodeServerProcess();
+      queueMicrotask(() => {
+        child.announce("http://127.0.0.1:9999");
+      });
+      return child;
+    });
+    const promptAsync = vi.fn(async () => ({}));
+    const sessionMessages = vi.fn()
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({ data: [] });
+    const createOpencodeClient = vi.fn(() => ({
+      session: {
+        create: vi.fn(async () => ({ data: { id: "sdk-session-1" } })),
+        messages: sessionMessages,
+        promptAsync,
+        abort: vi.fn(async () => ({})),
+      },
+      event: {
+        subscribe: vi.fn(async () => ({
+          stream: (async function* () {
+            yield {
+              type: "message.updated",
+              properties: {
+                info: {
+                  id: "msg_1",
+                  sessionID: "sdk-session-1",
+                  role: "assistant",
+                },
+              },
+            };
+            yield {
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: "tool-part-skill",
+                  sessionID: "sdk-session-1",
+                  messageID: "msg_1",
+                  type: "tool",
+                  callID: "call_skill_1",
+                  tool: "skill",
+                  state: {
+                    status: "error",
+                    input: {},
+                    error: "Tool execution aborted",
+                    metadata: {
+                      interrupted: true,
+                    },
+                    time: {
+                      start: 1,
+                      end: 1,
+                    },
+                  },
+                },
+              },
+            };
+            yield {
+              type: "session.idle",
+              properties: {
+                sessionID: "sdk-session-1",
+              },
+            };
+          })(),
+        })),
+      },
+      postSessionIdPermissionsPermissionId: vi.fn(async () => ({})),
+    }));
+
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+    vi.doMock("@opencode-ai/sdk", async () => {
+      const actual = await vi.importActual<typeof import("@opencode-ai/sdk")>("@opencode-ai/sdk");
+      return {
+        ...actual,
+        createOpencodeClient,
+      };
+    });
+
+    const { runOpencodeWithStreaming } = await import("../src/opencode/sessionRunner");
+
+    await expect(runOpencodeWithStreaming({
+      prompt: "check dollar hari ini di web",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "full_access",
+      providerBaseUrl: "https://lb.jatevo.ai/v1",
+      providerApiKey: "test-key",
+      providerCompatibility: "openai",
+      model: "sumo/deepseek-v4-pro",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    })).rejects.toThrow("OpenCode completed without assistant output after Skill failed: Tool execution aborted");
     expect(sessionMessages).toHaveBeenCalledTimes(2);
   });
 });
