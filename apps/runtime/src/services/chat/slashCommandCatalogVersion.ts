@@ -174,7 +174,7 @@ function resolveCommandFileSetVersion(commandFilePaths: string[]): string {
 }
 
 function resolveLocalSlashCommandSourceVersion(worktreePath: string, agent: CliAgent): string {
-  if (agent === "codex" || agent === "cursor") {
+  if (agent === "codex" || agent === "cursor" || agent === "opencode") {
     return resolveCodexSkillCatalogCacheVersion(worktreePath);
   }
 

@@ -628,7 +628,7 @@ export function createChatService(deps: RuntimeDeps) {
     load: async ({ worktreeId, worktreePath, agent }) => {
       if (agent === "opencode") {
         return SlashCommandCatalogSchema.parse({
-          commands: [],
+          commands: listCodexSkills(worktreePath),
           updatedAt: new Date().toISOString(),
         });
       }
@@ -1401,7 +1401,7 @@ export function createChatService(deps: RuntimeDeps) {
       delta: params.content,
     });
 
-    const normalizedContent = thread.agent === "codex" || thread.agent === "cursor"
+    const normalizedContent = thread.agent === "codex" || thread.agent === "cursor" || thread.agent === "opencode"
       ? normalizeCodexSkillSlashCommandsForPrompt(params.content, listCodexSkills(thread.worktree.path))
       : params.content;
     const imageAttachments = attachmentRecords.filter((attachment) => isImageMimeType(attachment.mimeType));

@@ -344,7 +344,7 @@ describe("chatService agent selection", () => {
     ]));
   });
 
-  it("returns an empty slash-command catalog for OpenCode", async () => {
+  it("returns local skill slash-command catalog for OpenCode", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async () => ({
       output: "",
       sessionId: null,
@@ -358,9 +358,17 @@ describe("chatService agent selection", () => {
     });
     const { worktree } = await seedThread("OpenCode slash command catalog");
 
+    mkdirSync(join(worktree.path, ".agents/skills/diagnose"), { recursive: true });
+    writeFileSync(
+      join(worktree.path, ".agents/skills/diagnose/SKILL.md"),
+      "---\nname: diagnose\ndescription: Diagnose hard bugs.\n---\n",
+    );
+
     const catalog = await chatService.listSlashCommands(worktree.id, "opencode");
 
-    expect(catalog.commands).toEqual([]);
+    expect(catalog.commands).toEqual(expect.arrayContaining([
+      { name: "diagnose", description: "Diagnose hard bugs.", argumentHint: "" },
+    ]));
     expect(claudeRunner).not.toHaveBeenCalled();
   });
 
@@ -460,6 +468,52 @@ describe("chatService agent selection", () => {
     await waitForCompletion(chatService, thread.id);
 
     expect(cursorRunner).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes $skill prompts for OpenCode threads before invoking the runner", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    const opencodeRunner: ClaudeRunner = vi.fn(async ({ onSessionId, onText }) => {
+      await onSessionId?.("opencode-session-skill");
+      await onText("OpenCode reply");
+      return {
+        output: "OpenCode reply",
+        sessionId: "opencode-session-skill",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      opencodeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread, worktree } = await seedThread("OpenCode slash command rewrite");
+
+    mkdirSync(join(worktree.path, ".agents/skills/diagnose"), { recursive: true });
+    writeFileSync(
+      join(worktree.path, ".agents/skills/diagnose/SKILL.md"),
+      "---\nname: diagnose\ndescription: Diagnose hard bugs.\n---\n",
+    );
+
+    await chatService.updateThreadAgentSelection(thread.id, {
+      agent: "opencode",
+      model: "opencode-default",
+      modelProviderId: null,
+    });
+
+    await chatService.sendMessage(thread.id, {
+      content: "$diagnose why no skills?",
+    });
+    await waitForCompletion(chatService, thread.id);
+
+    expect(opencodeRunner).toHaveBeenCalledTimes(1);
+    expect(opencodeRunner).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: "Use $diagnose for this task.\n\nwhy no skills?",
+    }));
   });
 
   it("includes the effective Codex CLI provider in runtime errors for built-in Codex threads", async () => {

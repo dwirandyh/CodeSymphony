@@ -528,6 +528,27 @@ describe("Composer", () => {
     expect(getSlashCommandsSpy).toHaveBeenCalledWith("wt-1", "cursor");
   });
 
+  it("fetches slash commands when the user types a skill trigger", async () => {
+    const getSlashCommandsSpy = vi.spyOn(api, "getSlashCommands").mockResolvedValue({
+      commands: [{ name: "diagnose", description: "Diagnose hard bugs", argumentHint: "" }],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    renderComposer({
+      slashCommands: undefined,
+      slashCommandsLoading: undefined,
+      agent: "opencode",
+      model: "opencode-default",
+    });
+
+    const editor = getEditor();
+    typeInEditor(editor, "$");
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(getSlashCommandsSpy).toHaveBeenCalledWith("wt-1", "opencode");
+  });
+
   it("shows Codex skill suggestions when the active agent is codex", async () => {
     renderComposer({
       agent: "codex",

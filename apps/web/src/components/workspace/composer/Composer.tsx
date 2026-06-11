@@ -725,7 +725,11 @@ function ComposerContent({
     prevContentLenRef.current = (editor.textContent ?? "").length;
     lastStableHTMLRef.current = editor.innerHTML;
     syncValueFromEditor();
-    if (!shouldUseProvidedSlashCommands && !slashCommandsRequested && currentText.includes("/")) {
+    if (
+      !shouldUseProvidedSlashCommands
+      && !slashCommandsRequested
+      && (currentText.includes("/") || currentText.includes("$"))
+    ) {
       setSlashCommandsRequested(true);
     }
     detectMention();
