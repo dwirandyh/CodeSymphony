@@ -210,6 +210,37 @@ export function closeWorkspaceTerminalTab(
   };
 }
 
+export function selectWorkspaceTerminalTab(input: {
+  terminalTabsState: WorkspaceTerminalTabsState;
+  bottomPanelState: BottomPanelWorktreeState;
+  terminalTabId: string;
+}): {
+  terminalTabsState: WorkspaceTerminalTabsState;
+  bottomPanelState: BottomPanelWorktreeState;
+} {
+  const { bottomPanelState, terminalTabsState, terminalTabId } = input;
+  if (!terminalTabsState.tabs.some((tab) => tab.id === terminalTabId)) {
+    return {
+      terminalTabsState,
+      bottomPanelState,
+    };
+  }
+
+  const nextTerminalTabsState =
+    terminalTabsState.activeTabId === terminalTabId && terminalTabsState.visible
+      ? terminalTabsState
+      : {
+        ...terminalTabsState,
+        activeTabId: terminalTabId,
+        visible: true,
+      };
+
+  return {
+    terminalTabsState: nextTerminalTabsState,
+    bottomPanelState,
+  };
+}
+
 export function getBottomPanelState(
   state: Record<string, BottomPanelWorktreeState>,
   worktreeId: string | null | undefined,

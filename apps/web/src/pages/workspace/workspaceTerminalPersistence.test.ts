@@ -5,6 +5,7 @@ import {
   readPersistedWorkspaceTerminalUiState,
   reconcileWorkspaceTerminalTabs,
   restoreWorkspaceTerminalUiState,
+  selectWorkspaceTerminalTab,
   WORKSPACE_TERMINAL_UI_STORAGE_KEY,
   writePersistedWorkspaceTerminalUiState,
 } from "./workspaceTerminalPersistence";
@@ -173,6 +174,39 @@ describe("closeWorkspaceTerminalTab", () => {
 
     expect(result.state).toBe(current);
     expect(result.sessionIdToKill).toBeNull();
+  });
+});
+
+describe("selectWorkspaceTerminalTab", () => {
+  it("activates the terminal view without changing bottom panel state", () => {
+    const bottomPanelState = {
+      activeTab: "run",
+      openSignal: 7,
+      runScriptActive: false,
+      runScriptSessionId: "wt1:script-runner:last",
+      collapsed: true,
+    };
+    const terminalTabsState = {
+      tabs: [
+        { id: "a", sessionId: "wt1:terminal:a", title: "Build" },
+        { id: "b", sessionId: "wt1:terminal:b", title: "Deploy" },
+      ],
+      activeTabId: "a",
+      visible: false,
+    };
+
+    const next = selectWorkspaceTerminalTab({
+      bottomPanelState,
+      terminalTabsState,
+      terminalTabId: "b",
+    });
+
+    expect(next.terminalTabsState).toEqual({
+      tabs: terminalTabsState.tabs,
+      activeTabId: "b",
+      visible: true,
+    });
+    expect(next.bottomPanelState).toBe(bottomPanelState);
   });
 });
 

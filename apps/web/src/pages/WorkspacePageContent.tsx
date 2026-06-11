@@ -117,6 +117,7 @@ import {
   readPersistedWorkspaceTerminalUiState,
   reconcileWorkspaceTerminalTabs,
   restoreWorkspaceTerminalUiState,
+  selectWorkspaceTerminalTab,
   type BottomPanelWorktreeState,
   type WorkspaceTerminalTabsState,
   writePersistedWorkspaceTerminalUiState,
@@ -3410,18 +3411,12 @@ export function WorkspacePage() {
     }
 
     updateSearch({ view: undefined, file: undefined });
-    updateTerminalTabsState(worktreeId, (current) => ({
-      ...current,
-      activeTabId: terminalTabId,
-      visible: true,
-    }));
-    updateBottomPanelState(worktreeId, (current) => ({
-      ...current,
-      activeTab: "terminal",
-      collapsed: false,
-      openSignal: current.openSignal + 1,
-    }));
-  }, [confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, updateSearch, updateTerminalTabsState, updateBottomPanelState]);
+    updateTerminalTabsState(worktreeId, (current) => selectWorkspaceTerminalTab({
+      terminalTabsState: current,
+      bottomPanelState: getBottomPanelState(bottomPanelStateByWorktreeId, worktreeId),
+      terminalTabId,
+    }).terminalTabsState);
+  }, [bottomPanelStateByWorktreeId, confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, updateSearch, updateTerminalTabsState]);
 
   const handleRenameTerminalTab = useCallback((terminalTabId: string, title: string) => {
     const worktreeId = repos.selectedWorktreeId;
