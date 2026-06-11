@@ -3389,11 +3389,15 @@ export function WorkspacePage() {
             visible: true,
           };
         });
+        updateBottomPanelState(worktreeId, (current) => ({
+          ...current,
+          collapsed: true,
+        }));
       })
       .catch(() => {
         setError("Failed to open terminal");
       });
-  }, [confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, selectedWorktreeOperational, setError, updateSearch, updateTerminalTabsState]);
+  }, [confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, selectedWorktreeOperational, setError, updateSearch, updateTerminalTabsState, updateBottomPanelState]);
 
   const handleSelectTerminalTab = useCallback((terminalTabId: string) => {
     const worktreeId = repos.selectedWorktreeId;
@@ -3411,7 +3415,13 @@ export function WorkspacePage() {
       activeTabId: terminalTabId,
       visible: true,
     }));
-  }, [confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, updateSearch, updateTerminalTabsState]);
+    updateBottomPanelState(worktreeId, (current) => ({
+      ...current,
+      activeTab: "terminal",
+      collapsed: false,
+      openSignal: current.openSignal + 1,
+    }));
+  }, [confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, updateSearch, updateTerminalTabsState, updateBottomPanelState]);
 
   const handleRenameTerminalTab = useCallback((terminalTabId: string, title: string) => {
     const worktreeId = repos.selectedWorktreeId;
@@ -4972,7 +4982,6 @@ export function WorkspacePage() {
                 scriptOutputs={scriptOutputs}
                 activeTab={selectedBottomPanelState.activeTab}
                 collapsed={selectedBottomPanelState.collapsed}
-                hidden={terminalViewActive}
                 onTabChange={(tab) => updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
                   ...current,
                   activeTab: tab,

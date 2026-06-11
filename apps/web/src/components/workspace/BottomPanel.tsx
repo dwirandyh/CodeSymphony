@@ -35,7 +35,6 @@ interface BottomPanelProps {
     scriptOutputs: ScriptOutputEntry[];
     activeTab: string;
     collapsed: boolean;
-    hidden?: boolean;
     onTabChange: (tab: string) => void;
     onCollapsedChange: (collapsed: boolean) => void;
     onRerunSetup?: () => void;
@@ -50,7 +49,6 @@ type BottomPanelContentProps = Omit<BottomPanelBodyProps, "activeTab" | "collaps
 
 type BottomPanelBodyProps = {
     collapsed: boolean;
-    hidden: boolean;
     height: number;
     panelRef: RefObject<HTMLDivElement>;
     activeTab: string;
@@ -73,7 +71,6 @@ const BottomPanelContent = memo(function BottomPanelContent({
     onOpenReadFile,
     worktreeId,
     worktreePath,
-    hidden,
 }: BottomPanelContentProps) {
     return (
         <>
@@ -86,15 +83,13 @@ const BottomPanelContent = memo(function BottomPanelContent({
             </TabsContent>
 
             <TabsContent value="terminal" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
-                {!hidden ? (
-                    <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
-                        <TerminalTab
-                            sessionId={worktreeId ? `${worktreeId}:terminal` : "default"}
-                            cwd={worktreePath}
-                            onOpenFile={onOpenReadFile}
-                        />
-                    </Suspense>
-                ) : null}
+                <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+                    <TerminalTab
+                        sessionId={worktreeId ? `${worktreeId}:terminal` : "default"}
+                        cwd={worktreePath}
+                        onOpenFile={onOpenReadFile}
+                    />
+                </Suspense>
             </TabsContent>
 
             <TabsContent value="run" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
@@ -146,7 +141,6 @@ export const BottomPanel = memo(function BottomPanel({
     scriptOutputs,
     activeTab,
     collapsed,
-    hidden = false,
     onTabChange,
     onCollapsedChange,
     onRerunSetup,
@@ -322,9 +316,8 @@ export const BottomPanel = memo(function BottomPanel({
 
     return (
         <div
-            aria-hidden={hidden ? "true" : undefined}
             data-testid="bottom-panel-shell"
-            className={`${hidden ? "hidden " : ""}flex flex-col safe-bottom`}
+            className="flex flex-col safe-bottom"
         >
             <TabsRoot
                 value={activeTab}
@@ -420,7 +413,6 @@ export const BottomPanel = memo(function BottomPanel({
                 <BottomPanelBody
                     activeTab={activeTab}
                     collapsed={collapsed}
-                    hidden={hidden}
                     height={height}
                     panelRef={panelRef}
                     {...renderedContentProps}
