@@ -39,6 +39,8 @@ export function toPlainChatThread(thread: ChatThread): ChatThread {
     agent,
     model: thread.model ?? resolveAgentDefaultModel(agent),
     modelProviderId: thread.modelProviderId ?? null,
+    modelOptions: thread.modelOptions,
+    modelOptionsPerModel: thread.modelOptionsPerModel,
     claudeSessionId: thread.claudeSessionId,
     codexSessionId: thread.codexSessionId ?? null,
     cursorSessionId: thread.cursorSessionId ?? null,

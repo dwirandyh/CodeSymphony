@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { existsSync, readFileSync } from "node:fs";
 import type {
   ChatAttachment as DbChatAttachment,
@@ -9,12 +10,14 @@ import type {
   Worktree as DbWorktree,
 } from "@prisma/client";
 import {
+  ProviderOptionSelectionSchema,
   SaveAutomationConfigSchema,
   type ChatAttachment,
   type ChatMessage,
   type ChatQueuedAttachment,
   type ChatQueuedMessage,
   type ChatThread,
+  type ProviderOptionSelection,
   type Repository,
   type Worktree,
 } from "@codesymphony/shared-types";
@@ -86,6 +89,8 @@ export function mapChatThread(thread: DbChatThread, isActive = false): ChatThrea
     tabOpen: thread.tabOpen,
     agent: thread.agent,
     model: thread.model,
+    modelOptions: parseSerializedJson(thread.modelOptions, (v) => ProviderOptionSelectionSchema.array().parse(v)) ?? undefined,
+    modelOptionsPerModel: parseSerializedJson(thread.modelOptionsPerModel, (v) => z.record(z.string(), ProviderOptionSelectionSchema.array()).parse(v)) ?? undefined,
     modelProviderId: thread.modelProviderId,
     handoffSourceThreadId: thread.handoffSourceThreadId,
     handoffSourcePlanEventId: thread.handoffSourcePlanEventId,

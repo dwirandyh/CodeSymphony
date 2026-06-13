@@ -25,6 +25,11 @@ import {
 } from "@agentclientprotocol/sdk";
 import {
   DEFAULT_CHAT_MODEL_BY_AGENT,
+  applyCursorModelOptions,
+  getCursorBaseModelName,
+  isCursorComposerModel,
+  normalizeCursorCatalogModelId,
+  parseCursorModelMetadata,
   type AgentTodoItem,
   type PermissionDecision,
   type SlashCommand,
@@ -1849,7 +1854,7 @@ async function listCursorCatalog(cwd: string): Promise<CursorCatalogSnapshot> {
     return {
       commands: toSlashCommands(availableCommands),
       models: (session.models?.availableModels ?? []).map((model) => ({
-        id: model.modelId,
+        id: normalizeCursorCatalogModelId(model.modelId),
         name: model.name.trim() || stripCursorModelVariant(model.modelId),
       })),
     };
@@ -1879,6 +1884,84 @@ export async function listCursorModels(params: {
   return catalog.models;
 }
 
+function resolveCursorAcpModelId(
+  effectiveModel: string,
+  availableModelIds: ReadonlySet<string> | null,
+): string {
+  if (!availableModelIds || availableModelIds.size === 0 || availableModelIds.has(effectiveModel)) {
+    return effectiveModel;
+  }
+
+  const baseName = getCursorBaseModelName(effectiveModel);
+  if (isCursorComposerModel(effectiveModel) && !parseCursorModelMetadata(effectiveModel).has("fast")) {
+    const fastVariant = `${baseName}[fast=true]`;
+    if (availableModelIds.has(fastVariant)) {
+      return fastVariant;
+    }
+  }
+
+  return effectiveModel;
+}
+
+function resolveCursorCatalogModelId(
+  effectiveModel: string,
+  availableModelIds: ReadonlySet<string>,
+  modelWasTransformed: boolean,
+): string {
+  if (availableModelIds.has(effectiveModel)) {
+    return effectiveModel;
+  }
+
+  const baseName = getCursorBaseModelName(effectiveModel);
+  const candidates = Array.from(availableModelIds).filter(
+    (id) => getCursorBaseModelName(id) === baseName,
+  );
+  if (candidates.length === 0) {
+    return effectiveModel;
+  }
+
+  if (modelWasTransformed) {
+    const requestedFast = parseCursorModelMetadata(effectiveModel).get("fast");
+    if (requestedFast === "false") {
+      if (availableModelIds.has(effectiveModel)) {
+        return effectiveModel;
+      }
+
+      const emptyMetadataId = `${baseName}[]`;
+      if (availableModelIds.has(emptyMetadataId)) {
+        return emptyMetadataId;
+      }
+
+      if (isCursorComposerModel(effectiveModel)) {
+        return effectiveModel;
+      }
+
+      if (availableModelIds.has(baseName) || candidates.length > 0) {
+        return baseName;
+      }
+
+      return effectiveModel;
+    }
+
+    if (requestedFast === "true") {
+      const fastMatch = candidates.find(
+        (id) => parseCursorModelMetadata(id).get("fast") === "true",
+      );
+      if (fastMatch) {
+        return fastMatch;
+      }
+    }
+
+    return effectiveModel;
+  }
+
+  if (isCursorComposerModel(effectiveModel)) {
+    return effectiveModel;
+  }
+
+  return candidates[0] ?? effectiveModel;
+}
+
 export const runCursorWithStreaming: ChatAgentRunner = async ({
   prompt,
   promptWithAttachments,
@@ -1890,6 +1973,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
   permissionMode,
   threadPermissionMode,
   model,
+  modelOptions,
   providerApiKey,
   providerBaseUrl,
   onProcessSpawned,
@@ -1911,7 +1995,18 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     threadPermissionMode,
   });
   const mcpServers = loadCursorAcpMcpServers();
-  const resolvedModel = model?.trim() || DEFAULT_CHAT_MODEL_BY_AGENT.cursor;
+  const baseModel = model?.trim() || DEFAULT_CHAT_MODEL_BY_AGENT.cursor;
+  let effectiveModel = modelOptions?.length
+    ? applyCursorModelOptions(baseModel, modelOptions)
+    : baseModel;
+  if (isCursorComposerModel(effectiveModel)
+    && modelOptions?.find((option) => option.id === "fastMode")?.value !== true) {
+    const normalizedComposerModel = getCursorBaseModelName(effectiveModel);
+    if (normalizedComposerModel !== effectiveModel) {
+      effectiveModel = normalizedComposerModel;
+    }
+  }
+  let modelWasTransformed = effectiveModel !== baseModel;
   const toolStates = new Map<string, CursorToolState>();
   let output = "";
   let planMarkdown: string | null = null;
@@ -1932,7 +2027,8 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       data: {
         sessionId: currentSessionId,
         resumedSession: sessionId != null,
-        model: resolvedModel,
+        model: baseModel,
+        effectiveModel: modelWasTransformed ? effectiveModel : undefined,
         elapsedMs: Date.now() - runnerStartedAtMs,
         ...(data ?? {}),
       },
@@ -1941,6 +2037,9 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
 
   logCursorDebug("runner.started", {
     permissionMode: acpMode,
+    baseModel,
+    effectiveModel: modelWasTransformed ? effectiveModel : undefined,
+    modelOptionsCount: modelOptions?.length ?? 0,
   });
 
   const emitPlanIfReady = async () => {
@@ -2346,7 +2445,8 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       logCursorDebug("session.load.started", {
         hasExistingSessionId: sessionId != null,
         requestedMode: acpMode,
-        requestedModel: resolvedModel,
+        requestedModel: baseModel,
+        effectiveModel: modelWasTransformed ? effectiveModel : undefined,
       });
       const session = sessionId
         ? await connection.loadSession({
@@ -2400,24 +2500,60 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       });
     }
 
-    if (availableModelIds && availableModelIds.size > 0 && !availableModelIds.has(resolvedModel)) {
-      throw new Error(`Cursor model "${resolvedModel}" is not available in the current Cursor account.`);
+    if (availableModelIds && availableModelIds.size > 0) {
+      const baseName = getCursorBaseModelName(effectiveModel);
+      const matchesAvailable = availableModelIds.has(baseModel)
+        || availableModelIds.has(effectiveModel)
+        || Array.from(availableModelIds).some((id) => getCursorBaseModelName(id) === baseName);
+      if (!matchesAvailable) {
+        throw new Error(`Cursor model "${baseName}" is not available in the current Cursor account.`);
+      }
+
+      const catalogModelId = resolveCursorCatalogModelId(
+        effectiveModel,
+        availableModelIds,
+        modelWasTransformed,
+      );
+      if (catalogModelId !== effectiveModel) {
+        logCursorDebug("session.model.catalogFallback", {
+          requestedModel: effectiveModel,
+          fallbackModel: catalogModelId,
+          baseName,
+          modelOptionsApplied: modelWasTransformed || undefined,
+        });
+        effectiveModel = catalogModelId;
+      }
     }
 
-    if (currentModelId !== resolvedModel) {
-      logCursorDebug("session.model.started", {
-        currentModelId: currentModelId ?? null,
-        requestedModel: resolvedModel,
-      });
-      await connection.unstable_setSessionModel({
-        sessionId: currentSessionId,
-        modelId: resolvedModel,
-      });
-      currentModelId = resolvedModel;
-      pooledConnection.currentModelId = resolvedModel;
-      logCursorDebug("session.model.completed", {
-        currentModelId: resolvedModel,
-      });
+    if (currentModelId !== effectiveModel) {
+      const acpModelId = resolveCursorAcpModelId(effectiveModel, availableModelIds);
+      if (availableModelIds && !availableModelIds.has(acpModelId)) {
+        logCursorDebug("session.model.unavailable", {
+          currentModelId: currentModelId ?? null,
+          requestedModel: acpModelId,
+          baseModel,
+          effectiveModel,
+          modelOptionsApplied: modelWasTransformed || undefined,
+        });
+      } else {
+        logCursorDebug("session.model.started", {
+          currentModelId: currentModelId ?? null,
+          requestedModel: acpModelId,
+          baseModel,
+          effectiveModel,
+          modelOptionsApplied: modelWasTransformed || undefined,
+        });
+        await connection.unstable_setSessionModel({
+          sessionId: currentSessionId,
+          modelId: acpModelId,
+        });
+        currentModelId = acpModelId;
+        pooledConnection.currentModelId = acpModelId;
+        logCursorDebug("session.model.completed", {
+          currentModelId: acpModelId,
+          effectiveModel,
+        });
+      }
     } else {
       logCursorDebug("session.model.skipped", {
         currentModelId: currentModelId ?? null,

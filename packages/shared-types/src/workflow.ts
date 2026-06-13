@@ -264,6 +264,8 @@ export const ChatThreadSchema = z.object({
   agent: CliAgentSchema.optional(),
   model: z.string().min(1).optional(),
   modelProviderId: z.string().nullable().optional(),
+  modelOptions: z.array(z.lazy(() => ProviderOptionSelectionSchema)).optional(),
+  modelOptionsPerModel: z.record(z.string(), z.array(z.lazy(() => ProviderOptionSelectionSchema))).optional(),
   handoffSourceThreadId: z.string().nullable().optional(),
   handoffSourcePlanEventId: z.string().nullable().optional(),
   claudeSessionId: z.string().nullable(),
@@ -283,6 +285,7 @@ export const ChatMessageSchema = z.object({
   role: ChatRoleSchema,
   content: z.string(),
   attachments: z.array(z.lazy(() => ChatAttachmentSchema)).optional().default([]),
+  modelOptions: z.array(z.lazy(() => ProviderOptionSelectionSchema)).optional(),
   createdAt: z.string().datetime(),
 });
 
@@ -875,6 +878,8 @@ export const UpdateChatThreadAgentSelectionInputSchema = z.object({
   agent: CliAgentSchema,
   model: z.string().trim().min(1),
   modelProviderId: z.string().trim().min(1).nullable().optional(),
+  modelOptions: z.array(z.lazy(() => ProviderOptionSelectionSchema)).optional(),
+  modelOptionsPerModel: z.record(z.string(), z.array(z.lazy(() => ProviderOptionSelectionSchema))).optional(),
 });
 export type UpdateChatThreadAgentSelectionInput = z.infer<typeof UpdateChatThreadAgentSelectionInputSchema>;
 
@@ -1469,3 +1474,39 @@ export const CursorModelCatalogSchema = z.object({
   fetchedAt: z.string().datetime(),
 });
 export type CursorModelCatalog = z.infer<typeof CursorModelCatalogSchema>;
+
+// ── Model Capabilities & Option Selections ──
+
+export const ProviderOptionSelectOptionSchema = z.object({
+  value: z.string().min(1),
+  label: z.string().min(1),
+});
+export type ProviderOptionSelectOption = z.infer<typeof ProviderOptionSelectOptionSchema>;
+
+export const ProviderOptionDescriptorSchema = z.discriminatedUnion("type", [
+  z.object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    type: z.literal("select"),
+    currentValue: z.string().min(1),
+    options: z.array(ProviderOptionSelectOptionSchema).min(1),
+  }),
+  z.object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    type: z.literal("toggle"),
+    currentValue: z.boolean(),
+  }),
+]);
+export type ProviderOptionDescriptor = z.infer<typeof ProviderOptionDescriptorSchema>;
+
+export const ModelCapabilitiesSchema = z.object({
+  optionDescriptors: z.array(ProviderOptionDescriptorSchema).default([]),
+});
+export type ModelCapabilities = z.infer<typeof ModelCapabilitiesSchema>;
+
+export const ProviderOptionSelectionSchema = z.object({
+  id: z.string().min(1),
+  value: z.union([z.string(), z.boolean()]),
+});
+export type ProviderOptionSelection = z.infer<typeof ProviderOptionSelectionSchema>;

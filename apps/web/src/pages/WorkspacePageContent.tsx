@@ -4909,6 +4909,8 @@ export function WorkspacePage() {
                       agent={chat.composerAgent}
                       model={chat.composerModel}
                       modelProviderId={chat.composerModelProviderId}
+                      modelOptions={chat.composerModelOptions}
+                      modelOptionsPerModel={chat.composerModelOptionsPerModel}
                       threadKind={selectedChatThread?.kind ?? null}
                       threadRunning={chat.selectedThreadUiStatus === "running"}
                       permissionMode={chat.composerPermissionMode}

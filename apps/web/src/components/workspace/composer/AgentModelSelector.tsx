@@ -3,14 +3,20 @@ import { createPortal } from "react-dom";
 import { Check, ChevronDown, Loader2 } from "lucide-react";
 import {
   type ClaudeModelCatalogEntry,
+  type ModelCapabilities,
+  type ProviderOptionSelection,
   supportsModelProviderCompatibility,
   type CliAgent,
   type CodexModelCatalogEntry,
   type CursorModelCatalogEntry,
   type ModelProvider,
   type OpencodeModelCatalogEntry,
+  formatModelOptionsDisplaySummary,
+  resolveModelCapabilities,
+  buildProviderOptionSelectionsFromDescriptors,
 } from "@codesymphony/shared-types";
 import { cn } from "../../../lib/utils";
+import { ModelOptionsEditor } from "./ModelOptionsEditor";
 
 export type AgentModelSelection = {
   agent: CliAgent;
@@ -42,8 +48,11 @@ type AgentModelSelectorProps = {
   popoverContainer?: HTMLElement | null;
   triggerVariant?: "pill" | "picker";
   triggerClassName?: string;
+  modelOptions?: ProviderOptionSelection[];
+  modelOptionsPerModel?: Record<string, ProviderOptionSelection[]>;
   onOpen?: () => void;
   onSelectionChange: (selection: AgentModelSelection) => void;
+  onModelOptionsChange?: (options: ProviderOptionSelection[], selection: AgentModelSelection) => void;
 };
 
 export const CLI_AGENTS: CliAgent[] = ["claude", "codex", "cursor", "opencode"];
@@ -54,6 +63,39 @@ export const AGENT_LABELS: Record<CliAgent, string> = {
   cursor: "Cursor",
   opencode: "OpenCode",
 };
+
+function buildAgentModelSelectionKey(selection: AgentModelSelection): string {
+  return `${selection.agent}::${selection.model}::${selection.modelProviderId ?? ""}`;
+}
+
+function buildModelOptionsSummary(
+  option: AgentSelectionOption,
+  currentModelKey: string,
+  modelOptions: ProviderOptionSelection[],
+  modelOptionsPerModel: Record<string, ProviderOptionSelection[]>,
+): string {
+  if (option.source !== "builtin") {
+    return "";
+  }
+
+  const optionKey = buildAgentModelSelectionKey({
+    agent: option.agent,
+    model: option.model,
+    modelProviderId: option.modelProviderId,
+  });
+
+  const selections = optionKey === currentModelKey
+    ? modelOptions
+    : (modelOptionsPerModel[optionKey] ?? []);
+
+  const capabilities = resolveModelCapabilities(option.agent, option.model);
+  const resolved = buildProviderOptionSelectionsFromDescriptors(capabilities, selections);
+  return formatModelOptionsDisplaySummary(capabilities, resolved);
+}
+
+function buildModelCapabilitiesUrl(selection: AgentModelSelection): string {
+  return `/api/model-capabilities?agent=${encodeURIComponent(selection.agent)}&model=${encodeURIComponent(selection.model)}`;
+}
 
 const MODEL_DISPLAY_NAMES_BY_AGENT: Record<CliAgent, Record<string, string>> = {
   claude: {
@@ -214,18 +256,13 @@ function buildCodexBuiltinOptionSeeds(params: {
   return Array.from(deduped.values()).map((entry) => ({
     ...entry,
     detail: normalizedCodexBuiltinModelOverride.length > 0 && entry.id === normalizedCodexBuiltinModelOverride
-      ? "Codex CLI default"
-      : "Built-in",
+      ? "CLI default"
+      : "",
   }));
 }
 
 function formatProviderDetail(provider: ModelProvider): string {
-  try {
-    const host = provider.baseUrl ? new URL(provider.baseUrl).host : "custom endpoint";
-    return `${provider.name} · ${host}`;
-  } catch {
-    return provider.name;
-  }
+  return provider.name;
 }
 
 function buildCustomAgentOptions(agent: CliAgent, providers: readonly ModelProvider[]): AgentSelectionOption[] {
@@ -268,7 +305,7 @@ export function buildAgentSelectionOptions(params: {
         model: entry.id,
         modelProviderId: null,
         label: entry.name.trim() || formatFriendlyModelName("claude", entry.id),
-        detail: "Built-in",
+        detail: "",
         source: "builtin" as const,
       })),
       ...buildCustomAgentOptions("claude", params.providers),
@@ -291,7 +328,7 @@ export function buildAgentSelectionOptions(params: {
       model: entry.id,
       modelProviderId: null,
       label: entry.name,
-      detail: "Built-in",
+      detail: "",
       source: "builtin" as const,
     })),
     opencode: [
@@ -330,7 +367,7 @@ export function buildAdhocAgentSelectionOption(selection: AgentModelSelection): 
     model: selection.model,
     modelProviderId: selection.modelProviderId,
     label: formatFriendlyModelName(selection.agent, selection.model),
-    detail: selection.modelProviderId ? "Missing custom provider" : "Built-in",
+    detail: selection.modelProviderId ? "Missing custom provider" : "",
     source: selection.modelProviderId ? "custom" : "builtin",
   };
 }
@@ -423,6 +460,7 @@ type DesktopPopoverLayout = {
   left: number;
   agentTop: number;
   modelTop: number;
+  editorTop: number;
   modelScrollerMaxHeight: number;
 };
 
@@ -517,10 +555,15 @@ export function AgentModelSelector({
   popoverContainer = null,
   triggerVariant = "pill",
   triggerClassName: customTriggerClassName,
+  modelOptions = [],
+  modelOptionsPerModel = {},
   onOpen,
   onSelectionChange,
+  onModelOptionsChange,
 }: AgentModelSelectorProps) {
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
+  const [editingModelId, setEditingModelId] = useState<string | null>(null);
+  const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
   const [modelPreviewAgent, setModelPreviewAgent] = useState<CliAgent>(selection.agent);
   const [popoverPosition, setPopoverPosition] = useState<PopoverPosition | null>(null);
   const [desktopPopoverLayout, setDesktopPopoverLayout] = useState<DesktopPopoverLayout | null>(null);
@@ -528,10 +571,15 @@ export function AgentModelSelector({
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const agentPanelRef = useRef<HTMLDivElement>(null);
   const modelPanelRef = useRef<HTMLDivElement>(null);
+  const editorPanelRef = useRef<HTMLDivElement>(null);
   const modelScrollerRef = useRef<HTMLDivElement>(null);
-  const popoverWidth = showAgentList
-    ? AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH
-    : MODEL_LIST_PANEL_WIDTH;
+
+  useEffect(() => {
+    if (!modelPopoverOpen) {
+      setEditingModelId(null);
+      return;
+    }
+  }, [modelPopoverOpen]);
 
   useEffect(() => {
     if (!modelPopoverOpen) {
@@ -543,7 +591,8 @@ export function AgentModelSelector({
       const clickedInsideTrigger = modelSelectorRef.current?.contains(target) ?? false;
       const clickedInsidePopover = (modelPopoverRef.current?.contains(target) ?? false)
         || (agentPanelRef.current?.contains(target) ?? false)
-        || (modelPanelRef.current?.contains(target) ?? false);
+        || (modelPanelRef.current?.contains(target) ?? false)
+        || (editorPanelRef.current?.contains(target) ?? false);
 
       if (!clickedInsideTrigger && !clickedInsidePopover) {
         setModelPopoverOpen(false);
@@ -583,6 +632,73 @@ export function AgentModelSelector({
 
     return ensureAgentSelectionOptionVisible(nextOptions, selection);
   }, [agentOptions, modelPreviewTargetAgent, selection, showAgentList]);
+  const editingOption = useMemo(
+    () => modelPreviewOptions.find((option) => option.id === editingModelId) ?? null,
+    [editingModelId, modelPreviewOptions],
+  );
+  const editingModelOptions = useMemo(() => {
+    if (!editingOption) {
+      return [];
+    }
+
+    const editingSelection = {
+      agent: editingOption.agent,
+      model: editingOption.model,
+      modelProviderId: editingOption.modelProviderId,
+    };
+    if (buildAgentModelSelectionKey(editingSelection) === buildAgentModelSelectionKey(selection)) {
+      return modelOptions;
+    }
+
+    return modelOptionsPerModel[buildAgentModelSelectionKey(editingSelection)] ?? [];
+  }, [editingOption, modelOptions, modelOptionsPerModel, selection]);
+  const currentModelKey = useMemo(() => buildAgentModelSelectionKey(selection), [selection]);
+  const modelOptionsSummaryMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    if (!onModelOptionsChange) {
+      return map;
+    }
+    for (const option of modelPreviewOptions) {
+      const summary = buildModelOptionsSummary(option, currentModelKey, modelOptions, modelOptionsPerModel);
+      if (summary) {
+        map[option.id] = summary;
+      }
+    }
+    return map;
+  }, [onModelOptionsChange, modelPreviewOptions, currentModelKey, modelOptions, modelOptionsPerModel]);
+  useEffect(() => {
+    if (!editingOption) {
+      setCapabilities(null);
+      return;
+    }
+
+    let cancelled = false;
+    fetch(buildModelCapabilitiesUrl({
+      agent: editingOption.agent,
+      model: editingOption.model,
+      modelProviderId: editingOption.modelProviderId,
+    }))
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && data?.data) {
+          setCapabilities(data.data as ModelCapabilities);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCapabilities(null);
+      });
+
+    return () => { cancelled = true; };
+  }, [editingOption]);
+  const popoverWidth = useMemo(() => {
+    const hasEditor = !!(editingOption && capabilities && onModelOptionsChange);
+    if (showAgentList) {
+      const base = AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH;
+      return hasEditor ? base + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH : base;
+    }
+    const base = MODEL_LIST_PANEL_WIDTH;
+    return hasEditor ? base + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH : base;
+  }, [showAgentList, editingOption, capabilities, onModelOptionsChange]);
   const modelPreviewCatalogReady = modelCatalogReadyByAgent?.[modelPreviewTargetAgent] ?? true;
   const modelPreviewLoading = !modelPreviewCatalogReady;
   const modelLabel = `${AGENT_LABELS[selection.agent]} · ${currentSelection.label}`;
@@ -637,7 +753,8 @@ export function AgentModelSelector({
       const containerRect = popoverContainer.getBoundingClientRect();
       if (showAgentList) {
         const minLeft = MODEL_POPOVER_VIEWPORT_MARGIN - containerRect.left;
-        const maxLeft = window.innerWidth - MODEL_POPOVER_VIEWPORT_MARGIN - popoverWidth - containerRect.left;
+        const basePopoverWidth = AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH;
+        const maxLeft = window.innerWidth - MODEL_POPOVER_VIEWPORT_MARGIN - basePopoverWidth - containerRect.left;
         const left = clamp(
           triggerRect.left - containerRect.left,
           minLeft,
@@ -667,6 +784,10 @@ export function AgentModelSelector({
             Math.round(triggerRect.top - containerRect.top - MODEL_POPOVER_GAP - effectiveModelHeight),
             Math.round(minTop),
           ),
+          editorTop: Math.max(
+            Math.round(triggerRect.top - containerRect.top - MODEL_POPOVER_GAP - effectiveModelHeight),
+            Math.round(minTop),
+          ),
           modelScrollerMaxHeight,
         });
         setPopoverPosition(null);
@@ -674,13 +795,14 @@ export function AgentModelSelector({
       }
 
       setDesktopPopoverLayout(null);
+      const basePopoverWidth = MODEL_LIST_PANEL_WIDTH;
       const popoverHeight = modelPopoverRef.current?.getBoundingClientRect().height ?? MODEL_POPOVER_ESTIMATED_HEIGHT;
       setPopoverPosition(calculateAgentModelPopoverPosition({
         triggerRect,
         containerRect,
         viewportWidth: window.innerWidth,
         viewportHeight: window.innerHeight,
-        popoverWidth,
+        popoverWidth: basePopoverWidth,
         popoverHeight,
       }));
     };
@@ -736,7 +858,7 @@ export function AgentModelSelector({
             <button
               type="button"
               disabled={interactionLocked}
-              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+              className={`group flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
                 selected
                   ? "bg-accent text-accent-foreground"
                   : "text-foreground hover:bg-accent/50"
@@ -754,10 +876,43 @@ export function AgentModelSelector({
                 setModelPopoverOpen(false);
               }}
             >
-              <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-              <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
-                {option.detail}
+              <span className="min-w-0 flex-1 truncate font-medium">
+                {option.label}
+                {modelOptionsSummaryMap[option.id] ? (
+                  <span className="ml-1.5 text-[10px] font-normal text-muted-foreground/60">
+                    {modelOptionsSummaryMap[option.id]}
+                  </span>
+                ) : null}
               </span>
+              {option.detail ? (
+                <span className="max-w-[7rem] shrink-0 truncate text-[10px] text-muted-foreground">
+                  {option.detail}
+                </span>
+              ) : null}
+              {onModelOptionsChange && option.source === "builtin" ? (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  className="shrink-0 select-none rounded px-1 py-0.5 text-[10px] font-medium leading-none text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-white/10 hover:text-foreground h-4 inline-flex items-center"
+                  onMouseDown={(event) => {
+                    event.stopPropagation();
+                    event.preventDefault();
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setEditingModelId(editingModelId === option.id ? null : option.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setEditingModelId(editingModelId === option.id ? null : option.id);
+                    }
+                  }}
+                >
+                  Edit
+                </span>
+              ) : null}
               {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
             </button>
           </div>
@@ -824,6 +979,28 @@ export function AgentModelSelector({
     </div>
   );
 
+  const editorPanelContent = editingOption && capabilities && capabilities.optionDescriptors.length > 0 && onModelOptionsChange ? (
+    <div
+      ref={editorPanelRef}
+      data-agent-model-panel="editor"
+      className="rounded-xl border border-border/60 bg-popover p-2 shadow-lg"
+      style={{ width: `${MODEL_LIST_PANEL_WIDTH}px` }}
+    >
+      <div className="mb-2 text-[11px] font-medium text-muted-foreground">Model Options</div>
+      <ModelOptionsEditor
+        capabilities={capabilities}
+        selections={editingModelOptions}
+        onChange={(nextOptions) => {
+          onModelOptionsChange(nextOptions, {
+            agent: editingOption.agent,
+            model: editingOption.model,
+            modelProviderId: editingOption.modelProviderId,
+          });
+        }}
+      />
+    </div>
+  ) : null;
+
   const popoverContent = showAgentList ? (
     <div
       data-agent-model-layout="side-by-side"
@@ -832,6 +1009,7 @@ export function AgentModelSelector({
     >
       {agentPanelContent}
       {modelPanelContent()}
+      {editorPanelContent}
     </div>
   ) : (
     <div
@@ -899,27 +1077,55 @@ export function AgentModelSelector({
           >
             {modelPanelContent(desktopPopoverLayout.modelScrollerMaxHeight)}
           </div>
+          {editorPanelContent ? (
+            <div
+              ref={editorPanelRef}
+              className="pointer-events-auto absolute z-[80]"
+              style={{
+                top: desktopPopoverLayout.editorTop,
+                left: desktopPopoverLayout.left + AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH + MODEL_PANEL_GAP,
+              }}
+            >
+              {editorPanelContent}
+            </div>
+          ) : null}
         </>,
         popoverContainer,
       ) : null}
 
       {modelPopoverOpen && popoverContainer && !showAgentList && popoverPosition ? createPortal(
-        <div
-          ref={modelPopoverRef}
-          className="pointer-events-auto absolute z-[80]"
-          style={{
-            top: popoverPosition.top,
-            left: popoverPosition.left,
-          }}
-        >
-          {popoverContent}
-        </div>,
+        <>
+          <div
+            ref={modelPopoverRef}
+            className="pointer-events-auto absolute z-[80]"
+            style={{
+              top: popoverPosition.top,
+              left: popoverPosition.left,
+            }}
+          >
+            {editingOption ? (
+              <div className="flex items-start" style={{ columnGap: `${MODEL_PANEL_GAP}px` }}>
+                {popoverContent}
+                {editorPanelContent}
+              </div>
+            ) : (
+              popoverContent
+            )}
+          </div>
+        </>,
         popoverContainer,
       ) : null}
 
       {modelPopoverOpen && !popoverContainer ? (
         <div className="absolute bottom-full left-0 z-50 mb-1.5" ref={modelPopoverRef}>
-          {popoverContent}
+          {editingOption ? (
+            <div className="flex items-start" style={{ columnGap: `${MODEL_PANEL_GAP}px` }}>
+              {popoverContent}
+              {editorPanelContent}
+            </div>
+          ) : (
+            popoverContent
+          )}
         </div>
       ) : null}
     </div>

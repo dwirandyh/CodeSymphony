@@ -2150,4 +2150,42 @@ describe("cursor session runner", () => {
     ]);
     expect((promptBlocks?.[1]?.text as string) ?? "").toContain("User request:\nInspect the dropped image.");
   });
+
+  it("keeps composer catalog model when fast mode is disabled (ACP has no non-fast id)", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      availableModels: [
+        { modelId: "composer-2.5[fast=true]", name: "composer-2.5" },
+      ],
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitText(sessionId, "Done.");
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+
+    await runCursorWithStreaming({
+      prompt: "Hello.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      model: "composer-2.5[fast=true]",
+      modelOptions: [{ id: "fastMode", value: false }],
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    const session = fakeCursorSessions.get("cursor-session-1");
+    expect(session?.currentModelId).toBe("composer-2.5[fast=true]");
+  });
 });

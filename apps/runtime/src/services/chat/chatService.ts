@@ -17,6 +17,7 @@ import {
   SendChatMessageInputSchema,
   SlashCommandCatalogSchema,
   hasSameThreadSelection,
+  resolveThreadModelOptions,
   UpdateQueuedMessageInputSchema,
   UpdateChatThreadAgentSelectionInputSchema,
   UpdateChatThreadModeInputSchema,
@@ -42,6 +43,7 @@ import {
   type RenameChatThreadTitleInput,
   type ResolvePermissionInput,
   type ReviewProvider,
+  type ProviderOptionSelection,
   type SendChatMessageInput,
   type SlashCommandCatalog,
   type UpdateQueuedMessageInput,
@@ -1987,6 +1989,17 @@ export function createChatService(deps: RuntimeDeps) {
         permissionProfile: thread.permissionProfile,
         autoAcceptTools,
         model: selection.model,
+        modelOptions: resolveThreadModelOptions({
+          agent: selection.agent,
+          model: selection.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[selection.agent],
+          modelProviderId: thread.modelProviderId,
+          modelOptions: thread.modelOptions
+            ? JSON.parse(thread.modelOptions) as ProviderOptionSelection[]
+            : undefined,
+          modelOptionsPerModel: thread.modelOptionsPerModel
+            ? JSON.parse(thread.modelOptionsPerModel) as Record<string, ProviderOptionSelection[]>
+            : undefined,
+        }),
         providerApiKey: toRunnerOptional(selection.provider?.apiKey),
         providerBaseUrl: toRunnerOptional(selection.provider?.baseUrl),
         onProcessSpawned: async (pid) => {
@@ -2888,13 +2901,24 @@ export function createChatService(deps: RuntimeDeps) {
         input,
         messageCount,
       });
-      if (!selectionChanged) {
+      const modelOptionsUpdate = input.modelOptions != null
+        ? { modelOptions: JSON.stringify(input.modelOptions) }
+        : {};
+      const modelOptionsPerModelUpdate = input.modelOptionsPerModel != null
+        ? { modelOptionsPerModel: JSON.stringify(input.modelOptionsPerModel) }
+        : {};
+
+      if (!selectionChanged && Object.keys(modelOptionsUpdate).length === 0 && Object.keys(modelOptionsPerModelUpdate).length === 0) {
         return mapChatThread(thread, isThreadActive(thread.id));
       }
 
       const updatedThread = await deps.prisma.chatThread.update({
         where: { id: threadId },
-        data: selectionUpdate ?? buildSelectionUpdate(selection),
+        data: {
+          ...(selectionUpdate ?? buildSelectionUpdate(selection)),
+          ...modelOptionsUpdate,
+          ...modelOptionsPerModelUpdate,
+        },
       });
 
       return mapChatThread(updatedThread, isThreadActive(updatedThread.id));

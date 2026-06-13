@@ -3,7 +3,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { PrismaClient } from "@prisma/client";
-import type { CreateIssueReportInput, IssueReportResult } from "@codesymphony/shared-types";
+import type { CreateIssueReportInput, IssueReportResult, ProviderOptionSelection } from "@codesymphony/shared-types";
+import {
+  buildProviderOptionSelectionsFromDescriptors,
+  hasConfigurableModelOptions,
+  resolveModelCapabilities,
+} from "@codesymphony/shared-types";
 import { getRuntimeDebugEntries, resolveDatabaseInfo } from "../routes/debug.js";
 
 type DebugLogEntry = {
@@ -222,6 +227,74 @@ function toNdjson(entries: unknown[]): string {
   return `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 }
 
+function parseStoredModelOptions(value: string | null | undefined): ProviderOptionSelection[] {
+  if (!value?.trim()) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed as ProviderOptionSelection[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseStoredModelOptionsPerModel(
+  value: string | null | undefined,
+): Record<string, ProviderOptionSelection[]> {
+  if (!value?.trim()) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, ProviderOptionSelection[]>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function resolveIssueReportModelOptions(thread: {
+  agent: string;
+  model: string;
+  modelProviderId: string | null;
+  modelOptions: string | null;
+  modelOptionsPerModel: string | null;
+} | null) {
+  if (!thread) {
+    return null;
+  }
+
+  const capabilities = resolveModelCapabilities(
+    thread.agent as "claude" | "codex" | "cursor" | "opencode",
+    thread.model,
+  );
+  if (!hasConfigurableModelOptions(capabilities)) {
+    return null;
+  }
+
+  const savedOptions = parseStoredModelOptions(thread.modelOptions);
+  const savedOptionsPerModel = parseStoredModelOptionsPerModel(thread.modelOptionsPerModel);
+  const modelKey = `${thread.agent}::${thread.model}::${thread.modelProviderId ?? ""}`;
+  const effectiveOptions = buildProviderOptionSelectionsFromDescriptors(
+    capabilities,
+    savedOptionsPerModel[modelKey] ?? savedOptions,
+  );
+
+  return {
+    agent: thread.agent,
+    model: thread.model,
+    modelProviderId: thread.modelProviderId,
+    capabilities,
+    savedOptions,
+    savedOptionsPerModel,
+    effectiveOptions,
+  };
+}
+
 function reportMarkdown(input: {
   description: string;
   createdAt: string;
@@ -301,6 +374,8 @@ export function createIssueReportService({ prisma }: CreateIssueReportServiceOpt
             agent: true,
             model: true,
             modelProviderId: true,
+            modelOptions: true,
+            modelOptionsPerModel: true,
             claudeSessionId: true,
             codexSessionId: true,
             cursorSessionId: true,
@@ -334,6 +409,7 @@ export function createIssueReportService({ prisma }: CreateIssueReportServiceOpt
       repository,
       worktree,
       thread,
+      modelOptions: resolveIssueReportModelOptions(thread),
       debug: {
         capturedEntries: debugEntries.length,
         totalBufferedEntries: getRuntimeDebugEntries().length,

@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
-import type { PermissionDecision } from "@codesymphony/shared-types";
+import type { PermissionDecision, ProviderOptionSelection } from "@codesymphony/shared-types";
+import {
+  getProviderOptionStringSelectionValue,
+  getProviderOptionBooleanSelectionValue,
+} from "@codesymphony/shared-types";
 import {
   type CodexModelCatalogEntry,
   type SlashCommand,
@@ -719,6 +723,12 @@ function prefixAgentMessageSegment(currentOutput: string, nextText: string): str
   return `\n\n${nextText}`;
 }
 
+function getEffortFromOptions(options: ProviderOptionSelection[] | undefined): string | undefined {
+  if (!options) return undefined;
+  const effort = options.find((o) => o.id === "reasoningEffort");
+  return effort && typeof effort.value === "string" ? effort.value : undefined;
+}
+
 export const runCodexWithStreaming: ChatAgentRunner = async ({
   prompt,
   promptWithAttachments,
@@ -746,6 +756,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   onSubagentStarted,
   onSubagentStopped,
   onThinking,
+  modelOptions,
 }): Promise<ChatAgentRunnerResult> => {
   if (listSlashCommandsOnly) {
     return {
@@ -1569,7 +1580,9 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         attachments,
       }),
       model: resolvedModel,
-      collaborationMode: buildCollaborationMode(resolvedModel, permissionMode),
+      collaborationMode: buildCollaborationMode(resolvedModel, permissionMode, {
+        reasoningEffort: getEffortFromOptions(modelOptions),
+      }),
     });
     scheduleFirstTurnSignalTimeout();
 
