@@ -402,6 +402,37 @@ async function restoreBundledDatabaseFromTemplate(
   return databasePath;
 }
 
+async function applyPackagedRuntimeMigrations(templateDatabasePath: string): Promise<void> {
+  const databasePath = resolveFileDatabasePath(process.env.DATABASE_URL);
+  if (!databasePath) {
+    throw new Error("DATABASE_URL must be a file: URL for the packaged runtime database");
+  }
+
+  if (!existsSync(databasePath)) {
+    const restoredDatabasePath = await restoreBundledDatabaseFromTemplate(
+      templateDatabasePath,
+      process.env.DATABASE_URL,
+    );
+    console.log(`Initialized runtime database from bundled template: ${restoredDatabasePath}`);
+    return;
+  }
+
+  const migrationsDir = process.env.PRISMA_MIGRATIONS_DIR;
+  if (!migrationsDir) {
+    console.warn("PRISMA_MIGRATIONS_DIR is not set; skipping in-place runtime migrations");
+    return;
+  }
+
+  await prisma.$disconnect();
+  const { migrateRuntimeDatabase } = await import("./db/rawSqliteMigrator.js");
+  const { applied } = await migrateRuntimeDatabase({ databasePath, migrationsDir });
+  if (applied.length > 0) {
+    console.log(`Applied ${applied.length} pending runtime migration(s): ${applied.join(", ")}`);
+  } else {
+    console.log("Runtime database schema is already up to date");
+  }
+}
+
 async function main() {
   installCursorSdkProcessGuard({
     logger: (message, data) => console.warn(message, data),
@@ -411,7 +442,13 @@ async function main() {
     let startupMigrationPlan: PrismaMigrationExecutionPlan | null = null;
     let startupMigrationResult: { executed: boolean } = { executed: false };
     const templateDatabasePath = process.env.PRISMA_TEMPLATE_DB_PATH;
-    if (isProductionRuntime() && !templateDatabasePath) {
+    if (isProductionRuntime() && templateDatabasePath) {
+      // Packaged desktop runtime: the Prisma CLI/schema engine is not bundled,
+      // so bundled migration SQL is applied directly. A fresh install copies the
+      // pre-migrated template database; an existing install gets pending
+      // migrations applied in place to preserve user data.
+      await applyPackagedRuntimeMigrations(templateDatabasePath);
+    } else if (isProductionRuntime()) {
       const { createPrismaMigrationExecutionPlan, runPrismaMigrations } = await import("./migrate.js");
       startupMigrationPlan = createPrismaMigrationExecutionPlan();
       startupMigrationResult = await runPrismaMigrations({ plan: startupMigrationPlan });
@@ -421,6 +458,8 @@ async function main() {
       await assertDatabaseReady(prisma);
     } catch (error) {
       if (isDatabaseNotReadyError(error) && isProductionRuntime() && templateDatabasePath) {
+        // Last resort: an existing database is still not ready after applying
+        // bundled migrations (e.g. corrupted). Reset it from the template.
         await prisma.$disconnect();
         const restoredDatabasePath = await restoreBundledDatabaseFromTemplate(
           templateDatabasePath,

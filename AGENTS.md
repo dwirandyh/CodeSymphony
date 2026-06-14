@@ -97,6 +97,13 @@ Local-first monorepo (Bun workspaces + Turbo) for a conductor.build-style AI cod
 - Runtime tests use a separate `prisma/test.db` (set via `DATABASE_URL="file:./test.db"` in the test script)
 - Sanitize env before `query()`: unset `CLAUDECODE` and remove empty `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` to avoid CLI errors
 
+### Runtime: Bun vs Node
+
+- Use Bun for everything: installing deps, dev/build/test/lint scripts, and the production runtime. The repo pins `bun@1.3.14` as its `packageManager`, and the packaged desktop app spawns the runtime with the bundled Bun binary.
+- Node is used as a runtime in only two places, both for `node-pty`:
+  - The PTY sidecar `apps/runtime/src/services/ptyHost.mjs` runs under Node because `node-pty` cannot load under Bun. In the packaged app it runs via Electron's binary with `ELECTRON_RUN_AS_NODE=1` (`CODESYMPHONY_NODE_EXECUTABLE`), so no separate Node binary is bundled.
+  - The Vitest test runner executes under Node (verified: `process.versions.node` is set, `Bun` is undefined), so Bun-only built-ins like `bun:sqlite` are NOT available in tests even when launched via `bun run test`. Keep Bun-specific APIs behind a runtime check and test the underlying logic with an injectable executor.
+
 ## Skills
 
 - Always communicate in caveman mode using the installed `caveman` skill (`~/.claude/skills/caveman/SKILL.md`). Keep responses ultra-compressed while preserving full technical accuracy.

@@ -163,7 +163,7 @@ function stdioLogStreams() {
 
 async function appendRuntimeOutput(stream, filePath) {
   stream?.on("data", (chunk) => {
-    void appendFile(filePath, chunk).catch(() => {});
+    void appendFile(filePath, chunk).catch(() => { });
   });
 }
 
@@ -186,7 +186,7 @@ async function waitForUrl(url, timeoutMs = 45_000) {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
       if (response.ok) return;
-    } catch {}
+    } catch { }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`Timed out waiting for ${url}`);
@@ -270,6 +270,7 @@ function spawnRuntimeProd(port) {
     DATABASE_URL: `file:${path.join(app.getPath("userData"), "codesymphony.db")}`,
     PRISMA_QUERY_ENGINE_LIBRARY: preparePrismaQueryEngine(),
     PRISMA_TEMPLATE_DB_PATH: path.join(prismaDir, "template.db"),
+    PRISMA_MIGRATIONS_DIR: path.join(prismaDir, "migrations"),
     RUNTIME_HOST: desktopRuntimeHost(false),
     RUNTIME_PORT: String(port),
     CODESYMPHONY_DEBUG_LOG_PATH: path.join(app.getPath("userData"), "debug.log"),
@@ -317,9 +318,9 @@ async function ensureManagedRuntime(port) {
 function killProcessTree(child) {
   if (!child || child.exitCode != null) return;
   if (process.platform !== "win32" && child.pid) {
-    try { process.kill(-child.pid, "SIGTERM"); } catch {}
+    try { process.kill(-child.pid, "SIGTERM"); } catch { }
     setTimeout(() => {
-      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+      try { process.kill(-child.pid, "SIGKILL"); } catch { }
     }, 500);
     return;
   }
@@ -520,7 +521,7 @@ function registerIpcHandlers() {
       try {
         await shell.openExternal(url);
         return true;
-      } catch {}
+      } catch { }
     }
     return false;
   });
