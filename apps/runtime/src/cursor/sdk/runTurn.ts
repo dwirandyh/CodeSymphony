@@ -1,15 +1,17 @@
 import type { AgentOptions, ModelSelection, Run } from "@cursor/sdk";
+import path from "node:path";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../../types.js";
 import { appendRuntimeDebugLog } from "../../routes/debug.js";
 import { withCursorSdkSetupHint } from "./auth.js";
 import { acquireCursorSdkAgent } from "./agentPool.js";
 import { bridgeCursorSdkRunStream } from "./eventBridge.js";
+import { buildCursorSdkQuestionTool, applyCursorSdkQuestionSteering, CURSOR_SDK_QUESTION_TOOL_NAME } from "./questionTool.js";
 import {
   buildCursorSdkPermissionEndpointUrl,
-  createCursorSdkPermissionHookProject,
+  installCursorSdkWorktreeHook,
   registerCursorSdkPermissionBridge,
   type CursorSdkPermissionBridgeRegistration,
-  type CursorSdkPermissionHookProject,
+  type CursorSdkWorktreeHookInstallation,
 } from "./permissionsBridge.js";
 import { isCursorSdkHttp2TransportError } from "./transportErrors.js";
 
@@ -98,7 +100,7 @@ function shouldUsePermissionHook(params: RunCursorSdkTurnParams): boolean {
 
 export async function runCursorSdkTurn(params: RunCursorSdkTurnParams): Promise<ChatAgentRunnerResult> {
   let permissionBridge: CursorSdkPermissionBridgeRegistration | null = null;
-  let permissionHookProject: CursorSdkPermissionHookProject | null = null;
+  let worktreeHook: CursorSdkWorktreeHookInstallation | null = null;
   if (shouldUsePermissionHook(params)) {
     permissionBridge = registerCursorSdkPermissionBridge({
       cwd: params.cwd,
@@ -106,8 +108,11 @@ export async function runCursorSdkTurn(params: RunCursorSdkTurnParams): Promise<
       threadPermissionMode: params.threadPermissionMode,
       onPermissionRequest: params.onPermissionRequest,
     });
-    permissionHookProject = await createCursorSdkPermissionHookProject(
-      buildCursorSdkPermissionEndpointUrl(permissionBridge.token),
+    // Cursor only honors hooks declared in <worktree>/.cursor/hooks.json, so the
+    // gate is installed into the real worktree (refcounted + restored on dispose).
+    worktreeHook = await installCursorSdkWorktreeHook(
+      params.cwd,
+      buildCursorSdkPermissionEndpointUrl(),
     );
   }
 
@@ -122,7 +127,7 @@ export async function runCursorSdkTurn(params: RunCursorSdkTurnParams): Promise<
       hasSessionId: params.sessionId != null,
       cwd: params.cwd,
       mcpServerCount: params.mcpServers ? Object.keys(params.mcpServers).length : 0,
-      permissionHookEnabled: permissionHookProject != null,
+      permissionHookEnabled: worktreeHook != null,
     },
   });
 
@@ -130,7 +135,7 @@ export async function runCursorSdkTurn(params: RunCursorSdkTurnParams): Promise<
     let lastError: unknown;
     for (let attempt = 1; attempt <= CURSOR_SDK_MAX_ATTEMPTS; attempt += 1) {
       try {
-        const result = await runCursorSdkTurnAttempt(params, permissionHookProject);
+        const result = await runCursorSdkTurnAttempt(params, permissionBridge);
         appendRuntimeDebugLog({
           source: "cursor.sdk.turnCompleted",
           message: "turn.completed",
@@ -193,38 +198,39 @@ export async function runCursorSdkTurn(params: RunCursorSdkTurnParams): Promise<
     throw withCursorSdkSetupHint(lastError);
   } finally {
     permissionBridge?.dispose();
-    await permissionHookProject?.dispose();
+    await worktreeHook?.dispose();
   }
 }
 
 async function runCursorSdkTurnAttempt(
   params: RunCursorSdkTurnParams,
-  permissionHookProject: CursorSdkPermissionHookProject | null,
+  permissionBridge: CursorSdkPermissionBridgeRegistration | null,
 ): Promise<ChatAgentRunnerResult> {
   appendRuntimeDebugLog({
     source: "cursor.sdk.acquireAgent.start",
     message: "acquire.start",
     data: {
       hasSessionId: params.sessionId != null,
-      ephemeral: Boolean(permissionHookProject),
       sdkModel: params.model ?? null,
     },
   });
   const lease = await acquireCursorSdkAgent({
     sessionId: params.sessionId,
-    cwd: permissionHookProject ? [params.cwd, permissionHookProject.rootDir] : params.cwd,
+    cwd: params.cwd,
     apiKey: params.apiKey,
     model: params.model,
     mcpServers: params.mcpServers,
     mode: resolveCursorSdkMode(params.permissionMode),
     // "user" loads home skill roots (~/.agents/skills, ~/.claude/skills) so user
     // skills like caveman reach the cursor model. "project" loads the workspace
-    // .cursor config plus the permission hook's .cursor/settings.json (ephemeral
-    // hook dir) when present.
+    // .cursor config, including the permission gate written to
+    // <worktree>/.cursor/hooks.json for this turn.
     settingSources: ["project", "user"],
-    ephemeral: Boolean(permissionHookProject),
     onSessionId: params.onSessionId,
   });
+  // Cursor stamps every permission hook payload with session_id === agentId.
+  // Bind so the hook endpoint routes back to this turn's onPermissionRequest.
+  permissionBridge?.bind(lease.agentId);
   appendRuntimeDebugLog({
     source: "cursor.sdk.acquireAgent.done",
     message: "acquire.done",
@@ -240,10 +246,21 @@ async function runCursorSdkTurnAttempt(
       message: "send.start",
       data: { agentId: lease.agentId, promptLength: params.prompt.length },
     });
-    run = await lease.agent.send(params.prompt, {
+    run = await lease.agent.send(applyCursorSdkQuestionSteering(params.prompt), {
       ...(params.model ? { model: params.model } : {}),
       ...(params.mcpServers ? { mcpServers: params.mcpServers } : {}),
       mode: resolveCursorSdkMode(params.permissionMode),
+      // Per-send custom tools: each turn binds its own onQuestionRequest so a
+      // pooled agent always asks through this turn's question flow. Cursor
+      // filters its native askQuestion tool out of the stream, so this is the
+      // supported path for structured questions.
+      local: {
+        customTools: {
+          [CURSOR_SDK_QUESTION_TOOL_NAME]: buildCursorSdkQuestionTool({
+            onQuestionRequest: params.onQuestionRequest,
+          }),
+        },
+      },
     });
     appendRuntimeDebugLog({
       source: "cursor.sdk.send.done",
@@ -267,7 +284,7 @@ async function runCursorSdkTurnAttempt(
       message: "stream.start",
       data: { agentId: lease.agentId, runId: run.id },
     });
-    const output = await bridgeCursorSdkRunStream({
+    const { output, planEmitted } = await bridgeCursorSdkRunStream({
       stream: run.stream(),
       cwd: params.cwd,
       onText: (text) => {
@@ -287,7 +304,7 @@ async function runCursorSdkTurnAttempt(
     appendRuntimeDebugLog({
       source: "cursor.sdk.stream.done",
       message: "stream.done",
-      data: { agentId: lease.agentId, runId: run.id, outputLength: output.length, streamingStarted },
+      data: { agentId: lease.agentId, runId: run.id, outputLength: output.length, streamingStarted, planEmitted },
     });
     const result = await run.wait();
     appendRuntimeDebugLog({
@@ -297,6 +314,17 @@ async function runCursorSdkTurnAttempt(
     });
     if (params.abortController?.signal.aborted || result.status === "cancelled") {
       throw createAbortError();
+    }
+
+    // Plan mode without a saved plan file: Cursor often returns the plan as
+    // inline assistant text instead of writing .cursor/plans/*.md. Surface that
+    // text as the plan so approval/revise/reject controls appear (mirrors codex).
+    if (params.permissionMode === "plan" && !planEmitted && output.trim().length > 0) {
+      await params.onPlanFileDetected({
+        filePath: path.join(params.cwd, ".cursor", "plans", "cursor-plan.md"),
+        content: output.trim(),
+        source: "streaming_fallback",
+      });
     }
 
     return { output, sessionId: lease.agentId };

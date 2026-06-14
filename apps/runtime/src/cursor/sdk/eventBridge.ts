@@ -256,10 +256,15 @@ async function handleToolMessage(
   }
 }
 
+export type CursorSdkRunStreamResult = {
+  output: string;
+  planEmitted: boolean;
+};
+
 export async function bridgeCursorSdkRunStream(params: {
   stream: AsyncIterable<SDKMessage>;
   cwd?: string;
-} & EventBridgeCallbacks): Promise<string> {
+} & EventBridgeCallbacks): Promise<CursorSdkRunStreamResult> {
   const toolStates = new Map<string, ToolState>();
   const planState = { emitted: false };
   let output = "";
@@ -284,5 +289,5 @@ export async function bridgeCursorSdkRunStream(params: {
     }
   }
 
-  return output;
+  return { output, planEmitted: planState.emitted };
 }

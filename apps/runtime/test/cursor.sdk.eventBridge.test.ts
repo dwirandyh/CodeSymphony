@@ -20,7 +20,7 @@ describe("Cursor SDK event bridge", () => {
     const onToolFinished = vi.fn();
     const { bridgeCursorSdkRunStream } = await import("../src/cursor/sdk/eventBridge");
 
-    const output = await bridgeCursorSdkRunStream({
+    const result = await bridgeCursorSdkRunStream({
       stream: messages([
         {
           type: "thinking",
@@ -73,7 +73,8 @@ describe("Cursor SDK event bridge", () => {
       onToolFinished,
     });
 
-    expect(output).toBe("Hello done.");
+    expect(result.output).toBe("Hello done.");
+    expect(result.planEmitted).toBe(false);
     expect(onThinking).toHaveBeenCalledWith(true);
     expect(onText).toHaveBeenCalledWith("Hello ");
     expect(onText).toHaveBeenCalledWith("done.");

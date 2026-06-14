@@ -4,18 +4,11 @@ import {
   type CursorSdkPermissionHookInput,
 } from "../cursor/sdk/permissionsBridge.js";
 
-type PermissionRouteParams = {
-  token: string;
-};
-
 export async function registerCursorSdkPermissionRoutes(app: FastifyInstance) {
-  app.post<{ Params: PermissionRouteParams; Body: CursorSdkPermissionHookInput }>(
-    "/cursor-sdk/permissions/:token",
+  app.post<{ Body: CursorSdkPermissionHookInput }>(
+    "/cursor-sdk/permissions",
     async (request, reply) => {
-      const result = await handleRegisteredCursorSdkPermissionHook(
-        request.params.token,
-        request.body,
-      );
+      const result = await handleRegisteredCursorSdkPermissionHook(request.body);
 
       if (!result) {
         reply.code(404).send({ error: "Cursor SDK permission bridge not found" });

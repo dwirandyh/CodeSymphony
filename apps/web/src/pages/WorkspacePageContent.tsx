@@ -50,6 +50,9 @@ const IssueReportDialog = lazy(() =>
 const QuickFilePicker = lazy(() =>
   import("../components/workspace/QuickFilePicker").then(m => ({ default: m.QuickFilePicker }))
 );
+const SessionSwitcherOverlay = lazy(() =>
+  import("../components/workspace/SessionSwitcherOverlay").then(m => ({ default: m.SessionSwitcherOverlay }))
+);
 const LiveStatusErrorToast = lazy(() =>
   import("../components/workspace/LiveStatusErrorToast").then(m => ({ default: m.LiveStatusErrorToast }))
 );
@@ -193,13 +196,18 @@ import { shouldEagerlyEnableCriticalWorkspaceData } from "./workspace/startupCri
 import { shouldScheduleWorkspacePanelPreload } from "./workspace/startupPanelPreload";
 import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
 import {
-  buildSessionShortcutCycleHistory,
   buildSessionShortcutTargets,
-  getActiveSessionShortcutTarget,
   getActiveSessionShortcutTargetIndex,
-  promoteSessionShortcutTarget,
   type SessionShortcutTarget,
 } from "./workspace/sessionShortcutTargets";
+import {
+  buildGlobalSessionCycleHistory,
+  buildGlobalSessionTargets,
+  getActiveGlobalSessionTarget,
+  promoteGlobalSessionTarget,
+  type GlobalSessionTarget,
+} from "./workspace/globalSessionTargets";
+import { buildGlobalSwitcherItems } from "./workspace/sessionSwitcherItems";
 import { shouldSuppressStartupFallbackSearchUpdate } from "./workspace/startupSelectionNavigation";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
@@ -216,7 +224,7 @@ import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../hook
 import { queryKeys } from "../lib/queryKeys";
 import { startWorkspaceStartupBootstrap } from "../lib/workspaceStartupBootstrap";
 import { refetchGitStatusCollection } from "../collections/gitStatus";
-import { getThreadsCollection, replaceThreadsCollection } from "../collections/threads";
+import { getExistingThreadsCollection, getThreadsCollection, replaceThreadsCollection } from "../collections/threads";
 import { writeWorkspaceShellStateSnapshot } from "../collections/workspaceShellState";
 import { buildRepositoryWorktreeIndex } from "../collections/worktrees";
 import { useThreadThinkingActive } from "../collections/threadStreamState";
@@ -1174,9 +1182,13 @@ export function WorkspacePage() {
   const selectedTerminalTabsState = getTerminalTabsState(terminalTabsByWorktreeId, repos.selectedWorktreeId);
   const activeTerminalTab = selectedTerminalTabsState.tabs.find((tab) => tab.id === selectedTerminalTabsState.activeTabId) ?? null;
   const terminalViewActive = activeView === "chat" && selectedTerminalTabsState.visible && activeTerminalTab !== null;
-  const sessionShortcutHistoryRef = useRef<SessionShortcutTarget[]>([]);
+  const sessionShortcutHistoryRef = useRef<GlobalSessionTarget[]>([]);
   const sessionCtrlTabCycleRef = useRef<{
-    baseHistory: SessionShortcutTarget[];
+    baseHistory: GlobalSessionTarget[];
+    index: number;
+  } | null>(null);
+  const [sessionSwitcher, setSessionSwitcher] = useState<{
+    items: GlobalSessionTarget[];
     index: number;
   } | null>(null);
   const openInAppShortcutBusyRef = useRef(false);
@@ -2796,9 +2808,49 @@ export function WorkspacePage() {
     }),
     [chat.threads, reviewTabOpen, selectedTerminalTabsState.tabs, workspaceFileTabs],
   );
-  const activeSessionShortcutTarget = useMemo(
-    () => getActiveSessionShortcutTarget(sessionShortcutTargets, {
+
+  // Cross-worktree session groups for the Ctrl+Tab switcher: every worktree's
+  // open threads + live terminals. The selected worktree uses the reactive
+  // `chat.threads`; other worktrees read a snapshot from the threads cache.
+  const globalSessionGroups = useMemo(() => {
+    return repos.repositories.flatMap((repository) =>
+      repository.worktrees.map((worktree) => {
+        const isSelected = worktree.id === repos.selectedWorktreeId;
+        const worktreeThreads = isSelected
+          ? chat.threads
+          : (getExistingThreadsCollection(queryClient, worktree.id)?.toArray as ChatThread[] | undefined) ?? [];
+        const terminalTabs = getTerminalTabsState(terminalTabsByWorktreeId, worktree.id).tabs;
+        return {
+          repositoryId: repository.id,
+          worktreeId: worktree.id,
+          branch: worktree.branch,
+          threads: worktreeThreads.map((thread) => ({
+            id: thread.id,
+            title: thread.title,
+            tabOpen: thread.tabOpen ?? true,
+          })),
+          terminalTabs: terminalTabs.map((tab) => ({ id: tab.id, title: tab.title })),
+        };
+      }),
+    );
+  }, [chat.threads, queryClient, repos.repositories, repos.selectedWorktreeId, terminalTabsByWorktreeId]);
+
+  const globalSessionTargets = useMemo(
+    () => buildGlobalSessionTargets({
+      worktrees: globalSessionGroups,
+      selectedRepositoryId: repos.selectedRepositoryId,
+      selectedWorktreeId: repos.selectedWorktreeId,
+      reviewTabOpen,
+      fileTabs: workspaceFileTabs,
+    }),
+    [globalSessionGroups, reviewTabOpen, repos.selectedRepositoryId, repos.selectedWorktreeId, workspaceFileTabs],
+  );
+
+  const activeGlobalSessionTarget = useMemo(
+    () => getActiveGlobalSessionTarget(globalSessionTargets, {
       activeView,
+      selectedRepositoryId: repos.selectedRepositoryId,
+      selectedWorktreeId: repos.selectedWorktreeId,
       selectedThreadId: chat.selectedThreadId,
       terminalViewActive,
       activeTerminalTabId: activeTerminalTab?.id ?? null,
@@ -2809,7 +2861,9 @@ export function WorkspacePage() {
       activeTerminalTab?.id,
       activeView,
       chat.selectedThreadId,
-      sessionShortcutTargets,
+      globalSessionTargets,
+      repos.selectedRepositoryId,
+      repos.selectedWorktreeId,
       terminalViewActive,
     ],
   );
@@ -3833,44 +3887,110 @@ export function WorkspacePage() {
     handleSelectFileTab(target.path);
   }, [confirmSwitchAwayFromActiveFile, handleSelectFileTab, handleSelectTerminalTab, handleSelectThread, updateSearch]);
 
-  useEffect(() => {
-    if (!activeSessionShortcutTarget || sessionCtrlTabCycleRef.current) {
+  // Ctrl+Tab switcher target selection. Threads/terminals can live in any
+  // worktree, so switch worktree first when the target is cross-worktree.
+  const handleSelectGlobalSessionTarget = useCallback((target: GlobalSessionTarget) => {
+    const isCrossWorktree = target.worktreeId !== repos.selectedWorktreeId;
+
+    if (target.kind === "thread") {
+      if (isCrossWorktree) {
+        handleSelectWorktree(target.repositoryId, target.worktreeId, target.id);
+      } else {
+        handleSelectThread(target.id);
+      }
       return;
     }
 
-    sessionShortcutHistoryRef.current = promoteSessionShortcutTarget(
+    if (target.kind === "terminal") {
+      if (isCrossWorktree) {
+        handleSelectWorktree(target.repositoryId, target.worktreeId);
+        updateTerminalTabsState(target.worktreeId, (current) => selectWorkspaceTerminalTab({
+          terminalTabsState: current,
+          bottomPanelState: getBottomPanelState(bottomPanelStateByWorktreeId, target.worktreeId),
+          terminalTabId: target.id,
+        }).terminalTabsState);
+      } else {
+        handleSelectTerminalTab(target.id);
+      }
+      return;
+    }
+
+    // review + file targets only ever exist for the selected worktree.
+    if (target.kind === "review") {
+      if (!confirmSwitchAwayFromActiveFile()) {
+        return;
+      }
+      updateSearch({ view: "review" });
+      return;
+    }
+
+    handleSelectFileTab(target.path);
+  }, [
+    bottomPanelStateByWorktreeId,
+    confirmSwitchAwayFromActiveFile,
+    handleSelectFileTab,
+    handleSelectTerminalTab,
+    handleSelectThread,
+    handleSelectWorktree,
+    repos.selectedWorktreeId,
+    updateSearch,
+    updateTerminalTabsState,
+  ]);
+
+  useEffect(() => {
+    if (!activeGlobalSessionTarget || sessionCtrlTabCycleRef.current) {
+      return;
+    }
+
+    sessionShortcutHistoryRef.current = promoteGlobalSessionTarget(
       sessionShortcutHistoryRef.current,
-      activeSessionShortcutTarget,
-      sessionShortcutTargets,
+      activeGlobalSessionTarget,
+      globalSessionTargets,
     );
-  }, [activeSessionShortcutTarget, sessionShortcutTargets]);
+  }, [activeGlobalSessionTarget, globalSessionTargets]);
 
   useEffect(() => {
     if (!desktopApp) {
       return;
     }
 
+    // Commit-on-release: while Ctrl is held we only move the highlight in the
+    // overlay (cheap). The real selection — which may switch worktree — runs
+    // once when Ctrl is released, so holding+tabbing never thrashes worktrees.
     const commitCtrlTabCycle = () => {
       const cycle = sessionCtrlTabCycleRef.current;
+      sessionCtrlTabCycleRef.current = null;
+      setSessionSwitcher(null);
       if (!cycle) {
         return;
       }
 
       const selectedTarget = cycle.baseHistory[cycle.index];
       if (selectedTarget) {
-        sessionShortcutHistoryRef.current = promoteSessionShortcutTarget(
+        sessionShortcutHistoryRef.current = promoteGlobalSessionTarget(
           cycle.baseHistory,
           selectedTarget,
-          sessionShortcutTargets,
+          globalSessionTargets,
         );
+        handleSelectGlobalSessionTarget(selectedTarget);
       }
+    };
+
+    const cancelCtrlTabCycle = () => {
       sessionCtrlTabCycleRef.current = null;
+      setSessionSwitcher(null);
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && sessionCtrlTabCycleRef.current) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        cancelCtrlTabCycle();
+        return;
+      }
+
       if (
-        event.defaultPrevented
-        || !event.ctrlKey
+        !event.ctrlKey
         || event.metaKey
         || event.altKey
         || event.key !== "Tab"
@@ -3878,19 +3998,23 @@ export function WorkspacePage() {
         return;
       }
 
+      // Capture phase + stopImmediatePropagation: this window listener runs
+      // before xterm's textarea handler, so Ctrl+Tab works even while a
+      // terminal is focused (otherwise xterm consumes the event first). Also
+      // stops the webview falling back to DOM focus traversal.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
       const cycle = sessionCtrlTabCycleRef.current;
       const baseHistory = cycle?.baseHistory
-        ?? buildSessionShortcutCycleHistory(
+        ?? buildGlobalSessionCycleHistory(
           sessionShortcutHistoryRef.current,
-          sessionShortcutTargets,
-          activeSessionShortcutTarget,
+          globalSessionTargets,
+          activeGlobalSessionTarget,
         );
       if (baseHistory.length <= 1) {
         return;
       }
-
-      event.preventDefault();
-      event.stopPropagation();
 
       const direction = event.shiftKey ? "previous" : "next";
       const index = cycle
@@ -3898,13 +4022,9 @@ export function WorkspacePage() {
         : direction === "previous"
           ? baseHistory.length - 1
           : 1;
-      const target = baseHistory[index];
-      if (!target) {
-        return;
-      }
 
       sessionCtrlTabCycleRef.current = { baseHistory, index };
-      handleSelectSessionShortcutTarget(target);
+      setSessionSwitcher({ items: baseHistory, index });
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -3913,18 +4033,18 @@ export function WorkspacePage() {
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("keyup", handleKeyUp, true);
     window.addEventListener("blur", commitCtrlTabCycle);
     document.addEventListener("visibilitychange", commitCtrlTabCycle);
 
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("keyup", handleKeyUp, true);
       window.removeEventListener("blur", commitCtrlTabCycle);
       document.removeEventListener("visibilitychange", commitCtrlTabCycle);
     };
-  }, [desktopApp, handleSelectSessionShortcutTarget, sessionShortcutTargets]);
+  }, [activeGlobalSessionTarget, desktopApp, globalSessionTargets, handleSelectGlobalSessionTarget]);
 
   const handleMoveSessionTab = useCallback((direction: "previous" | "next") => {
     const targets = sessionShortcutTargets;
@@ -5052,6 +5172,19 @@ export function WorkspacePage() {
               void handleQuickFileSelect(item.path);
             }}
             onClose={closeQuickFilePicker}
+          />
+        </Suspense>
+      ) : null}
+
+      {sessionSwitcher ? (
+        <Suspense fallback={null}>
+          <SessionSwitcherOverlay
+            open
+            items={buildGlobalSwitcherItems(sessionSwitcher.items, {
+              selectedWorktreeId: repos.selectedWorktreeId,
+              worktrees: globalSessionGroups,
+            })}
+            selectedIndex={sessionSwitcher.index}
           />
         </Suspense>
       ) : null}

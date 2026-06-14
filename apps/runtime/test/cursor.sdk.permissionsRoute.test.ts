@@ -21,7 +21,7 @@ describe("Cursor SDK permission routes", () => {
     resetCursorSdkPermissionBridgesForTests();
   });
 
-  it("handles Cursor hook requests through a registered permission bridge", async () => {
+  it("handles Cursor hook requests routed by session_id (agent id)", async () => {
     const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
     const bridge = registerCursorSdkPermissionBridge({
       cwd: "/tmp/project",
@@ -29,14 +29,16 @@ describe("Cursor SDK permission routes", () => {
       threadPermissionMode: "default",
       onPermissionRequest,
     });
+    bridge.bind("agent-abc");
 
     const response = await app.inject({
       method: "POST",
-      url: `/api/cursor-sdk/permissions/${bridge.token}`,
+      url: "/api/cursor-sdk/permissions",
       payload: {
-        hook_event_name: "PreToolUse",
+        hook_event_name: "preToolUse",
+        session_id: "agent-abc",
         tool_use_id: "tool 1",
-        tool_name: "Bash",
+        tool_name: "Shell",
         tool_input: { command: "rm -rf build" },
       },
     });
@@ -49,13 +51,14 @@ describe("Cursor SDK permission routes", () => {
     expect(onPermissionRequest).toHaveBeenCalledOnce();
   });
 
-  it("rejects unknown bridge tokens", async () => {
+  it("rejects unknown agent sessions", async () => {
     const response = await app.inject({
       method: "POST",
-      url: "/api/cursor-sdk/permissions/missing-token",
+      url: "/api/cursor-sdk/permissions",
       payload: {
-        hook_event_name: "PreToolUse",
-        tool_name: "Bash",
+        hook_event_name: "preToolUse",
+        session_id: "agent-unknown",
+        tool_name: "Shell",
         tool_input: { command: "rm -rf build" },
       },
     });
