@@ -9,17 +9,19 @@ type CodexCollaborationMode = {
   };
 };
 
-export function buildCollaborationMode(model: string, permissionMode: string | undefined): CodexCollaborationMode {
+export function buildCollaborationMode(
+  model: string,
+  permissionMode: string | undefined,
+  options?: { reasoningEffort?: string },
+): CodexCollaborationMode {
   const mode = permissionMode === "plan" ? "plan" : "default";
+  const effort = options?.reasoningEffort ?? "xhigh";
 
   return {
     mode,
     settings: {
       model,
-      // Match Codex app-server built-in collaboration presets. Passing null
-      // developer instructions lets the installed Codex version inject its own
-      // native template for the selected mode.
-      reasoning_effort: "xhigh",
+      reasoning_effort: effort as CodexCollaborationMode["settings"]["reasoning_effort"],
       developer_instructions: null,
     },
   };

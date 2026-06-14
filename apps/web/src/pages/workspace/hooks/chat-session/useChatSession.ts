@@ -306,15 +306,19 @@ function applyThreadAgentSelectionUpdate(
     return threads;
   }
 
-  if (
-    current.agent != null
+  const selectionUnchanged = current.agent != null
     && current.model != null
     && hasSameThreadSelection({
       agent: current.agent,
       model: current.model,
       modelProviderId: current.modelProviderId,
-    }, selection)
-  ) {
+    }, selection);
+  const modelOptionsChanged = selection.modelOptions != null
+    && JSON.stringify(selection.modelOptions) !== JSON.stringify(current.modelOptions);
+  const modelOptionsPerModelChanged = selection.modelOptionsPerModel != null
+    && JSON.stringify(selection.modelOptionsPerModel) !== JSON.stringify(current.modelOptionsPerModel);
+
+  if (selectionUnchanged && !modelOptionsChanged && !modelOptionsPerModelChanged) {
     return threads;
   }
 
@@ -325,6 +329,8 @@ function applyThreadAgentSelectionUpdate(
     agent: selection.agent,
     model: selection.model,
     modelProviderId: selection.modelProviderId ?? null,
+    modelOptions: selection.modelOptions ?? current.modelOptions,
+    modelOptionsPerModel: selection.modelOptionsPerModel ?? current.modelOptionsPerModel,
     claudeSessionId: preserveSessionIds ? current.claudeSessionId : null,
     codexSessionId: preserveSessionIds ? current.codexSessionId : null,
     cursorSessionId: preserveSessionIds ? current.cursorSessionId : null,
@@ -1910,6 +1916,8 @@ export function useChatSession(
   const composerAgent: CliAgent = selectedThread?.agent ?? fallbackThreadSelection?.agent ?? "claude";
   const composerModel = selectedThread?.model ?? fallbackThreadSelection?.model ?? resolveAgentDefaultModel(composerAgent);
   const composerModelProviderId = selectedThread?.modelProviderId ?? fallbackThreadSelection?.modelProviderId ?? null;
+  const composerModelOptions = selectedThread?.modelOptions ?? [];
+  const composerModelOptionsPerModel = selectedThread?.modelOptionsPerModel ?? {};
   const composerPermissionMode = selectedThread?.permissionMode ?? pendingComposerPermissionMode;
   const {
     data: queuedMessages = [],
@@ -2987,6 +2995,8 @@ export function useChatSession(
       agent: composerAgent,
       model: composerModel,
       modelProviderId: composerModelProviderId,
+      modelOptions: composerModelOptions,
+      modelOptionsPerModel: composerModelOptionsPerModel,
       handoffSourceThreadId: params.sourceThreadId,
       handoffSourcePlanEventId: null,
       claudeSessionId: null,
@@ -3651,6 +3661,8 @@ export function useChatSession(
           currentThread?.agent === selection.agent
           && currentThread.model === selection.model
           && currentThread.modelProviderId === (selection.modelProviderId ?? null)
+          && JSON.stringify(currentThread?.modelOptions ?? null) === JSON.stringify(selection.modelOptions ?? null)
+          && JSON.stringify(currentThread?.modelOptionsPerModel ?? null) === JSON.stringify(selection.modelOptionsPerModel ?? null)
         ) {
           return;
         }
@@ -4849,6 +4861,8 @@ export function useChatSession(
     composerAgent,
     composerModel,
     composerModelProviderId,
+    composerModelOptions,
+    composerModelOptionsPerModel,
     composerMode,
     composerPermissionMode,
     composerModeLocked,

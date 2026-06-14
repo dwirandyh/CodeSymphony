@@ -129,6 +129,115 @@ function resolveTerminalDataKind(summary: Omit<TerminalDataSummary, "kind">): Te
 export const TERMINAL_IME_DEDUP_WINDOW_MS = 50;
 
 /**
+ * Decide whether a post-commit input event is the duplicate echo of the text
+ * we already sent at compositionend — and therefore safe to drop.
+ *
+ * Background: after an IME composition commit we send the composed word to the
+ * PTY ourselves, then arm a short dedup window in case xterm's own onData fires
+ * the *same* text again. The Android `input` handler used to blanket-clear the
+ * textarea for ANY input while that window was active, which also ate the very
+ * next keystroke — the space after the word — collapsing "make dev" into
+ * "makedev"/"make dev" depending on timing.
+ *
+ * Only suppress when the incoming data is the exact committed string. Genuinely
+ * new input (a space, the next word's first letter) must pass through.
+ */
+export function shouldSuppressPostCommitInput(
+  dedupActive: boolean,
+  originalData: string | null | undefined,
+  incomingData: string | null | undefined,
+): boolean {
+  if (!dedupActive) {
+    return false;
+  }
+  if (!originalData || !incomingData) {
+    return false;
+  }
+  return incomingData === originalData;
+}
+
+/**
+ * Window after an IME composition commit during which spurious `Backspace`
+ * keydowns are treated as phantom and dropped.
+ *
+ * Android soft keyboards (Gboard) commit a composed word, then — because our
+ * compositionend handler sends the text and clears the textarea out from under
+ * the IME — emit a short burst of `Backspace`/`deleteContentBackward` events to
+ * reconcile their internal model against the now-empty field. Those phantom
+ * deletes reach the PTY as `\x7f` and erase the word the user just typed
+ * (symptom: "make " becomes "" or loses characters). The window must be long
+ * enough to cover the reconciliation burst but short enough that a deliberate
+ * backspace a beat later still passes through.
+ */
+export const TERMINAL_IME_PHANTOM_BACKSPACE_WINDOW_MS = 250;
+
+export type PhantomBackspaceGuard = {
+  /** Remaining phantom backspaces that may still be suppressed. */
+  remaining: number;
+  /** Timestamp (ms, same clock as evaluate) after which the guard is inert. */
+  expiresAt: number;
+};
+
+export type PhantomBackspaceDecision = {
+  suppress: boolean;
+  guard: PhantomBackspaceGuard;
+};
+
+const INERT_PHANTOM_BACKSPACE_GUARD: PhantomBackspaceGuard = {
+  remaining: 0,
+  expiresAt: 0,
+};
+
+/**
+ * Arm the phantom-backspace guard after a composition commit.
+ *
+ * @param committedCodePointLength number of code points just committed to the
+ *   PTY — the maximum number of phantom backspaces the IME can emit to undo it.
+ * @param now monotonic-ish timestamp in ms (e.g. `performance.now()`).
+ */
+export function armPhantomBackspaceGuard(
+  committedCodePointLength: number,
+  now: number,
+): PhantomBackspaceGuard {
+  if (committedCodePointLength <= 0) {
+    return { ...INERT_PHANTOM_BACKSPACE_GUARD };
+  }
+
+  return {
+    remaining: committedCodePointLength,
+    expiresAt: now + TERMINAL_IME_PHANTOM_BACKSPACE_WINDOW_MS,
+  };
+}
+
+/**
+ * Decide whether a `Backspace` keydown is a phantom IME reconciliation delete.
+ *
+ * Returns the suppression decision plus the next guard state (decremented when
+ * suppressing, cleared once the budget is spent or the window has elapsed).
+ * Pure: the caller owns the guard between calls.
+ */
+export function evaluatePhantomBackspace(
+  guard: PhantomBackspaceGuard,
+  now: number,
+): PhantomBackspaceDecision {
+  if (guard.remaining <= 0) {
+    return { suppress: false, guard: { ...INERT_PHANTOM_BACKSPACE_GUARD } };
+  }
+
+  if (now > guard.expiresAt) {
+    return { suppress: false, guard: { ...INERT_PHANTOM_BACKSPACE_GUARD } };
+  }
+
+  const remaining = guard.remaining - 1;
+  return {
+    suppress: true,
+    guard: remaining > 0
+      ? { remaining, expiresAt: guard.expiresAt }
+      : { ...INERT_PHANTOM_BACKSPACE_GUARD },
+  };
+}
+
+/**
  * Resolve final IME text at compositionend.
  *
  * Priority:

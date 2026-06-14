@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import {
+  type ModelCapabilities,
   ClaudeModelCatalogSchema,
   CodexModelCatalogSchema,
   CreateModelProviderInputSchema,
@@ -11,8 +12,13 @@ import {
   TestModelProviderInputSchema,
   UpdateModelProviderInputSchema,
   type ModelProviderCompatibility,
+  normalizeCursorCatalogModelId,
 } from "@codesymphony/shared-types";
 import * as claudeModelCatalog from "../claude/modelCatalog.js";
+import { getClaudeModelCapabilities } from "../claude/modelCapabilities.js";
+import { getCodexModelCapabilities } from "../codex/modelCapabilities.js";
+import { getCursorModelCapabilities } from "../cursor/modelCapabilities.js";
+import { getOpencodeModelCapabilities } from "../opencode/modelCapabilities.js";
 import * as codexSessionRunner from "../codex/sessionRunner.js";
 import * as cursorSessionRunner from "../cursor/sessionRunner.js";
 import * as opencodeModelCatalog from "../opencode/modelCatalog.js";
@@ -168,7 +174,10 @@ export async function registerModelRoutes(app: FastifyInstance) {
       cwd: process.cwd(),
     }),
     validate: (candidate) => CursorModelCatalogSchema.parse({
-      models: candidate,
+      models: (candidate as Array<{ id: string; name: string }>).map((entry) => ({
+        ...entry,
+        id: normalizeCursorCatalogModelId(entry.id),
+      })),
       fetchedAt: "1970-01-01T00:00:00.000Z",
     }).models,
   });
@@ -240,6 +249,27 @@ export async function registerModelRoutes(app: FastifyInstance) {
       const message = error instanceof Error ? error.message : "Unable to list OpenCode models";
       return reply.code(500).send({ error: message });
     }
+  });
+
+  app.get<{ Querystring: { agent?: string; model?: string } }>("/model-capabilities", async (request) => {
+    const agent = request.query.agent ?? "claude";
+    const model = request.query.model;
+    let capabilities: ModelCapabilities;
+    switch (agent) {
+      case "codex":
+        capabilities = getCodexModelCapabilities();
+        break;
+      case "cursor":
+        capabilities = getCursorModelCapabilities(model);
+        break;
+      case "opencode":
+        capabilities = getOpencodeModelCapabilities();
+        break;
+      default:
+        capabilities = getClaudeModelCapabilities();
+        break;
+    }
+    return { data: capabilities };
   });
 
   app.get("/model-providers", async () => {

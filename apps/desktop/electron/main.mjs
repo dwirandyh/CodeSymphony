@@ -507,7 +507,12 @@ function registerIpcHandlers() {
   ipcMain.handle("desktop:open-external", async (_event, href) => shell.openExternal(String(href)));
   ipcMain.handle("desktop:send-notification", async (_event, payload) => {
     if (!Notification.isSupported()) return false;
-    new Notification({ title: String(payload?.title ?? "CodeSymphony"), body: String(payload?.body ?? "") }).show();
+    const notification = new Notification({
+      title: String(payload?.title ?? "CodeSymphony"),
+      body: String(payload?.body ?? ""),
+    });
+    notification.on("click", focusMainWindow);
+    notification.show();
     return true;
   });
   ipcMain.handle("desktop:open-notification-settings", async () => {
@@ -532,6 +537,13 @@ function registerIpcHandlers() {
   });
 }
 
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 async function startApp() {
   const port = runtimePort();
   await ensureManagedRuntime(port);
@@ -552,18 +564,24 @@ async function startApp() {
 app.setName("CodeSymphony");
 if (process.platform === "darwin") app.commandLine.appendSwitch("disable-features", "HardwareMediaKeyHandling");
 
-registerIpcHandlers();
-
-app.whenReady().then(startApp).catch((error) => {
-  console.error("Failed to start CodeSymphony desktop shell.", error);
+// Prevent a notification tap (or any relaunch) from spawning a second app
+// instance. The first instance keeps the lock; later launches hand off to it
+// via the "second-instance" event and exit immediately.
+if (!app.requestSingleInstanceLock()) {
   app.quit();
-});
+} else {
+  app.on("second-instance", focusMainWindow);
+
+  registerIpcHandlers();
+
+  app.whenReady().then(startApp).catch((error) => {
+    console.error("Failed to start CodeSymphony desktop shell.", error);
+    app.quit();
+  });
+}
 
 app.on("activate", () => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
-    mainWindow.focus();
-  }
+  focusMainWindow();
 });
 
 app.on("before-quit", () => {

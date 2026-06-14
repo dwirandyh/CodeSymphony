@@ -29,6 +29,14 @@ import {
   type OpencodeModelCatalogEntry,
   type SlashCommand,
   type UpdateChatThreadAgentSelectionInput,
+  type ProviderOptionSelection,
+  type ModelCapabilities,
+  buildProviderOptionSelectionsFromDescriptors,
+  formatModelOptionsDisplaySummary,
+  formatReasoningEffortDisplayLabel,
+  hasConfigurableModelOptions,
+  isFastModeEnabled,
+  resolveModelCapabilities,
 } from "@codesymphony/shared-types";
 import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../ui/dialog";
@@ -74,6 +82,7 @@ import {
   isFirstCustomModelOption,
   type AgentSelectionOption,
 } from "./AgentModelSelector";
+import { ModelOptionsEditor } from "./ModelOptionsEditor";
 
 type ComposerSubmitPayload = {
   content: string;
@@ -119,6 +128,8 @@ type ComposerProps = {
   onModeChange: (mode: ChatMode) => void;
   onStop: () => void;
   onAgentModelSelectorOpen?: () => void;
+  modelOptions?: ProviderOptionSelection[];
+  modelOptionsPerModel?: Record<string, ProviderOptionSelection[]>;
   onAgentSelectionChange?: (selection: UpdateChatThreadAgentSelectionInput) => void;
   onPermissionModeChange: (permissionMode: ChatThreadPermissionMode) => void;
   onDeleteQueuedMessage?: (queueMessageId: string) => void;
@@ -126,6 +137,35 @@ type ComposerProps = {
   onCancelQueuedMessageDispatch?: (queueMessageId: string) => void;
   onUpdateQueuedMessage?: (queueMessageId: string, content: string) => Promise<boolean>;
 };
+
+type ModelOptionsTarget = {
+  agent: CliAgent;
+  model: string;
+  modelProviderId: string | null;
+};
+
+function buildModelOptionsKey(target: ModelOptionsTarget): string {
+  return `${target.agent}::${target.model}::${target.modelProviderId ?? ""}`;
+}
+
+function areModelOptionSelectionsEqual(
+  left: readonly ProviderOptionSelection[],
+  right: readonly ProviderOptionSelection[],
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function buildModelCapabilitiesUrl(target: ModelOptionsTarget): string {
+  return `/api/model-capabilities?agent=${encodeURIComponent(target.agent)}&model=${encodeURIComponent(target.model)}`;
+}
+
+function resolveBuiltinModelCapabilities(target: ModelOptionsTarget): ModelCapabilities {
+  if (target.modelProviderId !== null) {
+    return { optionDescriptors: [] };
+  }
+
+  return resolveModelCapabilities(target.agent, target.model);
+}
 
 type ModelSelectionBlockedReasonParams = {
   threadId: string | null;
@@ -278,6 +318,8 @@ function ComposerContent({
   onModeChange,
   onStop,
   onAgentModelSelectorOpen,
+  modelOptions = [],
+  modelOptionsPerModel = {},
   onAgentSelectionChange: onAgentSelectionChangeProp,
   onPermissionModeChange,
   onDeleteQueuedMessage,
@@ -297,6 +339,44 @@ function ComposerContent({
   const permissionPopoverRef = useRef<HTMLDivElement>(null);
   const [permissionPreviewMode, setPermissionPreviewMode] = useState<ChatThreadPermissionMode | null>(null);
   const [mobileSessionSheetOpen, setMobileSessionSheetOpen] = useState(false);
+  const [mobileCapabilities, setMobileCapabilities] = useState<ModelCapabilities | null>(null);
+  const [modelOptionsSheetOpen, setModelOptionsSheetOpen] = useState(false);
+  const modelKey = buildModelOptionsKey({ agent, model, modelProviderId });
+
+  const resolveModelOptions = useCallback((target: ModelOptionsTarget): ProviderOptionSelection[] => {
+    const targetKey = buildModelOptionsKey(target);
+    if (targetKey === modelKey) {
+      return modelOptions ?? [];
+    }
+
+    return modelOptionsPerModel[targetKey] ?? [];
+  }, [modelKey, modelOptions, modelOptionsPerModel]);
+
+  const emitAgentSelectionChange = useCallback((target: ModelOptionsTarget) => {
+    onAgentSelectionChange({
+      agent: target.agent,
+      model: target.model,
+      modelProviderId: target.modelProviderId,
+      modelOptions: resolveModelOptions(target),
+      modelOptionsPerModel,
+    });
+  }, [modelOptionsPerModel, onAgentSelectionChange, resolveModelOptions]);
+
+  // Sync per-model options when model changes
+  useEffect(() => {
+    const saved = modelOptionsPerModel[modelKey] ?? [];
+    if (!areModelOptionSelectionsEqual(modelOptions ?? [], saved)) {
+      onAgentSelectionChange({
+        agent,
+        model,
+        modelProviderId: modelProviderId ?? null,
+        modelOptions: saved,
+        modelOptionsPerModel,
+      });
+    }
+  }, [agent, model, modelKey, modelOptions, modelOptionsPerModel, modelProviderId, onAgentSelectionChange]);
+
+  const [optionsEditingTarget, setOptionsEditingTarget] = useState<{ agent: CliAgent; model: string; modelProviderId: string | null } | null>(null);
   const [composerPopoverHost, setComposerPopoverHost] = useState<HTMLDivElement | null>(null);
   const shouldUseProvidedSlashCommands = providedSlashCommands !== undefined || providedSlashCommandsLoading !== undefined;
   const [slashCommandsRequested, setSlashCommandsRequested] = useState(() => shouldUseProvidedSlashCommands);
@@ -353,6 +433,29 @@ function ComposerContent({
     setPermissionPopoverOpen(false);
     setPermissionPreviewMode(null);
   }, [mobileSessionSheetOpen]);
+  useEffect(() => {
+    if (!modelOptionsSheetOpen) {
+      setMobileCapabilities(null);
+      return;
+    }
+
+    let cancelled = false;
+    const target = optionsEditingTarget ?? { agent, model, modelProviderId };
+    setMobileCapabilities(resolveBuiltinModelCapabilities(target));
+    fetch(buildModelCapabilitiesUrl(target))
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && data?.data) {
+          setMobileCapabilities(data.data as ModelCapabilities);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setMobileCapabilities(null);
+      });
+
+    return () => { cancelled = true; };
+  }, [agent, model, modelOptionsSheetOpen, modelProviderId, optionsEditingTarget]);
+
 
   useEffect(() => {
     if (shouldUseProvidedSlashCommands || slashCommandsRequested) {
@@ -431,6 +534,14 @@ function ComposerContent({
     [agent, agentOptions, model, modelProviderId],
   );
   const modelLabel = `${AGENT_LABELS[agent]} · ${currentSelection.label}`;
+  const currentModelCapabilities = useMemo(
+    () => resolveBuiltinModelCapabilities({ agent, model, modelProviderId }),
+    [agent, model, modelProviderId],
+  );
+  const currentModelOptionsSummary = useMemo(
+    () => formatModelOptionsDisplaySummary(currentModelCapabilities, modelOptions ?? []),
+    [currentModelCapabilities, modelOptions],
+  );
   const activePermissionOption = useMemo(
     () => PERMISSION_OPTIONS.find((option) => option.value === permissionMode) ?? PERMISSION_OPTIONS[0],
     [permissionMode],
@@ -442,7 +553,9 @@ function ComposerContent({
   const permissionTriggerClassName = permissionMode === "full_access" ? "text-orange-500" : "text-muted-foreground";
   const mobileSessionSummaryLabel = permissionMode === "full_access"
     ? `${AGENT_LABELS[agent]} · Full Access`
-    : modelLabel;
+    : currentModelOptionsSummary
+      ? `${modelLabel} · ${currentModelOptionsSummary}`
+      : modelLabel;
 
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -1269,6 +1382,15 @@ function ComposerContent({
           && option.model === model
           && option.modelProviderId === modelProviderId;
         const showCustomSeparator = isFirstCustomModelOption(modelPreviewOptions, index);
+        const optionTarget = {
+          agent: option.agent,
+          model: option.model,
+          modelProviderId: option.modelProviderId,
+        };
+        const optionCapabilities = resolveBuiltinModelCapabilities(optionTarget);
+        const optionSelections = resolveModelOptions(optionTarget);
+        const effortLabel = formatReasoningEffortDisplayLabel(optionCapabilities, optionSelections);
+        const showFastLabel = isFastModeEnabled(optionCapabilities, optionSelections);
 
         return (
           <div key={option.id}>
@@ -1278,37 +1400,66 @@ function ComposerContent({
                 className="mx-2.5 my-1 border-t border-border/60"
               />
             ) : null}
-            <button
-              type="button"
-              disabled={selectionLocked}
-              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-                selected
-                  ? "bg-accent text-accent-foreground"
-                  : "text-foreground hover:bg-accent/50"
-              } disabled:cursor-not-allowed disabled:opacity-60`}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={selectionLocked}
+                className={`flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                  selected
+                    ? "bg-accent text-accent-foreground"
+                    : "text-foreground hover:bg-accent/50"
+                } disabled:cursor-not-allowed disabled:opacity-60`}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   if (selectionLocked) {
                     return;
                   }
-                onAgentSelectionChange({
-                  agent: option.agent,
-                    model: option.model,
-                    modelProviderId: option.modelProviderId,
-                  });
+                  emitAgentSelectionChange(optionTarget);
                   if (mobile) {
                     setMobileSessionSheetOpen(false);
                   }
                 }}
-            >
-              <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-              {option.source === "custom" || !mobile ? (
-                <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
-                  {option.detail}
+              >
+                <span className="min-w-0 flex-1 truncate font-medium">
+                  {option.label}
+                  {mobile && effortLabel ? (
+                    <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">
+                      {effortLabel}
+                    </span>
+                  ) : null}
+                  {mobile && showFastLabel ? (
+                    <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">
+                      Fast
+                    </span>
+                  ) : null}
                 </span>
+                {option.source === "custom" || !mobile ? (
+                  <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
+                    {option.detail}
+                  </span>
+                ) : null}
+                {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+              </button>
+              {mobile && hasConfigurableModelOptions(optionCapabilities) ? (
+                <button
+                  type="button"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setOptionsEditingTarget({
+                      agent: option.agent,
+                      model: option.model,
+                      modelProviderId: option.modelProviderId,
+                    });
+                    setModelOptionsSheetOpen(true);
+                  }}
+                  aria-label="Model options"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                </button>
               ) : null}
-              {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-            </button>
+            </div>
           </div>
         );
       })}
@@ -1343,7 +1494,11 @@ function ComposerContent({
                     setModelPreviewAgent(entryAgent);
                   }
                 }}
-                onFocus={() => setModelPreviewAgent(entryAgent)}
+                onFocus={() => {
+                  if (!mobile) {
+                    setModelPreviewAgent(entryAgent);
+                  }
+                }}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   setModelPreviewAgent(entryAgent);
@@ -1425,6 +1580,9 @@ function ComposerContent({
       </div>
     </div>
   );
+
+  const modelOptionsEditingTarget = optionsEditingTarget ?? { agent, model, modelProviderId };
+  const editingModelOptions = resolveModelOptions(modelOptionsEditingTarget);
 
   return (
     <section className="px-1.5 pb-1 pt-0.5 safe-bottom sm:px-2.5 lg:px-3 lg:pb-2 lg:pt-1">
@@ -1654,6 +1812,7 @@ function ComposerContent({
               {isPlan ? "Plan" : "Execute"}
             </button>
             {isMobile ? (
+              <>
               <Dialog open={mobileSessionSheetOpen} onOpenChange={setMobileSessionSheetOpen}>
                 <button
                   type="button"
@@ -1703,6 +1862,41 @@ function ComposerContent({
                   </div>
                 </DialogContent>
               </Dialog>
+              <Dialog open={modelOptionsSheetOpen} onOpenChange={setModelOptionsSheetOpen}>
+                <DialogContent className="bottom-0 left-0 top-auto grid w-full max-w-none translate-x-0 translate-y-0 gap-3 rounded-b-none rounded-t-3xl border-border/70 bg-card/98 px-4 pb-6 pt-5 shadow-2xl">
+                  <DialogTitle className="text-base">Model options</DialogTitle>
+                  <DialogDescription className="text-xs">
+                    Adjust available options for the selected model.
+                  </DialogDescription>
+                  {mobileCapabilities && mobileCapabilities.optionDescriptors.length > 0 ? (
+                    <ModelOptionsEditor
+                      capabilities={mobileCapabilities}
+                      selections={editingModelOptions}
+                      onChange={(nextOptions) => {
+                        const target = modelOptionsEditingTarget;
+                        const targetKey = buildModelOptionsKey(target);
+                        const isCurrentModel = targetKey === modelKey;
+                        const targetCapabilities = mobileCapabilities
+                          ?? resolveBuiltinModelCapabilities(target);
+                        const normalizedOptions = buildProviderOptionSelectionsFromDescriptors(
+                          targetCapabilities,
+                          nextOptions,
+                        );
+                        onAgentSelectionChange?.({
+                          agent: isCurrentModel ? target.agent : agent,
+                          model: isCurrentModel ? target.model : model,
+                          modelProviderId: isCurrentModel ? target.modelProviderId : (modelProviderId ?? null),
+                          modelOptions: isCurrentModel ? normalizedOptions : modelOptions,
+                          modelOptionsPerModel: { ...modelOptionsPerModel, [targetKey]: normalizedOptions },
+                        });
+                      }}
+                    />
+                  ) : (
+                    <p className="py-4 text-center text-sm text-muted-foreground">No options available for this model.</p>
+                  )}
+                </DialogContent>
+              </Dialog>
+              </>
             ) : (
               <>
                 <AgentModelSelector
@@ -1719,7 +1913,25 @@ function ComposerContent({
                   popoverContainer={composerPopoverHost}
                   onOpen={onAgentModelSelectorOpen}
                   onSelectionChange={(nextSelection) => {
-                    onAgentSelectionChange(nextSelection);
+                    emitAgentSelectionChange(nextSelection);
+                  }}
+                  modelOptions={modelOptions}
+                  modelOptionsPerModel={modelOptionsPerModel}
+                  onModelOptionsChange={(nextOptions, target) => {
+                    const targetKey = buildModelOptionsKey(target);
+                    const isCurrentModel = targetKey === modelKey;
+                    const targetCapabilities = resolveBuiltinModelCapabilities(target);
+                    const normalizedOptions = buildProviderOptionSelectionsFromDescriptors(
+                      targetCapabilities,
+                      nextOptions,
+                    );
+                    onAgentSelectionChange({
+                      agent: isCurrentModel ? target.agent : agent,
+                      model: isCurrentModel ? target.model : model,
+                      modelProviderId: isCurrentModel ? target.modelProviderId : modelProviderId,
+                      modelOptions: isCurrentModel ? normalizedOptions : modelOptions,
+                      modelOptionsPerModel: { ...modelOptionsPerModel, [targetKey]: normalizedOptions },
+                    });
                   }}
                 />
 

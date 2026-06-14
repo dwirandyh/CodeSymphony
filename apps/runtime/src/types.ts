@@ -14,6 +14,7 @@ import type {
   SlashCommand,
   WorkspaceSyncEvent,
   WorkspaceSyncEventType,
+  ProviderOptionSelection,
 } from "@codesymphony/shared-types";
 import type { LogLevel } from "./services/logService.js";
 import type { ResourceMonitorSessionTracker } from "./services/resourceMonitorSessionTracker.js";
@@ -183,6 +184,7 @@ export type ClaudeRunner = (args: {
   providerCompatibility?: ModelProviderCompatibility;
   providerApiKey?: string;
   providerBaseUrl?: string;
+  modelOptions?: ProviderOptionSelection[];
   onProcessSpawned?: (pid: number) => Promise<void> | void;
   onText: (chunk: string) => Promise<void> | void;
   onToolStarted: (payload: {

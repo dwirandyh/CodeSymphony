@@ -470,6 +470,96 @@ describe("chatService agent selection", () => {
     expect(cursorRunner).toHaveBeenCalledTimes(1);
   });
 
+  it("normalizes /skill prompts for Cursor threads when the skill comes from .cursor/skills", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    let observedPrompt: string | null = null;
+    const cursorRunner: ClaudeRunner = vi.fn(async ({ prompt, onSessionId, onText }) => {
+      observedPrompt = prompt;
+      await onSessionId?.("cursor-session-cursor-skill");
+      await onText("Cursor reply");
+      return {
+        output: "Cursor reply",
+        sessionId: "cursor-session-cursor-skill",
+      };
+    });
+
+    vi.spyOn(cursorSessionRunner, "listCursorSlashCommands").mockResolvedValue([
+      { name: "cursorscan", description: "Scan from .cursor/skills.", argumentHint: "" },
+    ]);
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      cursorRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread("Cursor .cursor/skills rewrite");
+
+    await chatService.updateThreadAgentSelection(thread.id, {
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+    });
+
+    await chatService.sendMessage(thread.id, {
+      content: "/cursorscan audit halaman settings",
+    });
+    await waitForCompletion(chatService, thread.id);
+
+    expect(cursorRunner).toHaveBeenCalledTimes(1);
+    expect(observedPrompt).toBe("Use $cursorscan for this task.\n\naudit halaman settings");
+  });
+
+  it("normalizes /skill prompts end-to-end from a real .cursor/skills/SKILL.md on disk", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    let observedPrompt: string | null = null;
+    const cursorRunner: ClaudeRunner = vi.fn(async ({ prompt, onSessionId, onText }) => {
+      observedPrompt = prompt;
+      await onSessionId?.("cursor-session-e2e-skill");
+      await onText("Cursor reply");
+      return {
+        output: "Cursor reply",
+        sessionId: "cursor-session-e2e-skill",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      cursorRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread, worktree } = await seedThread("Cursor real .cursor/skills rewrite");
+
+    mkdirSync(join(worktree.path, ".cursor/skills/diskscan"), { recursive: true });
+    writeFileSync(
+      join(worktree.path, ".cursor/skills/diskscan/SKILL.md"),
+      "---\nname: diskscan\ndescription: Real on-disk cursor skill.\n---\n",
+    );
+
+    await chatService.updateThreadAgentSelection(thread.id, {
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+    });
+
+    await chatService.sendMessage(thread.id, {
+      content: "/diskscan audit halaman settings",
+    });
+    await waitForCompletion(chatService, thread.id);
+
+    expect(cursorRunner).toHaveBeenCalledTimes(1);
+    expect(observedPrompt).toBe("Use $diskscan for this task.\n\naudit halaman settings");
+  });
+
   it("normalizes $skill prompts for OpenCode threads before invoking the runner", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async () => ({
       output: "",

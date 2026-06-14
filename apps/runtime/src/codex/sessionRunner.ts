@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
-import type { PermissionDecision } from "@codesymphony/shared-types";
+import type { PermissionDecision, ProviderOptionSelection } from "@codesymphony/shared-types";
+import {
+  getProviderOptionStringSelectionValue,
+  getProviderOptionBooleanSelectionValue,
+} from "@codesymphony/shared-types";
 import {
   type CodexModelCatalogEntry,
   type SlashCommand,
@@ -719,6 +723,12 @@ function prefixAgentMessageSegment(currentOutput: string, nextText: string): str
   return `\n\n${nextText}`;
 }
 
+function getEffortFromOptions(options: ProviderOptionSelection[] | undefined): string | undefined {
+  if (!options) return undefined;
+  const effort = options.find((o) => o.id === "reasoningEffort");
+  return effort && typeof effort.value === "string" ? effort.value : undefined;
+}
+
 export const runCodexWithStreaming: ChatAgentRunner = async ({
   prompt,
   promptWithAttachments,
@@ -746,6 +756,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   onSubagentStarted,
   onSubagentStopped,
   onThinking,
+  modelOptions,
 }): Promise<ChatAgentRunnerResult> => {
   if (listSlashCommandsOnly) {
     return {
@@ -771,6 +782,17 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     stdio: ["pipe", "pipe", "pipe"],
     shell: process.platform === "win32",
   });
+  // Attach a synchronous error guard before the first `await` below. Bun can
+  // assign `child.pid` optimistically even when the spawn fails (e.g. ENOENT
+  // when the `codex` binary is missing), and the 'error' event is emitted
+  // asynchronously. Without a listener at emit time it escapes as an
+  // uncaughtException and crashes the runtime (exit code 7).
+  let earlySpawnError: Error | null = null;
+  const captureEarlySpawnError = (error: Error) => {
+    earlySpawnError = error;
+  };
+  child.on("error", captureEarlySpawnError);
+
   const childPid = child.pid;
   if (typeof childPid === "number" && childPid > 0) {
     await onProcessSpawned?.(childPid);
@@ -912,6 +934,9 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   };
 
   const sendRequest = async <TResponse>(method: string, params: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<TResponse> => {
+    if (finished) {
+      throw completionError ?? new Error(`codex app-server unavailable for ${method}`);
+    }
     const id = randomUUID();
     const result = await new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -940,9 +965,13 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     resolveCompletion = resolve;
     rejectCompletion = reject;
 
+    child.removeListener("error", captureEarlySpawnError);
     child.on("error", (error) => {
       finish(error);
     });
+    if (earlySpawnError) {
+      finish(earlySpawnError);
+    }
 
     child.on("exit", (code, signal) => {
       if (finished) {
@@ -1569,7 +1598,9 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         attachments,
       }),
       model: resolvedModel,
-      collaborationMode: buildCollaborationMode(resolvedModel, permissionMode),
+      collaborationMode: buildCollaborationMode(resolvedModel, permissionMode, {
+        reasoningEffort: getEffortFromOptions(modelOptions),
+      }),
     });
     scheduleFirstTurnSignalTimeout();
 

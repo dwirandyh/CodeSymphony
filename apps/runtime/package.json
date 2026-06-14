@@ -29,6 +29,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.42",
     "@codesymphony/chat-timeline-core": "workspace:*",
     "@codesymphony/shared-types": "workspace:*",
+    "@cursor/sdk": "^1.0.18",
     "@fastify/cors": "^10.0.1",
     "@fastify/static": "^8.1.0",
     "@fastify/websocket": "^11.2.0",

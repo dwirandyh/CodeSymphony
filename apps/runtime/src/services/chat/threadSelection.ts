@@ -1,6 +1,7 @@
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
   hasSameThreadSelection,
+  normalizeCursorCatalogModelId,
   shouldPreserveThreadSelectionSessionIds,
   supportsModelProviderCompatibility,
   type ChatThreadKind,
@@ -71,6 +72,10 @@ function resolveDefaultModelForAgent(agent: CliAgent): string {
 function resolveBuiltinModelSelection(agent: CliAgent, model: string): string {
   if (agent === "codex" && isBuiltinModelForAgent(agent, model)) {
     return resolveBuiltinCodexModelSelection(model);
+  }
+
+  if (agent === "cursor") {
+    return normalizeCursorCatalogModelId(model);
   }
 
   return model;

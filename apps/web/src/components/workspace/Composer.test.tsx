@@ -218,6 +218,7 @@ describe("Composer", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     window.localStorage.clear();
     delete (window as DesktopTestWindow).__CS_ELECTRON__;
     delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
@@ -295,6 +296,16 @@ describe("Composer", () => {
     const button = buttons.find((entry) => entry.textContent?.trim() === label);
     if (!button) {
       throw new Error(`${label} button not found`);
+    }
+    return button;
+  }
+
+  function getMobileModelOptionsButton(modelLabel: string): HTMLButtonElement {
+    const optionRows = Array.from(document.body.querySelectorAll<HTMLDivElement>("div.flex.items-center.gap-1"));
+    const row = optionRows.find((entry) => entry.textContent?.includes(modelLabel));
+    const button = row?.querySelector<HTMLButtonElement>('button[aria-label="Model options"]') ?? null;
+    if (!button) {
+      throw new Error(`${modelLabel} model options button not found`);
     }
     return button;
   }
@@ -1088,11 +1099,11 @@ describe("Composer", () => {
       customModelButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    expect(onAgentSelectionChange).toHaveBeenCalledWith({
+    expect(onAgentSelectionChange).toHaveBeenCalledWith(expect.objectContaining({
       agent: "codex",
       model: "gpt-5.3-codex-enterprise",
       modelProviderId: "provider-codex-1",
-    });
+    }));
   });
 
   it("shows the dynamic Codex catalog even when a Codex CLI default model is configured", () => {
@@ -1252,11 +1263,11 @@ describe("Composer", () => {
       customModelButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    expect(onAgentSelectionChange).toHaveBeenCalledWith({
+    expect(onAgentSelectionChange).toHaveBeenCalledWith(expect.objectContaining({
       agent: "opencode",
       model: "gpt-5-custom",
       modelProviderId: "provider-opencode-1",
-    });
+    }));
   });
 
   it("shows Cursor model options and emits thread agent selection updates", () => {
@@ -1291,10 +1302,43 @@ describe("Composer", () => {
       cursorModelButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    expect(onAgentSelectionChange).toHaveBeenCalledWith({
+    expect(onAgentSelectionChange).toHaveBeenCalledWith(expect.objectContaining({
       agent: "cursor",
       model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
       modelProviderId: null,
+    }));
+  });
+
+  it("clears active model options when the selected model has no saved options", async () => {
+    const onAgentSelectionChange = vi.fn();
+
+    renderComposer({
+      agent: "cursor",
+      model: "composer-2.5[fast=true]",
+      cursorModels: [
+        ...defaultProps.cursorModels,
+        {
+          id: "composer-2.5[fast=true]",
+          name: "Composer 2.5",
+        },
+      ],
+      modelOptions: [{ id: "reasoningEffort", value: "high" }],
+      modelOptionsPerModel: {
+        "cursor::gpt-5.4[context=272k,reasoning=medium,fast=false]::": [{ id: "reasoningEffort", value: "high" }],
+      },
+      onAgentSelectionChange,
+    });
+
+    await flushMicrotasks();
+
+    expect(onAgentSelectionChange).toHaveBeenCalledWith({
+      agent: "cursor",
+      model: "composer-2.5[fast=true]",
+      modelProviderId: null,
+      modelOptions: [],
+      modelOptionsPerModel: {
+        "cursor::gpt-5.4[context=272k,reasoning=medium,fast=false]::": [{ id: "reasoningEffort", value: "high" }],
+      },
     });
   });
 
@@ -1469,6 +1513,114 @@ describe("Composer", () => {
     expect(sessionButton?.textContent).toContain("Claude");
     expect(container.querySelector('button[aria-label="Select CLI agent and model"]')).toBeNull();
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Full Access")).toBe(false);
+  });
+
+  it("shows default reasoning and fast labels for Cursor models on mobile", () => {
+    setMobileViewport(true);
+    renderComposer({
+      agent: "cursor",
+      model: "gpt-5.5[context=272k,reasoning=medium,fast=true]",
+      cursorModels: [
+        {
+          id: "gpt-5.5[context=272k,reasoning=medium,fast=true]",
+          name: "GPT-5.5",
+        },
+        {
+          id: "composer-2.5[fast=true]",
+          name: "Composer 2.5",
+        },
+      ],
+    });
+
+    const sessionButton = getSessionSettingsButton();
+    expect(sessionButton.textContent).toContain("Medium");
+    expect(sessionButton.textContent).toContain("Fast");
+
+    act(() => {
+      sessionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const screenText = document.body.textContent ?? "";
+    expect(screenText).toContain("GPT-5.5");
+    expect(screenText).toContain("Medium");
+    expect(screenText).toContain("Composer 2.5");
+    expect(screenText).toContain("Fast");
+  });
+
+  it("saves mobile model option changes with descriptor defaults", async () => {
+    setMobileViewport(true);
+    const onAgentSelectionChange = vi.fn();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      json: async () => ({
+        data: {
+          optionDescriptors: [
+            {
+              id: "reasoningEffort",
+              label: "Effort",
+              type: "select",
+              currentValue: "medium",
+              options: [
+                { value: "low", label: "Low" },
+                { value: "medium", label: "Medium" },
+                { value: "high", label: "High" },
+              ],
+            },
+            {
+              id: "fastMode",
+              label: "Fast mode",
+              type: "toggle",
+              currentValue: true,
+            },
+          ],
+        },
+      }),
+    }));
+
+    renderComposer({
+      agent: "cursor",
+      model: "gpt-5.5[context=272k,reasoning=medium,fast=true]",
+      cursorModels: [
+        {
+          id: "gpt-5.5[context=272k,reasoning=medium,fast=true]",
+          name: "GPT-5.5",
+        },
+      ],
+      onAgentSelectionChange,
+    });
+
+    const sessionButton = getSessionSettingsButton();
+    act(() => {
+      sessionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    act(() => {
+      getMobileModelOptionsButton("GPT-5.5").dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    const highButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "High");
+    if (!highButton) {
+      throw new Error("High effort button not found");
+    }
+
+    act(() => {
+      highButton.click();
+    });
+
+    const expectedOptions = [
+      { id: "reasoningEffort", value: "high" },
+      { id: "fastMode", value: true },
+    ];
+    expect(onAgentSelectionChange).toHaveBeenCalledWith({
+      agent: "cursor",
+      model: "gpt-5.5[context=272k,reasoning=medium,fast=true]",
+      modelProviderId: null,
+      modelOptions: expectedOptions,
+      modelOptionsPerModel: {
+        "cursor::gpt-5.5[context=272k,reasoning=medium,fast=true]::": expectedOptions,
+      },
+    });
   });
 
   it("keeps mobile session settings accessible when model switching is blocked", () => {

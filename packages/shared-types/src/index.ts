@@ -1,5 +1,7 @@
 export * from "./workflow.js";
-export * from "./terminalDiagnostics.js";
+export * from "./modelOptions.js";
+export * from "./modelCapabilities.js";
+export * from "./cursorSdkModelSelection.js";
 export type {
   WorkspaceSyncEvent,
   WorkspaceSyncEventType,
@@ -12,3 +14,4 @@ export type {
   ChatTimelineExploreActivityEntry as ExploreActivityEntry,
   ChatTimelineReadFileEntry as ReadFileTimelineEntry,
 } from "./workflow.js";
+export * from "./terminalDiagnostics.js";

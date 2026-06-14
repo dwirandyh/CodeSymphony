@@ -395,6 +395,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   model,
   providerApiKey,
   providerBaseUrl,
+  modelOptions,
   onProcessSpawned,
   onText,
   onToolStarted,
@@ -521,6 +522,16 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         runtimeEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
         effectiveModel = "opus";
       }
+    }
+
+    // Map model options to environment overrides
+    const effortOption = modelOptions?.find((o) => o.id === "reasoningEffort");
+    const fastModeOption = modelOptions?.find((o) => o.id === "fastMode");
+    if (effortOption && typeof effortOption.value === "string") {
+      runtimeEnv.CODESYMPHONY_REASONING_EFFORT = effortOption.value;
+    }
+    if (fastModeOption && fastModeOption.value === true) {
+      runtimeEnv.CODESYMPHONY_FAST_MODE = "1";
     }
 
     let stream: Query | null = null;

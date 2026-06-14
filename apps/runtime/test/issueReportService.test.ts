@@ -60,6 +60,8 @@ describe("issueReportService", () => {
           agent: "claude",
           model: "claude-sonnet-4-6",
           modelProviderId: null,
+          modelOptions: null,
+          modelOptionsPerModel: null,
           claudeSessionId: "session-secret-like",
           codexSessionId: null,
           cursorSessionId: null,
@@ -138,6 +140,49 @@ describe("issueReportService", () => {
     expect(debugLog).not.toContain("thread-2");
   });
 
+  it("keeps cursor.sdk diagnostic entries even under noisy tail entries", async () => {
+    appendRuntimeDebugLog({
+      source: "cursor.sdk.modelResolved",
+      message: "model.resolution",
+      data: {
+        worktreeId: "worktree-1",
+        threadId: "thread-1",
+        sdkModel: { id: "composer-2.5", params: [{ id: "fast", value: "true" }] },
+      },
+    });
+    appendRuntimeDebugLog({
+      source: "cursor.sdk.turnError",
+      message: "turn.failed",
+      data: {
+        worktreeId: "worktree-1",
+        threadId: "thread-1",
+        error: "Invalid params",
+        sdkModel: { id: "composer-2.5", params: [{ id: "fast", value: "true" }] },
+      },
+    });
+
+    for (let i = 0; i < 1_050; i += 1) {
+      appendRuntimeDebugLog({
+        source: "thread.workspace.event",
+        message: "worktree.git.updated",
+        data: { repositoryId: "repo-1", worktreeId: "worktree-1", seq: i },
+      });
+    }
+
+    const service = createIssueReportService({ prisma: createPrismaMock() });
+    const report = await service.createIssueReport({
+      description: "Cursor turn fails",
+      repositoryId: "repo-1",
+      worktreeId: "worktree-1",
+      threadId: "thread-1",
+    });
+
+    const debugLog = await readFile(report.debugLogPath, "utf-8");
+    expect(debugLog).toContain("cursor.sdk.modelResolved");
+    expect(debugLog).toContain("cursor.sdk.turnError");
+    expect(debugLog).toContain("Invalid params");
+  });
+
   it("keeps priority diagnosis entries even when noisy tail entries fill the report", async () => {
     appendRuntimeDebugLog({
       source: "diagnose.selection",
@@ -182,6 +227,51 @@ describe("issueReportService", () => {
         },
       },
     });
+  });
+
+  it("captures model option defaults for cursor models with reasoning metadata", async () => {
+    const prisma = createPrismaMock();
+    prisma.chatThread.findUnique = vi.fn(async () => ({
+      id: "thread-1",
+      worktreeId: "worktree-1",
+      title: "Broken stream",
+      kind: "default",
+      permissionProfile: "default",
+      permissionMode: "default",
+      mode: "default",
+      agent: "cursor",
+      model: "claude-fable-5[thinking=true,context=300k,effort=high]",
+      modelProviderId: null,
+      modelOptions: null,
+      modelOptionsPerModel: null,
+      claudeSessionId: null,
+      codexSessionId: null,
+      cursorSessionId: null,
+      opencodeSessionId: null,
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    }));
+
+    const service = createIssueReportService({ prisma });
+    const report = await service.createIssueReport({
+      description: "Model options missing on mobile",
+      repositoryId: "repo-1",
+      worktreeId: "worktree-1",
+      threadId: "thread-1",
+    });
+
+    const diagnostics = JSON.parse(await readFile(report.diagnosticsPath, "utf-8"));
+    expect(diagnostics.modelOptions).toMatchObject({
+      agent: "cursor",
+      model: "claude-fable-5[thinking=true,context=300k,effort=high]",
+      effectiveOptions: [
+        { id: "reasoningEffort", value: "high" },
+      ],
+    });
+    expect(diagnostics.modelOptions.capabilities.optionDescriptors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "reasoningEffort", currentValue: "high" }),
+      ]),
+    );
   });
 
   it("creates a report when no workspace identifiers are provided", async () => {

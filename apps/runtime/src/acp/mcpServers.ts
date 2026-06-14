@@ -6,6 +6,17 @@ import { join } from "node:path";
 type JsonRecord = Record<string, unknown>;
 type OpencodeMcpConfig = NonNullable<OpencodeConfig["mcp"]>;
 
+export type CursorRuntimeMcpServerConfig = {
+  type: "http";
+  url: string;
+  headers: Record<string, string>;
+} | {
+  type: "stdio";
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+};
+
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -64,14 +75,14 @@ function loadCursorMcpConfigFile(): JsonRecord | null {
   return readJsonObject(join(homeDirectory, ".cursor", "mcp.json"));
 }
 
-export function loadCursorAcpMcpServers(): McpServer[] {
+export function loadCursorRuntimeMcpConfig(): Record<string, CursorRuntimeMcpServerConfig> {
   const parsed = loadCursorMcpConfigFile();
   const rawServers = parsed && isRecord(parsed.mcpServers) ? parsed.mcpServers : null;
   if (!rawServers) {
-    return [];
+    return {};
   }
 
-  const servers: McpServer[] = [];
+  const servers: Record<string, CursorRuntimeMcpServerConfig> = {};
   for (const [name, rawServer] of Object.entries(rawServers)) {
     if (!isRecord(rawServer) || rawServer.disabled === true) {
       continue;
@@ -79,12 +90,11 @@ export function loadCursorAcpMcpServers(): McpServer[] {
 
     const url = typeof rawServer.url === "string" ? rawServer.url.trim() : "";
     if (url.length > 0) {
-      servers.push({
+      servers[name] = {
         type: "http" as const,
-        name,
         url,
-        headers: toHeaders(toStringRecord(rawServer.headers)),
-      });
+        headers: toStringRecord(rawServer.headers),
+      };
       continue;
     }
 
@@ -93,15 +103,35 @@ export function loadCursorAcpMcpServers(): McpServer[] {
       continue;
     }
 
-    servers.push({
-      name,
+    servers[name] = {
+      type: "stdio" as const,
       command,
       args: toStringArray(rawServer.args),
-      env: toEnvVariables(toStringRecord(rawServer.env)),
-    });
+      env: toStringRecord(rawServer.env),
+    };
   }
 
   return servers;
+}
+
+export function loadCursorAcpMcpServers(): McpServer[] {
+  return Object.entries(loadCursorRuntimeMcpConfig()).map(([name, server]) => {
+    if (server.type === "http") {
+      return {
+        type: "http" as const,
+        name,
+        url: server.url,
+        headers: toHeaders(server.headers),
+      };
+    }
+
+    return {
+      name,
+      command: server.command,
+      args: server.args,
+      env: toEnvVariables(server.env),
+    };
+  });
 }
 
 function loadOpencodeConfigFile(): JsonRecord | null {
