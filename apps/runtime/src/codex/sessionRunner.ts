@@ -782,6 +782,17 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     stdio: ["pipe", "pipe", "pipe"],
     shell: process.platform === "win32",
   });
+  // Attach a synchronous error guard before the first `await` below. Bun can
+  // assign `child.pid` optimistically even when the spawn fails (e.g. ENOENT
+  // when the `codex` binary is missing), and the 'error' event is emitted
+  // asynchronously. Without a listener at emit time it escapes as an
+  // uncaughtException and crashes the runtime (exit code 7).
+  let earlySpawnError: Error | null = null;
+  const captureEarlySpawnError = (error: Error) => {
+    earlySpawnError = error;
+  };
+  child.on("error", captureEarlySpawnError);
+
   const childPid = child.pid;
   if (typeof childPid === "number" && childPid > 0) {
     await onProcessSpawned?.(childPid);
@@ -923,6 +934,9 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   };
 
   const sendRequest = async <TResponse>(method: string, params: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<TResponse> => {
+    if (finished) {
+      throw completionError ?? new Error(`codex app-server unavailable for ${method}`);
+    }
     const id = randomUUID();
     const result = await new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -951,9 +965,13 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     resolveCompletion = resolve;
     rejectCompletion = reject;
 
+    child.removeListener("error", captureEarlySpawnError);
     child.on("error", (error) => {
       finish(error);
     });
+    if (earlySpawnError) {
+      finish(earlySpawnError);
+    }
 
     child.on("exit", (code, signal) => {
       if (finished) {
