@@ -4971,7 +4971,12 @@ export function WorkspacePage() {
             </Suspense>
           ) : null}
 
-          <div className={desktopLayout ? "block" : "hidden"}>
+          {/* Mobile must NOT mount BottomPanel: `hidden` (display:none) keeps it
+              mounted, so its TerminalTab opens a second terminal WS whose
+              container measures 0×0 — fit bails forever and the PTY sits idle at
+              80×24. Mobile uses WorkspaceTerminalSurface instead, so only mount
+              BottomPanel when the desktop layout is actually active. */}
+          {desktopLayout ? (
             <Suspense fallback={null}>
               <BottomPanel
                 worktreeId={selectedWorktreeOperational ? repos.selectedWorktreeId : null}
@@ -4995,7 +5000,7 @@ export function WorkspacePage() {
                 openSignal={selectedBottomPanelState.openSignal}
               />
             </Suspense>
-          </div>
+          ) : null}
         </main>
 
         <Suspense

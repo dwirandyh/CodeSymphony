@@ -10,9 +10,13 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import type { IDisposable, ILink } from "@xterm/xterm";
 import {
+  armPhantomBackspaceGuard,
+  evaluatePhantomBackspace,
   resolveComposedTerminalInput,
+  shouldSuppressPostCommitInput,
   summarizeTerminalData,
   TERMINAL_IME_DEDUP_WINDOW_MS,
+  type PhantomBackspaceGuard,
   type TerminalDataSummary,
 } from "@codesymphony/shared-types";
 import { debugLog } from "../../lib/debugLog";
@@ -1253,6 +1257,13 @@ function createTerminalRuntime(
   let pendingAndroidBeforeInputData: string | null = null;
   let lastComposingText: string = "";
   let isComposing: boolean = false;
+  // After an IME composition commit, Gboard emits a burst of phantom Backspace
+  // keydowns to reconcile its model against the textarea we just cleared. This
+  // guard absorbs that burst so it never reaches the PTY and erases the word.
+  let phantomBackspaceGuard: PhantomBackspaceGuard | null = null;
+
+  const now = (): number =>
+    typeof performance !== "undefined" ? performance.now() : Date.now();
 
   const resolveAndroidInputData = (data: string): string => {
     if (!isAndroid || !pendingAndroidBeforeInputData) {
@@ -1481,16 +1492,56 @@ function createTerminalRuntime(
     }
 
     if (entry.suppressedInput.active) {
-      inputEvent.preventDefault();
-      inputEvent.stopImmediatePropagation();
-      if (textarea) {
-        textarea.value = "";
-      }
-      queueMicrotask(() => {
+      // Only eat the exact duplicate echo of the just-committed word. The old
+      // code blanket-cleared the textarea for ANY input during the dedup
+      // window, which also swallowed the space typed right after a committed
+      // word — collapsing "make dev" into "makedev". Genuinely new input (the
+      // space, the next word) must pass through to xterm.onData untouched.
+      const isDuplicateEcho = shouldSuppressPostCommitInput(
+        entry.suppressedInput.active,
+        entry.suppressedInput.originalData,
+        inputEvent.data,
+      );
+      if (isDuplicateEcho) {
+        inputEvent.preventDefault();
+        inputEvent.stopImmediatePropagation();
         if (textarea) {
           textarea.value = "";
         }
-      });
+        queueMicrotask(() => {
+          if (textarea) {
+            textarea.value = "";
+          }
+        });
+      } else {
+        // Genuinely new input (the space after a committed word, or the next
+        // character) arrived inside the dedup window. On Android, xterm.js does
+        // NOT reliably emit onData for an insertText that lands right after a
+        // compositionend, so the normal send path drops it ("makedev"); and
+        // leaving the char in the textarea makes Gboard fold it into the next
+        // composition ("make  dev"). Both failure modes come from trusting
+        // xterm's flaky post-composition handling. Instead: send it to the PTY
+        // ourselves, stop xterm from also handling it, and clear synchronously.
+        clearSuppressedInput();
+        inputEvent.preventDefault();
+        inputEvent.stopImmediatePropagation();
+        const passThroughData = typeof inputEvent.data === "string" ? inputEvent.data : "";
+        const nextData = entry.transformInput ? entry.transformInput(passThroughData) : passThroughData;
+        const socketReadyState = getSocketReadyState(entry.webSocket);
+        const sent = nextData.length > 0 && socketReadyState === WebSocket.OPEN;
+        if (sent) {
+          entry.webSocket?.send(nextData);
+        }
+        if (textarea) {
+          textarea.value = "";
+        }
+        logTerminalInputDiagnostics(entry, "client.input.postCommitPassThrough", {
+          stage: "input",
+          rawSummary: summarizeMaybeTerminalData(inputEvent.data),
+          inputType: inputEvent.inputType ?? null,
+          sent,
+        });
+      }
     }
   };
 
@@ -1586,6 +1637,12 @@ function createTerminalRuntime(
         resetTimerId: null,
       };
       scheduleSuppressedInputReset();
+      // Clearing the textarea desyncs Gboard, which then fires phantom
+      // Backspace keydowns to "undo" the committed word. Arm the guard so the
+      // custom key handler drops up to `composed` deletes within the window.
+      if (isAndroid) {
+        phantomBackspaceGuard = armPhantomBackspaceGuard([...composed].length, now());
+      }
       textarea.value = "";
     }
   };
@@ -1593,6 +1650,34 @@ function createTerminalRuntime(
   const handleKeyDown = (event: KeyboardEvent) => {
     if (isComposing && textarea) {
       trackComposingText(textarea.value);
+    }
+    // Drop the phantom Backspace burst Gboard emits right after a composition
+    // commit. Capture phase + stopImmediatePropagation runs before xterm's own
+    // keydown handler, so the delete never becomes a \x7f sent to the PTY. The
+    // guard is bounded by both the committed length and a short time window, so
+    // a deliberate backspace a moment later still passes through normally.
+    if (
+      isAndroid
+      && phantomBackspaceGuard
+      && event.key === "Backspace"
+      && !event.ctrlKey
+      && !event.metaKey
+      && !event.altKey
+    ) {
+      const decision = evaluatePhantomBackspace(phantomBackspaceGuard, now());
+      phantomBackspaceGuard = decision.guard.remaining > 0 ? decision.guard : null;
+      if (decision.suppress) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (textarea) {
+          textarea.value = "";
+        }
+        logTerminalInputDiagnostics(entry, "client.keydown.phantomBackspaceSuppressed", {
+          stage: "keydown",
+          pendingAndroidBeforeInput: pendingAndroidBeforeInputData !== null,
+        });
+        return;
+      }
     }
     logTerminalInputDiagnostics(entry, "client.keydown", {
       stage: "keydown",
