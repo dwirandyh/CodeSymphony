@@ -161,7 +161,8 @@ export function getCursorModelCapabilities(model?: string): ModelCapabilities {
     });
   }
 
-  if (metadata.has("fast") && !getCursorBaseModelName(model ?? "").startsWith("composer-")) {
+  const isComposer = getCursorBaseModelName(model ?? "").startsWith("composer-");
+  if (metadata.has("fast") || isComposer) {
     descriptors.push({
       id: "fastMode",
       label: "Fast mode",

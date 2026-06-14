@@ -174,7 +174,7 @@ export async function registerModelRoutes(app: FastifyInstance) {
       cwd: process.cwd(),
     }),
     validate: (candidate) => CursorModelCatalogSchema.parse({
-      models: candidate.map((entry: { id: string; name: string }) => ({
+      models: (candidate as Array<{ id: string; name: string }>).map((entry) => ({
         ...entry,
         id: normalizeCursorCatalogModelId(entry.id),
       })),

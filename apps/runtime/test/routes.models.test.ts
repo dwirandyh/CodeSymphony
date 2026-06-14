@@ -235,14 +235,14 @@ describe("model provider routes", () => {
     expect(typeof res.json().data.fetchedAt).toBe("string");
   });
 
-  it("GET /api/model-capabilities hides reasoning effort for Cursor models without reasoning metadata", async () => {
+  it("GET /api/model-capabilities exposes only the fast toggle for composer models without reasoning metadata", async () => {
     const res = await app.inject({
       method: "GET",
       url: "/api/model-capabilities?agent=cursor&model=composer-2.5%5Bfast%3Dtrue%5D",
     });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json().data.optionDescriptors.map((descriptor: { id: string }) => descriptor.id)).toEqual([]);
+    expect(res.json().data.optionDescriptors.map((descriptor: { id: string }) => descriptor.id)).toEqual(["fastMode"]);
   });
 
   it("GET /api/model-capabilities derives Cursor option defaults from the selected model metadata", async () => {

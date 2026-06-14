@@ -19,7 +19,7 @@ Each chat thread picks an **agent** (`claude` \| `codex` \| `cursor` \| `opencod
 |-------|-----------|----------------------------------|--------|
 | **Claude** | [Claude Code](https://docs.anthropic.com/claude-code) via the TypeScript Agent SDK | `CLAUDE_CODE_EXECUTABLE` → `claude` | `claude login`; primary path uses `@anthropic-ai/claude-agent-sdk` |
 | **Codex** | OpenAI **Codex** CLI (app-server / headless integration in this repo) | `CODEX_BINARY_PATH` → `codex` | Configure auth and models the Codex way (`~/.codex/config.toml`, etc.); optional OpenAI-compatible **custom provider** rows in Settings map to Codex when active |
-| **Cursor** | **Cursor** CLI in ACP mode | `CURSOR_AGENT_BINARY_PATH` → `cursor-agent` | Uses Cursor’s built-in model list; **no** custom base URL/API key providers in CodeSymphony |
+| **Cursor** | **Cursor** CLI in ACP mode by default; experimental `@cursor/sdk` transport behind `CURSOR_TRANSPORT=sdk` | `CURSOR_AGENT_BINARY_PATH` → `cursor-agent`; SDK uses `CURSOR_API_KEY` | Uses Cursor’s built-in model list; **no** custom base URL/API key providers in CodeSymphony |
 | **OpenCode** | **OpenCode** CLI | `OPENCODE_BINARY_PATH` → `opencode` | Optional custom providers like Claude/Codex; model discovery via `/api/opencode/models` |
 
 Thread model selection and **Model providers** in the app call `GET/POST /api/model-providers` (and related routes in `apps/runtime/src/routes/models.ts`). Builtin model IDs per agent are defined in `packages/shared-types` (`CliAgent`, `BUILTIN_CHAT_MODELS_BY_AGENT`).
@@ -86,6 +86,9 @@ WORKTREE_ROOT="~/.codesymphony/worktrees"
 CLAUDE_CODE_EXECUTABLE=claude
 CODEX_BINARY_PATH=codex
 CURSOR_AGENT_BINARY_PATH=cursor-agent
+# Experimental Cursor SDK transport only:
+# CURSOR_TRANSPORT=sdk
+# CURSOR_API_KEY=...
 OPENCODE_BINARY_PATH=opencode
 ```
 

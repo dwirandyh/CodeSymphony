@@ -45,9 +45,18 @@ describe("applyCursorModelOptions", () => {
     expect(result).toBe("composer-2.5[fast=true]");
   });
 
-  it("does not expose fast toggle for composer models", () => {
+  it("exposes fast toggle for composer models", () => {
     const capabilities = getCursorModelCapabilities("composer-2.5[fast=true]");
-    expect(capabilities.optionDescriptors.some((descriptor) => descriptor.id === "fastMode")).toBe(false);
+    const fastDescriptor = capabilities.optionDescriptors.find((descriptor) => descriptor.id === "fastMode");
+    expect(fastDescriptor).toBeDefined();
+    expect(fastDescriptor?.currentValue).toBe(true);
+  });
+
+  it("exposes fast toggle for bare composer ids defaulting to non-fast", () => {
+    const capabilities = getCursorModelCapabilities("composer-2.5");
+    const fastDescriptor = capabilities.optionDescriptors.find((descriptor) => descriptor.id === "fastMode");
+    expect(fastDescriptor).toBeDefined();
+    expect(fastDescriptor?.currentValue).toBe(false);
   });
 
   it("normalizes composer catalog ids to bare base names", () => {

@@ -232,7 +232,7 @@ describe("chatService model options", () => {
     expect(fetched?.modelOptions).toBeUndefined();
   });
 
-  it("ignores stale per-model composer fastMode overrides when sending a message", async () => {
+  it("passes per-model composer fastMode overrides through to the runner when sending a message", async () => {
     const cursorRunner = vi.fn(async ({ onText }) => {
       await onText("done");
       return stubRunnerResult;
@@ -268,6 +268,6 @@ describe("chatService model options", () => {
 
     expect(cursorRunner).toHaveBeenCalled();
     const runnerCall = (cursorRunner as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(runnerCall[0].modelOptions).toBeUndefined();
+    expect(runnerCall[0].modelOptions).toEqual([{ id: "fastMode", value: false }]);
   });
 });

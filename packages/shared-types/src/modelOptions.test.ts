@@ -234,7 +234,7 @@ describe("model option helpers", () => {
       },
     });
 
-    expect(resolved).toBeUndefined();
+    expect(resolved).toEqual([{ id: "fastMode", value: false }]);
   });
 
   it("builds descriptor defaults when thread modelOptions are empty", () => {
@@ -246,6 +246,6 @@ describe("model option helpers", () => {
       modelOptionsPerModel: {},
     });
 
-    expect(resolved).toBeUndefined();
+    expect(resolved).toEqual([{ id: "fastMode", value: true }]);
   });
 });

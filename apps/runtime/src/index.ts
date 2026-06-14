@@ -50,6 +50,7 @@ import { registerResourceMonitorRoutes } from "./routes/resourceMonitor.js";
 import { registerWorkspaceLiveResourceRoutes } from "./routes/workspaceLiveResources.js";
 import { registerWorkspaceBootstrapRoutes } from "./routes/workspaceBootstrap.js";
 import { registerIssueReportRoutes } from "./routes/issueReports.js";
+import { registerCursorSdkPermissionRoutes } from "./routes/cursorSdkPermissions.js";
 import type { PrismaMigrationExecutionPlan } from "./migrate.js";
 
 declare module "fastify" {
@@ -234,6 +235,7 @@ function createApp() {
   app.register(registerWorkspaceLiveResourceRoutes, { prefix: "/api" });
   app.register(registerWorkspaceBootstrapRoutes, { prefix: "/api" });
   app.register(registerIssueReportRoutes, { prefix: "/api" });
+  app.register(registerCursorSdkPermissionRoutes, { prefix: "/api" });
 
   app.addHook("onClose", async () => {
     worktreeWatchService.dispose();

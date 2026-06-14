@@ -156,7 +156,12 @@ function isIssueReportPriorityDebugEntry(entry: DebugLogEntry): boolean {
     return true;
   }
 
+  if (entry.source.startsWith("cursor.sdk.")) {
+    return true;
+  }
+
   return entry.source === "runtime.chats"
+    || entry.source === "runtime.chat.run"
     || entry.source === "thread.bootstrap"
     || entry.source === "thread.selection"
     || entry.source === "workspace.header.tabs"
