@@ -45,6 +45,7 @@ import {
   type ReviewProvider,
   type ProviderOptionSelection,
   type SendChatMessageInput,
+  type SlashCommand,
   type SlashCommandCatalog,
   type UpdateQueuedMessageInput,
   type UpdateChatThreadAgentSelectionInput,
@@ -576,6 +577,29 @@ function mergeSlashCommands(...catalogs: ReadonlyArray<ReadonlyArray<{ name: str
   }
 
   return Array.from(merged.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+async function resolveSkillsForPromptNormalization(
+  agent: CliAgent,
+  worktreePath: string,
+): Promise<SlashCommand[] | null> {
+  if (agent === "codex" || agent === "opencode") {
+    return listCodexSkills(worktreePath);
+  }
+
+  if (agent === "cursor") {
+    const localSkills = listCodexSkills(worktreePath);
+    try {
+      return mergeSlashCommands(
+        await listCursorSlashCommands({ cwd: worktreePath }),
+        localSkills,
+      );
+    } catch {
+      return localSkills;
+    }
+  }
+
+  return null;
 }
 
 function getReviewThreadTitle(provider: ReviewProvider): string {
@@ -1403,8 +1427,12 @@ export function createChatService(deps: RuntimeDeps) {
       delta: params.content,
     });
 
-    const normalizedContent = thread.agent === "codex" || thread.agent === "cursor" || thread.agent === "opencode"
-      ? normalizeCodexSkillSlashCommandsForPrompt(params.content, listCodexSkills(thread.worktree.path))
+    const skillsForNormalization = await resolveSkillsForPromptNormalization(
+      thread.agent,
+      thread.worktree.path,
+    );
+    const normalizedContent = skillsForNormalization
+      ? normalizeCodexSkillSlashCommandsForPrompt(params.content, skillsForNormalization)
       : params.content;
     const imageAttachments = attachmentRecords.filter((attachment) => isImageMimeType(attachment.mimeType));
     const promptWithAttachments = buildPromptWithAttachments(normalizedContent, attachmentRecords, {

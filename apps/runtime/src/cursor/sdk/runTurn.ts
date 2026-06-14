@@ -217,7 +217,11 @@ async function runCursorSdkTurnAttempt(
     model: params.model,
     mcpServers: params.mcpServers,
     mode: resolveCursorSdkMode(params.permissionMode),
-    settingSources: permissionHookProject ? ["project"] : undefined,
+    // "user" loads home skill roots (~/.agents/skills, ~/.claude/skills) so user
+    // skills like caveman reach the cursor model. "project" loads the workspace
+    // .cursor config plus the permission hook's .cursor/settings.json (ephemeral
+    // hook dir) when present.
+    settingSources: ["project", "user"],
     ephemeral: Boolean(permissionHookProject),
     onSessionId: params.onSessionId,
   });

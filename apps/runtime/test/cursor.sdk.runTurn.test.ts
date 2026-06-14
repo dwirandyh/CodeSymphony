@@ -189,10 +189,29 @@ describe("Cursor SDK run turn", () => {
           "/tmp/project",
           expect.stringContaining("codesymphony-cursor-sdk-permissions-"),
         ],
-        settingSources: ["project"],
+        settingSources: ["project", "user"],
       },
     });
     expect(fakeCursorSdkAgents.get("agent-1")?.closed).toBe(true);
+  });
+
+  it("loads user-scope skills (e.g. ~/.agents/skills) in plan mode without a hook project", async () => {
+    const result = await runCursorSdkTurn({
+      prompt: "Draft plan.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      apiKey: "cursor-key",
+      permissionMode: "plan",
+      ...createCallbacks(),
+    });
+
+    expect(result.sessionId).toBe("agent-1");
+    expect(fakeCursorSdkCreateRequests[0]).toMatchObject({
+      local: {
+        cwd: "/tmp/project",
+        settingSources: ["project", "user"],
+      },
+    });
   });
 
   it("emits cursor.sdk debug entries on a successful turn", async () => {
