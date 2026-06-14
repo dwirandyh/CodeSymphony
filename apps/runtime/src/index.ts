@@ -13,6 +13,7 @@ import { createWorkspaceEventHub } from "./events/workspaceEventHub.js";
 import { runClaudeWithStreaming } from "./claude/sessionRunner.js";
 import { runCodexWithStreaming } from "./codex/sessionRunner.js";
 import { runCursorWithStreaming } from "./cursor/sessionRunner.js";
+import { installCursorSdkProcessGuard, setCursorSdkProcessGuardLogger } from "./cursor/sdk/processGuard.js";
 import { runOpencodeWithStreaming } from "./opencode/sessionRunner.js";
 import { createRepositoryService } from "./services/repositoryService.js";
 import { createWorktreeService } from "./services/worktreeService.js";
@@ -402,6 +403,9 @@ async function restoreBundledDatabaseFromTemplate(
 }
 
 async function main() {
+  installCursorSdkProcessGuard({
+    logger: (message, data) => console.warn(message, data),
+  });
   try {
     // Run Prisma migrations in production before starting the server
     let startupMigrationPlan: PrismaMigrationExecutionPlan | null = null;
@@ -449,6 +453,9 @@ async function main() {
     const startupReadyDelayMs = resolveStartupReadyDelayMs();
 
     const app = createApp();
+    setCursorSdkProcessGuardLogger((message, data) => {
+      app.logService.log("warn", "cursor.sdk.transportGuard", message, data);
+    });
     const database = resolveDatabaseInfo(process.env.DATABASE_URL);
 
     if (startupReadyDelayMs > 0) {

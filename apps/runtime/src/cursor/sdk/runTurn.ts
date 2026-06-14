@@ -11,6 +11,7 @@ import {
   type CursorSdkPermissionBridgeRegistration,
   type CursorSdkPermissionHookProject,
 } from "./permissionsBridge.js";
+import { isCursorSdkHttp2TransportError } from "./transportErrors.js";
 
 type RunnerArgs = Parameters<ChatAgentRunner>[0];
 
@@ -84,11 +85,7 @@ function isRetryableTransportError(error: unknown): boolean {
     return false;
   }
 
-  const code = (error as { code?: unknown }).code;
-  return (
-    code === "ERR_HTTP2_STREAM_ERROR"
-    || /NGHTTP2_FRAME_SIZE_ERROR|ERR_HTTP2_STREAM_ERROR/i.test(error.message)
-  );
+  return isCursorSdkHttp2TransportError(error);
 }
 
 function resolveCursorSdkMode(permissionMode: RunnerArgs["permissionMode"]): AgentOptions["mode"] {
