@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { CircleAlert, CircleCheck, CircleDashed, Loader2 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AgentConfig, CliAgent, TestAgentConfigResult } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { Button } from "../ui/button";
+import { cn } from "../../lib/utils";
+import { AgentIcon } from "./composer/AgentModelSelector";
 
 const SETTINGS_INPUT_CLASS_NAME =
-  "w-full rounded-lg border border-border/60 bg-background/20 px-3 py-2 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30";
+  "h-9 w-full rounded-lg border border-border/60 bg-background/20 px-3 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30";
 
 type PathAgent = Extract<CliAgent, "claude" | "codex" | "opencode">;
 
@@ -43,19 +45,154 @@ const PATH_AGENTS: Array<{
 
 type TestState = Record<string, { loading: boolean; result: TestAgentConfigResult | null }>;
 
-function TestResultText({ result }: { result: TestAgentConfigResult | null }) {
+function TestResultInline({ result }: { result: TestAgentConfigResult | null }) {
   if (!result) return null;
-  if (result.ok) {
-    return (
-      <p className="mt-2 text-[11px] leading-5 text-emerald-500" role="status">
-        {result.detail ?? "Looks good."}
-      </p>
-    );
-  }
+  const ok = result.ok;
+  const text = ok ? (result.detail ?? "Looks good.") : (result.error ?? "Test failed.");
   return (
-    <p className="mt-2 text-[11px] leading-5 text-amber-500" role="status">
-      {result.error ?? "Test failed."}
-    </p>
+    <div
+      role="status"
+      title={text}
+      className={cn(
+        "flex min-w-0 items-center gap-1.5 text-[11px] leading-4",
+        ok ? "text-emerald-500" : "text-amber-500",
+      )}
+    >
+      {ok ? (
+        <CircleCheck className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      ) : (
+        <CircleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      )}
+      <span className="truncate">{text}</span>
+    </div>
+  );
+}
+
+type StatusCardProps = {
+  agent: CliAgent;
+  label: string;
+  ok: boolean;
+  detail: string;
+};
+
+function StatusCard({ agent, label, ok, detail }: StatusCardProps) {
+  return (
+    <div className="rounded-xl border border-border/60 bg-card/30 p-3">
+      <div className="flex items-center justify-between">
+        <AgentIcon agent={agent} className="h-4 w-4 text-muted-foreground" />
+        {ok ? (
+          <CircleCheck className="h-4 w-4 text-emerald-500" aria-label="Configured" />
+        ) : (
+          <CircleDashed className="h-4 w-4 text-muted-foreground" aria-label="Not configured" />
+        )}
+      </div>
+      <div className="mt-3 text-[13px] font-semibold text-foreground">{label}</div>
+      <div className="mt-0.5 text-[11px] text-muted-foreground">{detail}</div>
+    </div>
+  );
+}
+
+type AgentRowProps = {
+  agent: CliAgent;
+  label: string;
+  description: string;
+  inputValue: string;
+  inputAriaLabel: string;
+  inputClassName?: string;
+  inputPlaceholder?: string;
+  inputTestId?: string;
+  inputAutoComplete?: string;
+  onInputChange: (value: string) => void;
+  onTest: () => void;
+  onSave: () => void;
+  testLoading: boolean;
+  testResult: TestAgentConfigResult | null;
+  testDisabled?: boolean;
+  saveDisabled: boolean;
+  testid: string;
+};
+
+/**
+ * Single agent row: 2 baris stabil.
+ * Baris 1: icon + title + description
+ * Baris 2: input + tombol Test/Save (sejajar)
+ * Test result direservasi area-nya (min-h) supaya layout tidak naik/turun.
+ */
+function AgentRow({
+  agent,
+  label,
+  description,
+  inputValue,
+  inputAriaLabel,
+  inputClassName,
+  inputPlaceholder,
+  inputTestId,
+  inputAutoComplete,
+  onInputChange,
+  onTest,
+  onSave,
+  testLoading,
+  testResult,
+  testDisabled,
+  saveDisabled,
+  testid,
+}: AgentRowProps) {
+  return (
+    <div className="flex flex-col gap-3 p-4" data-testid={testid}>
+      {/* Baris 1: icon + title (kiri), test result (kanan, sejajar dengan title) + description di bawah title */}
+      <div className="flex items-start gap-3">
+        <AgentIcon agent={agent} className="mt-0.5 h-4 w-4 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[13px] font-medium text-foreground">{label}</div>
+            {testResult ? (
+              <div className="min-w-0 max-w-[260px]">
+                <TestResultInline result={testResult} />
+              </div>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-[12px] leading-5 text-muted-foreground">{description}</p>
+        </div>
+      </div>
+
+      {/* Baris 2: input + tombol — sejajar di tinggi yang sama */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <input
+          type="text"
+          className={cn(SETTINGS_INPUT_CLASS_NAME, "min-w-0 flex-1", inputClassName)}
+          value={inputValue}
+          aria-label={inputAriaLabel}
+          placeholder={inputPlaceholder}
+          data-testid={inputTestId}
+          autoComplete={inputAutoComplete}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          onChange={(event) => onInputChange(event.target.value)}
+        />
+        <div className="flex shrink-0 gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9"
+            onClick={onTest}
+            disabled={testLoading || testDisabled}
+          >
+            {testLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-9"
+            onClick={onSave}
+            disabled={saveDisabled}
+          >
+            Save
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -148,123 +285,95 @@ export function AgentsSettingsPanel() {
         <p className="text-[12px] text-destructive" role="alert">{saveError}</p>
       ) : null}
 
-      <div className="space-y-3">
+      {/* ── Status overview ── */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {PATH_AGENTS.map(({ agent, configKey, resolvedKey, label }) => {
+          const resolved = config?.[resolvedKey] ?? "";
+          // Resolved path counts as "found" when it has been resolved to a real
+          // filesystem path (contains "/"). A bare command name (e.g. "claude")
+          // means the CLI couldn't be located on PATH.
+          const isResolved = resolved.includes("/");
+          const isCustom = Boolean(config && (config[configKey] ?? "").trim().length > 0);
+          const detail = !config
+            ? "Loading…"
+            : isCustom
+              ? "Custom path"
+              : isResolved
+                ? "System default"
+                : "Not found on PATH";
+          return (
+            <StatusCard
+              key={agent}
+              agent={agent}
+              label={label}
+              ok={isResolved}
+              detail={detail}
+            />
+          );
+        })}
+        <StatusCard
+          agent="cursor"
+          label="Cursor"
+          ok={Boolean(config?.cursorApiKeySet)}
+          detail={config?.cursorApiKeySet ? "Key configured" : "Not configured"}
+        />
+      </div>
+
+      {/* ── Inline action list ── */}
+      <div className="rounded-xl border border-border/60 bg-card/30 divide-y divide-border/40">
         {PATH_AGENTS.map(({ agent, configKey, label, description }) => {
           const test = testState[agent];
-          const isCustom = Boolean(config && (config[configKey] ?? "").trim().length > 0);
           return (
-            <section
+            <AgentRow
               key={agent}
-              className="rounded-xl border border-border/60 bg-card/30 p-4"
-              data-testid={`agent-section-${agent}`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-[13px] font-semibold text-foreground">{label}</h2>
-                <span
-                  className={
-                    isCustom
-                      ? "rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
-                      : "rounded-full bg-secondary/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
-                  }
-                >
-                  {isCustom ? "Custom" : "Default"}
-                </span>
-              </div>
-              <p className="mt-1 max-w-2xl text-[12px] leading-5 text-muted-foreground">{description}</p>
-              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-                <input
-                  type="text"
-                  className={SETTINGS_INPUT_CLASS_NAME}
-                  value={pathValues[agent] ?? ""}
-                  aria-label={`${label} CLI path`}
-                  spellCheck={false}
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  onChange={(event) =>
-                    setPathValues((prev) => ({ ...prev, [agent]: event.target.value }))
-                  }
-                />
-                <div className="flex shrink-0 gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => { void runTest(agent, pathValues[agent] ?? ""); }}
-                    disabled={test?.loading}
-                  >
-                    {test?.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test"}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => handleSavePath(configKey, agent)}
-                    disabled={!dirtyPaths[agent] || updateMutation.isPending}
-                  >
-                    Save
-                  </Button>
-                </div>
-              </div>
-              <TestResultText result={test?.result ?? null} />
-            </section>
+              agent={agent}
+              label={label}
+              description={description}
+              inputValue={pathValues[agent] ?? ""}
+              inputAriaLabel={`${label} CLI path`}
+              onInputChange={(value) =>
+                setPathValues((prev) => ({ ...prev, [agent]: value }))
+              }
+              onTest={() => { void runTest(agent, pathValues[agent] ?? ""); }}
+              onSave={() => handleSavePath(configKey, agent)}
+              testLoading={Boolean(test?.loading)}
+              testResult={test?.result ?? null}
+              saveDisabled={!dirtyPaths[agent] || updateMutation.isPending}
+              testid={`agent-section-${agent}`}
+            />
           );
         })}
 
-        <section
-          className="rounded-xl border border-border/60 bg-card/30 p-4"
-          data-testid="agent-section-cursor"
-        >
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-[13px] font-semibold text-foreground">Cursor</h2>
-            <span
-              className={
-                config?.cursorApiKeySet
-                  ? "rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
-                  : "rounded-full bg-secondary/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
-              }
-            >
-              {config?.cursorApiKeySet ? "Key set" : "Not set"}
-            </span>
-          </div>
-          <p className="mt-1 max-w-2xl text-[12px] leading-5 text-muted-foreground">
-            Cursor uses an API key via the Cursor SDK. When a key is set, only its first and last
-            characters are shown — edit the field to replace it.
-          </p>
-          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-            <input
-              type="text"
-              className={`${SETTINGS_INPUT_CLASS_NAME} font-mono`}
-              value={cursorKeyDraft}
-              data-testid="cursor-key-input"
-              placeholder="Set Cursor API key"
-              aria-label="Cursor API key"
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-              autoComplete="off"
-              onChange={(event) => setCursorKeyDraft(event.target.value)}
-            />
-            <div className="flex shrink-0 gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => { void runTest("cursor", cursorKeyDraft); }}
-                disabled={testState.cursor?.loading || !cursorDirty || cursorKeyDraft.trim().length === 0}
-              >
-                {testState.cursor?.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test"}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => updateMutation.mutate({ cursorApiKey: cursorKeyDraft })}
-                disabled={!cursorDirty || cursorKeyDraft.trim().length === 0 || updateMutation.isPending}
-              >
-                Save
-              </Button>
-            </div>
-          </div>
-          <TestResultText result={testState.cursor?.result ?? null} />
-        </section>
+        <AgentRow
+          agent="cursor"
+          label="Cursor"
+          description="Cursor uses an API key via the Cursor SDK. When a key is set, only its first and last characters are shown — edit the field to replace it."
+          inputValue={cursorKeyDraft}
+          inputAriaLabel="Cursor API key"
+          inputPlaceholder="Set Cursor API key"
+          inputClassName="font-mono"
+          inputTestId="cursor-key-input"
+          inputAutoComplete="off"
+          onInputChange={setCursorKeyDraft}
+          // When the field still shows the masked stored key (not edited), send
+          // an empty string so the backend falls back to the saved key. When
+          // edited, send the new key from the field.
+          onTest={() => {
+            const valueToTest = cursorDirty ? cursorKeyDraft : "";
+            void runTest("cursor", valueToTest);
+          }}
+          onSave={() => updateMutation.mutate({ cursorApiKey: cursorKeyDraft })}
+          testLoading={Boolean(testState.cursor?.loading)}
+          testResult={testState.cursor?.result ?? null}
+          // Test is enabled when there is something to test: either a saved key
+          // exists, or the user has typed a non-empty key into the field.
+          testDisabled={
+            !config?.cursorApiKeySet
+            && (!cursorDirty || cursorKeyDraft.trim().length === 0)
+          }
+          saveDisabled={!cursorDirty || cursorKeyDraft.trim().length === 0 || updateMutation.isPending}
+          testid="agent-section-cursor"
+        />
       </div>
     </div>
   );

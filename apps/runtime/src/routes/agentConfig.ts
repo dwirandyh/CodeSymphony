@@ -6,6 +6,7 @@ import {
 } from "@codesymphony/shared-types";
 import { spawnSync } from "node:child_process";
 import { listCursorSdkModels } from "../cursor/sdk/catalog.js";
+import { getResolvedAgentConfigCached } from "../services/agentConfigService.js";
 
 function readBinaryVersion(command: string): { ok: boolean; detail?: string; error?: string } {
   const result = spawnSync(command, ["--version"], {
@@ -56,11 +57,14 @@ export async function registerAgentConfigRoutes(app: FastifyInstance) {
     let result: TestAgentConfigResult;
 
     if (input.agent === "cursor") {
-      if (!value) {
+      // When the field is left empty, fall back to the saved key so the user can
+      // re-validate an already-stored Cursor API key without retyping it.
+      const apiKey = value || getResolvedAgentConfigCached().cursorApiKey?.trim() || "";
+      if (!apiKey) {
         result = { ok: false, error: "Cursor API key is required to test." };
       } else {
         try {
-          const models = await listCursorSdkModels({ apiKey: value });
+          const models = await listCursorSdkModels({ apiKey });
           result = { ok: true, detail: `${models.length} model(s) available` };
         } catch (error) {
           const message = error instanceof Error ? error.message : "Cursor authentication failed";
