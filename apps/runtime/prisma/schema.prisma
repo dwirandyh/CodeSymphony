@@ -311,6 +311,15 @@ model AppSettings {
   updatedAt DateTime @updatedAt
 }
 
+model AgentConfig {
+  id           String   @id @default("singleton")
+  claudePath   String?
+  codexPath    String?
+  opencodePath String?
+  cursorApiKey String?
+  updatedAt    DateTime @updatedAt
+}
+
 model Automation {
   id              String                   @id @default(cuid())
   repositoryId    String

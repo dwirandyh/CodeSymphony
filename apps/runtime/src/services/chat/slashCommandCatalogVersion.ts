@@ -9,6 +9,8 @@ import {
   buildExecutableCandidates,
 } from "../../claude/executableResolver.js";
 import { resolveOpencodeBinaryPath } from "../../opencode/binary.js";
+import { resolveCodexBinaryPath } from "../../codex/sessionRunner.js";
+import { getResolvedAgentConfigCached } from "../agentConfigService.js";
 import { resolveCodexSkillCatalogCacheVersion } from "./codexSkills.js";
 
 const AGENT_VERSION_CACHE_TTL_MS = 5 * 60_000;
@@ -43,7 +45,9 @@ function readBinaryVersion(command: string, env: NodeJS.ProcessEnv = process.env
 }
 
 function resolveClaudeBinaryVersion(): string | null {
-  const configuredExecutable = process.env.CLAUDE_CODE_EXECUTABLE?.trim() || DEFAULT_CLAUDE_EXECUTABLE;
+  const configuredExecutable = getResolvedAgentConfigCached().claudePath?.trim()
+    || process.env.CLAUDE_CODE_EXECUTABLE?.trim()
+    || DEFAULT_CLAUDE_EXECUTABLE;
   for (const candidate of buildExecutableCandidates(configuredExecutable)) {
     const version = readBinaryVersion(candidate);
     if (version) {
@@ -60,7 +64,7 @@ function resolveAgentBinaryVersion(agent: CliAgent): string | null {
   }
 
   if (agent === "codex") {
-    return readBinaryVersion(process.env.CODEX_BINARY_PATH?.trim() || "codex");
+    return readBinaryVersion(resolveCodexBinaryPath());
   }
 
   if (agent === "cursor") {

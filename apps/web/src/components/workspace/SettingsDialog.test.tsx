@@ -539,8 +539,10 @@ describe("SettingsDialog", () => {
     const menuButtons = Array.from(navigation.querySelectorAll("button"));
     expect(menuButtons[0]?.textContent?.trim()).toBe("General");
     expect(menuButtons[1]?.textContent?.trim()).toBe("Workspace");
-    expect(menuButtons[3]?.textContent?.trim()).toBe("Shortcuts");
-    expect(menuButtons[4]?.textContent?.trim()).toBe("Licenses");
+    expect(menuButtons[2]?.textContent?.trim()).toBe("Agents");
+    expect(menuButtons[3]?.textContent?.trim()).toBe("Models");
+    expect(menuButtons[4]?.textContent?.trim()).toBe("Shortcuts");
+    expect(menuButtons[5]?.textContent?.trim()).toBe("Licenses");
   });
 
   it("renders mobile settings as a menu that opens a detail page", async () => {

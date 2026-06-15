@@ -27,6 +27,7 @@ import {
   captureStderrLine,
   withClaudeSetupHint,
 } from "./executableResolver.js";
+import { getResolvedAgentConfigCached } from "../services/agentConfigService.js";
 import { buildClaudeRuntimeEnv } from "./shellEnv.js";
 import type { SessionMaps } from "./sessionInstrumentation.js";
 import { createEmitInstrumentation, createEmitDecision, createMarkStarted } from "./sessionInstrumentation.js";
@@ -434,7 +435,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     onSubagentStopped,
   };
 
-  const configuredExecutable = process.env.CLAUDE_CODE_EXECUTABLE?.trim() || DEFAULT_CLAUDE_EXECUTABLE;
+  const configuredExecutable = getResolvedAgentConfigCached().claudePath?.trim()
+    || process.env.CLAUDE_CODE_EXECUTABLE?.trim()
+    || DEFAULT_CLAUDE_EXECUTABLE;
 
   const resolvedClaudeRuntimeEnv = buildClaudeRuntimeEnv({
     ...process.env,

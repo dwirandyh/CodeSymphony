@@ -1,9 +1,15 @@
 import { dirname } from "node:path";
+import { getResolvedAgentConfigCached } from "../services/agentConfigService.js";
 
 export function resolveOpencodeBinaryPath(): string {
-  const configuredBinaryPath = process.env.OPENCODE_BINARY_PATH?.trim();
-  return configuredBinaryPath && configuredBinaryPath.length > 0
-    ? configuredBinaryPath
+  const configuredPath = getResolvedAgentConfigCached().opencodePath?.trim();
+  if (configuredPath && configuredPath.length > 0) {
+    return configuredPath;
+  }
+
+  const envBinaryPath = process.env.OPENCODE_BINARY_PATH?.trim();
+  return envBinaryPath && envBinaryPath.length > 0
+    ? envBinaryPath
     : "opencode";
 }
 
