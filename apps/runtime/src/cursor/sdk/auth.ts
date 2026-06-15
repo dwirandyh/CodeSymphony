@@ -1,12 +1,17 @@
+import { getResolvedAgentConfigCached } from "../../services/agentConfigService.js";
+
 const CURSOR_PROVIDER_UNSUPPORTED_MESSAGE =
   "Cursor uses the authenticated Cursor account via the Cursor SDK and does not support custom provider base URLs or API keys.";
 
 export function resolveCursorApiKey(env: NodeJS.ProcessEnv = process.env): string {
-  const key = env.CURSOR_API_KEY?.trim();
+  const configuredKey = getResolvedAgentConfigCached().cursorApiKey?.trim();
+  const key = (configuredKey && configuredKey.length > 0)
+    ? configuredKey
+    : env.CURSOR_API_KEY?.trim();
   if (!key) {
     throw new Error([
       "CURSOR_API_KEY is required for the Cursor SDK.",
-      "Set `CURSOR_API_KEY` in apps/runtime/.env and restart the runtime.",
+      "Set a Cursor API key in Settings → Agents, or set `CURSOR_API_KEY` in apps/runtime/.env.",
     ].join("\n"));
   }
 

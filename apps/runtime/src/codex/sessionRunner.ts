@@ -11,6 +11,7 @@ import {
   type SlashCommand,
 } from "@codesymphony/shared-types";
 import { DEFAULT_CODEX_MODEL_FALLBACK } from "../agentModelDefaults.js";
+import { getResolvedAgentConfigCached } from "../services/agentConfigService.js";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import {
   buildCollaborationMode,
@@ -143,7 +144,13 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
-const CODEX_BINARY = process.env.CODEX_BINARY_PATH ?? "codex";
+export function resolveCodexBinaryPath(): string {
+  const configuredPath = getResolvedAgentConfigCached().codexPath?.trim();
+  if (configuredPath && configuredPath.length > 0) {
+    return configuredPath;
+  }
+  return process.env.CODEX_BINARY_PATH?.trim() || "codex";
+}
 const REQUEST_TIMEOUT_MS = 20_000;
 export const CODEX_FIRST_TURN_SIGNAL_TIMEOUT_MS = 3 * 60_000;
 const CODEX_CUSTOM_PROVIDER_ID = "codesymphony_custom";
@@ -307,7 +314,7 @@ async function withCodexAppServerSession<T>(params: {
     providerApiKey: params.providerApiKey,
     providerBaseUrl: params.providerBaseUrl,
   });
-  const child = spawn(CODEX_BINARY, args, {
+  const child = spawn(resolveCodexBinaryPath(), args, {
     cwd: params.cwd,
     env,
     stdio: ["pipe", "pipe", "pipe"],
@@ -776,7 +783,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     providerApiKey,
     providerBaseUrl,
   });
-  const child = spawn(CODEX_BINARY, runtimeArgs, {
+  const child = spawn(resolveCodexBinaryPath(), runtimeArgs, {
     cwd,
     env: runtimeEnv,
     stdio: ["pipe", "pipe", "pipe"],

@@ -51,6 +51,9 @@ export const queryKeys = {
     cursorCatalog: ["models", "cursor", "catalog"] as const,
     opencodeCatalog: ["models", "opencode", "catalog"] as const,
   },
+  agentConfig: {
+    all: ["agentConfig"] as const,
+  },
   runtime: {
     info: ["runtime", "info"] as const,
   },

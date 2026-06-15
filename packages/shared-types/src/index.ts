@@ -1,4 +1,5 @@
 export * from "./workflow.js";
+export * from "./agentConfig.js";
 export * from "./modelOptions.js";
 export * from "./modelCapabilities.js";
 export * from "./cursorSdkModelSelection.js";

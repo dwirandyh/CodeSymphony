@@ -26,6 +26,7 @@ import { createLogService } from "./services/logService.js";
 import { createFilesystemService } from "./services/filesystemService.js";
 import { createScriptStreamService } from "./services/scriptStreamService.js";
 import { createModelProviderService } from "./services/modelProviderService.js";
+import { createAgentConfigService } from "./services/agentConfigService.js";
 import { createReviewService } from "./services/reviewService.js";
 import { createDeviceService } from "./services/deviceService.js";
 import { createWorktreeDeletionService } from "./services/worktreeDeletionService.js";
@@ -43,6 +44,7 @@ import { registerLogRoutes } from "./routes/logs.js";
 import { registerFilesystemRoutes } from "./routes/filesystem.js";
 import { appendRuntimeDebugLog, registerDebugRoutes, resolveDatabaseInfo } from "./routes/debug.js";
 import { registerModelRoutes } from "./routes/models.js";
+import { registerAgentConfigRoutes } from "./routes/agentConfig.js";
 import { registerWorkspaceEventRoutes } from "./routes/workspaceEvents.js";
 import { registerWorkspaceLiveSocketRoutes } from "./routes/workspaceLiveSocket.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
@@ -69,6 +71,7 @@ declare module "fastify" {
     filesystemService: ReturnType<typeof createFilesystemService>;
     scriptStreamService: ReturnType<typeof createScriptStreamService>;
     modelProviderService: ReturnType<typeof createModelProviderService>;
+    agentConfigService: ReturnType<typeof createAgentConfigService>;
     reviewService: ReturnType<typeof createReviewService>;
     deviceService: ReturnType<typeof createDeviceService>;
     worktreeDeletionService: ReturnType<typeof createWorktreeDeletionService>;
@@ -111,6 +114,7 @@ function createApp() {
   const filesystemService = createFilesystemService();
   const scriptStreamService = createScriptStreamService();
   const modelProviderService = createModelProviderService(prisma);
+  const agentConfigService = createAgentConfigService(prisma);
   const reviewService = createReviewService(prisma);
   const deviceService = createDeviceService(logService);
   const resourceMonitorSessionTracker = createResourceMonitorSessionTracker();
@@ -181,6 +185,7 @@ function createApp() {
   app.decorate("filesystemService", filesystemService);
   app.decorate("scriptStreamService", scriptStreamService);
   app.decorate("modelProviderService", modelProviderService);
+  app.decorate("agentConfigService", agentConfigService);
   app.decorate("reviewService", reviewService);
   app.decorate("deviceService", deviceService);
   app.decorate("worktreeDeletionService", worktreeDeletionService);
@@ -228,6 +233,7 @@ function createApp() {
   app.register(registerFilesystemRoutes, { prefix: "/api" });
   app.register(registerDebugRoutes, { prefix: "/api" });
   app.register(registerModelRoutes, { prefix: "/api" });
+  app.register(registerAgentConfigRoutes, { prefix: "/api" });
   app.register(registerWorkspaceEventRoutes, { prefix: "/api" });
   app.register(registerWorkspaceLiveSocketRoutes, { prefix: "/api" });
   app.register(registerDeviceRoutes, { prefix: "/api" });
@@ -295,6 +301,14 @@ async function runPostListenStartupTasks(app: ReturnType<typeof createApp>) {
   let recoveredPendingCreationCount = 0;
   let recoveredPendingDeletionCount = 0;
   let recoveredAutomationRunCount = 0;
+
+  try {
+    await app.agentConfigService.loadCache();
+  } catch (error) {
+    app.logService.log("error", "runtime.startup", "Failed to load agent config cache", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   try {
     recoveredStuckThreadCount = await app.chatService.recoverStuckThreads();

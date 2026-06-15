@@ -22,6 +22,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
+import { AgentsSettingsPanel } from "./AgentsSettingsPanel";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -79,12 +80,13 @@ import {
   resolveWorkspaceShortcutPlatform,
 } from "./keyboardShortcuts";
 
-export type SettingsTab = "general" | "workspace" | "models" | "shortcuts" | "licenses";
+export type SettingsTab = "general" | "workspace" | "agents" | "models" | "shortcuts" | "licenses";
 type SaveAutomationTemplate = "custom_generic" | "flutter_hot_reload";
 
 const SETTINGS_TAB_DESCRIPTIONS: Record<SettingsTab, string> = {
   general: "Preferences, notifications, and completion feedback.",
   workspace: "Repository defaults, scripts, and save automation.",
+  agents: "Custom CLI paths and credentials for each agent.",
   models: "Default agents and custom model providers.",
   shortcuts: "Keyboard shortcuts available in the workspace.",
   licenses: "Open source licenses bundled with the app.",
@@ -818,6 +820,19 @@ export function SettingsDialog({
   }, [activeTab, open, refreshProviders]);
 
   useEffect(() => {
+    if (!open) {
+      return;
+    }
+    // Prefetch agent config as soon as Settings opens so the Agents tab is
+    // populated instantly when selected, instead of showing a loading state.
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.agentConfig.all,
+      queryFn: () => api.getAgentConfig(),
+      staleTime: 60_000,
+    });
+  }, [open, queryClient]);
+
+  useEffect(() => {
     onProvidersChanged?.(providers);
   }, [onProvidersChanged, providers]);
 
@@ -1298,6 +1313,7 @@ export function SettingsDialog({
   const primarySettingsTabs: Array<{ id: SettingsTab; label: string }> = [
     { id: "general", label: "General" },
     { id: "workspace", label: "Workspace" },
+    { id: "agents", label: "Agents" },
     { id: "models", label: "Models" },
     { id: "shortcuts", label: "Shortcuts" },
   ];
@@ -1307,6 +1323,7 @@ export function SettingsDialog({
   const mobileSettingsTabs = [
     { id: "general", label: "General", icon: SlidersHorizontal },
     { id: "workspace", label: "Workspace", icon: FolderGit2 },
+    { id: "agents", label: "Agents", icon: Bot },
     { id: "models", label: "Models", icon: Bot },
     { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
     { id: "licenses", label: "Licenses", icon: ScrollText },
@@ -1884,6 +1901,8 @@ export function SettingsDialog({
                   </div>
                 )}
               </div>
+            ) : activeTab === "agents" ? (
+              <AgentsSettingsPanel />
             ) : activeTab === "models" ? (
               <div className="space-y-5">
                 <div className="hidden md:block">

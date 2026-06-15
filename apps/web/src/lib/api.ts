@@ -65,6 +65,10 @@ import type {
   StopDeviceStreamInput,
   TerminalTab,
   TestModelProviderInput,
+  TestAgentConfigInput,
+  TestAgentConfigResult,
+  AgentConfig,
+  UpdateAgentConfigInput,
   UpdateAutomationInput,
   UpdateAndroidClipboardInput,
   UpdateWorktreeFileContentInput,
@@ -1184,6 +1188,17 @@ export const api = {
   },
   testModelProvider: (input: TestModelProviderInput) =>
     request<{ success: boolean; error?: string }>("/model-providers/test", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  getAgentConfig: () => request<AgentConfig>("/settings/agents"),
+  updateAgentConfig: (input: UpdateAgentConfigInput) =>
+    request<AgentConfig>("/settings/agents", {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+  testAgentConfig: (input: TestAgentConfigInput) =>
+    request<TestAgentConfigResult>("/settings/agents/test", {
       method: "POST",
       body: JSON.stringify(input),
     }),
