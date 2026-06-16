@@ -1055,5 +1055,7 @@ export function useWorkspaceFileEditor({
     quickFilePicker,
     recentFilePaths,
     workspaceFileTabs,
+    activeWorktreeEditorStates,
+    activeWorktreeGitBaselines,
   };
 }
