@@ -99,6 +99,8 @@ type ComposerProps = {
   stopping: boolean;
   attachedTop?: boolean;
   focusSignal?: number;
+  /** Split panes: activate this editor group when the composer is tapped. */
+  onFocusPane?: () => void;
   threadId: string | null;
   worktreeId: string | null;
   mode: ChatMode;
@@ -289,6 +291,7 @@ function ComposerContent({
   stopping,
   attachedTop = false,
   focusSignal,
+  onFocusPane,
   threadId,
   worktreeId,
   mode,
@@ -1096,6 +1099,34 @@ function ComposerContent({
     event.preventDefault();
   }, []);
 
+  const handleComposerPointerDownCapture = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (disabled) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      if (target.closest("[data-attachment-id]")) {
+        return;
+      }
+
+      onFocusPane?.();
+
+      const editor = editorRef.current;
+      if (!editor) {
+        return;
+      }
+      if (target === editor || editor.contains(target)) {
+        window.requestAnimationFrame(() => {
+          editor.focus({ preventScroll: true });
+        });
+      }
+    },
+    [disabled, onFocusPane],
+  );
+
   const handleEditorAttachmentClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target instanceof HTMLElement
       ? event.target.closest<HTMLElement>("[data-attachment-id]")
@@ -1618,6 +1649,7 @@ function ComposerContent({
           onDragEnter={handleComposerDragEnter}
           onDragLeave={handleComposerDragLeave}
           onDrop={handleComposerDrop}
+          onPointerDownCapture={handleComposerPointerDownCapture}
         >
           <div
             ref={setComposerPopoverHost}

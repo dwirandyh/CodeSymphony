@@ -60,6 +60,7 @@ export interface ChatPaneProps {
   sendMessagesWith?: SendMessagesWith;
   autoConvertLongTextEnabled?: boolean;
   focusSignal?: number;
+  onFocusPane?: () => void;
   // Cross-cutting thread-list mutations live in the parent useChatSession; each
   // is thread-explicit so a pane always targets its OWN thread.
   onSubmitMessage: (
@@ -109,6 +110,7 @@ export function ChatPane({
   sendMessagesWith,
   autoConvertLongTextEnabled,
   focusSignal,
+  onFocusPane,
   onSubmitMessage,
   onSetThreadMode,
   onSetThreadAgentSelection,
@@ -310,6 +312,7 @@ export function ChatPane({
             attachedTop={false}
             disabled={session.composerDisabled || gates.planActionBusy}
             focusSignal={focusSignal && focusSignal > 0 ? focusSignal : undefined}
+            onFocusPane={onFocusPane}
             sending={false}
             showStop={session.showStopAction}
             stopping={session.stoppingRun}

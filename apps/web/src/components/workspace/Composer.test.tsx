@@ -388,6 +388,33 @@ describe("Composer", () => {
     expect(document.activeElement).toBe(editor);
   });
 
+  it("calls onFocusPane and focuses the editor when tapping the composer shell", async () => {
+    const onFocusPane = vi.fn();
+    renderComposer({ onFocusPane });
+    const editor = getEditor();
+    editor.blur();
+
+    const shell = editor.parentElement;
+    expect(shell).not.toBeNull();
+
+    if (typeof globalThis.PointerEvent === "undefined") {
+      globalThis.PointerEvent = class extends MouseEvent {
+        constructor(type: string, init?: PointerEventInit) {
+          super(type, init);
+        }
+      } as typeof PointerEvent;
+    }
+
+    await act(async () => {
+      shell!.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, cancelable: true }),
+      );
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
+
+    expect(onFocusPane).toHaveBeenCalledTimes(1);
+  });
+
   it("renders the focus shortcut hint with the focus-within hiding rule", () => {
     Object.defineProperty(window.navigator, "platform", {
       value: "MacIntel",

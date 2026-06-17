@@ -2587,6 +2587,7 @@ export function WorkspacePage() {
     bottomRight: 0,
   });
   const focusComposerTargetGroupRef = useRef<EditorQuadrantId>("topLeft");
+  const editorGroupsRef = useRef<EditorGroupsState>(createEmptyEditorGroupsState());
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
   const openSettingsDialog = useCallback(() => {
@@ -4349,8 +4350,9 @@ export function WorkspacePage() {
   }, [visibleEditorColumns.length]);
 
   useEffect(() => {
+    editorGroupsRef.current = editorGroups;
     focusComposerTargetGroupRef.current = editorGroups.activeGroupId;
-  }, [editorGroups.activeGroupId]);
+  }, [editorGroups]);
 
   useEffect(() => {
     if (!editorGroups.splitMode) {
@@ -4467,7 +4469,7 @@ export function WorkspacePage() {
 
   const handleFocusGroup = useCallback((groupId: EditorQuadrantId) => {
     logEditorGridFocusAttempt("focusGroup", { groupId, refTarget: focusComposerTargetGroupRef.current }, repos.selectedWorktreeId);
-    const group = editorGroups.groups[groupId];
+    const group = editorGroupsRef.current.groups[groupId];
     const activeTab = group.tabs.find((t) => t.id === group.activeTabId);
     if (activeTab?.type === "chat") {
       setFocusComposerSignalByGroup((signals) => ({
@@ -4491,7 +4493,7 @@ export function WorkspacePage() {
       }
       return { ...current, activeGroupId: groupId };
     });
-  }, [editorGroups.groups, repos.selectedWorktreeId, syncTabToUrl]);
+  }, [repos.selectedWorktreeId, syncTabToUrl]);
 
   const handleSelectGroupTab = useCallback((groupId: EditorQuadrantId, tab: TabItem) => {
     setEditorGroups((current) => {
@@ -4696,6 +4698,7 @@ export function WorkspacePage() {
             onError={setError}
             onOpenReadFile={openReadFile}
             focusSignal={focusComposerSignalByGroup[groupId] > 0 ? focusComposerSignalByGroup[groupId] : undefined}
+            onFocusPane={() => handleFocusGroup(groupId)}
             onAgentModelSelectorOpen={handleOpenAgentModelSelector}
           />
         </Suspense>
