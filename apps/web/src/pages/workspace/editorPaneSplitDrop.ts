@@ -5,6 +5,7 @@ import {
   moveTabToQuadrant,
 } from "./editorGroups";
 import type { EditorQuadrantId } from "./editorGroupTypes";
+import { columnIndex, firstEmptyColumnToTheRight, HORIZONTAL_EDITOR_COLUMN_IDS } from "./editorColumns";
 import { PANE_EDGE_BAND_RATIO } from "./editorPaneSplitDropConstants";
 
 export { PANE_EDGE_BAND_RATIO } from "./editorPaneSplitDropConstants";
@@ -40,6 +41,7 @@ export function resolvePaneEdgeFromPointer(args: {
 export function resolvePaneSplitDropTarget(args: {
   layout: import("./editorGroupTypes").EditorLayoutMode;
   paneGroupId: EditorQuadrantId;
+  groups: EditorGroupsState["groups"];
   rect: Pick<DOMRect, "left" | "top" | "width" | "height">;
   clientX: number;
   clientY: number;
@@ -53,7 +55,7 @@ export function resolvePaneSplitDropTarget(args: {
     return null;
   }
 
-  const { layout, paneGroupId } = args;
+  const { layout, paneGroupId, groups } = args;
 
   if (layout === "single" && paneGroupId === "topLeft") {
     if (edge === "right") return "split-right";
@@ -61,9 +63,19 @@ export function resolvePaneSplitDropTarget(args: {
   }
 
   if (layout === "horizontal") {
-    if (paneGroupId === "topLeft" && edge === "right") return "split-right";
-    if (paneGroupId === "topRight" && edge === "left") return "move-to-left";
-    if (paneGroupId === "topRight" && edge === "right") return "move-to-right";
+    const idx = columnIndex(paneGroupId);
+    if (edge === "left" && idx > 0) {
+      return "move-to-left";
+    }
+    if (edge === "right") {
+      const empty = firstEmptyColumnToTheRight(groups, paneGroupId);
+      if (empty) {
+        return "split-right";
+      }
+      if (idx < HORIZONTAL_EDITOR_COLUMN_IDS.length - 1) {
+        return "move-to-right";
+      }
+    }
   }
 
   return null;
@@ -90,7 +102,10 @@ export function applyEditorTabPaneDrop(
   }
 
   const edge = paneEdgeFromLegacyTarget(target);
-  const dest = destinationForPaneSplit(sourcePane, edge);
+  const dest = destinationForPaneSplit(state.groups, sourcePane, edge);
+  if (dest === sourcePane && (target === "split-right" || target === "move-to-right")) {
+    return state;
+  }
   const layout = layoutAfterPaneSplitEdge(state.layout, edge);
   return moveTabToQuadrant(state, tabId, dest, layout);
 }

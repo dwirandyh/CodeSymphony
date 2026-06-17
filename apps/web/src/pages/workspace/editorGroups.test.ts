@@ -5,6 +5,7 @@ import {
   createEmptyEditorGroupsState,
   reconcileEditorGroups,
   moveTabToQuadrant,
+  moveTabToGroup,
   splitActiveTab,
   closeTabInGroup,
   reorderTabInGroup,
@@ -64,8 +65,9 @@ describe("editorGroups state management", () => {
         { type: "file", id: "a.ts" },
         { type: "chat", id: "t1" },
       ]);
-      expect(reconciled.layout).toBe("single");
-      expect(reconciled.groups.topLeft.tabs.map((t) => t.id)).toEqual(["a.ts", "t1"]);
+      expect(reconciled.layout).toBe("horizontal");
+      expect(reconciled.groups.topLeft.tabs.map((t) => t.id)).toEqual(["a.ts"]);
+      expect(reconciled.groups.topRight.tabs.map((t) => t.id)).toEqual(["t1"]);
       expect(reconciled.groups.bottomLeft.tabs).toHaveLength(0);
     });
   });
@@ -93,7 +95,7 @@ describe("editorGroups state management", () => {
       expect(result.groups.topLeft.tabs.map((t) => t.id)).toEqual(["thread1"]);
     });
 
-    it("maps bottomLeft target to topRight", () => {
+    it("opens third column when moving to bottomLeft slot", () => {
       const state: EditorGroupsState = {
         ...createEmptyEditorGroupsState(),
         groups: {
@@ -108,13 +110,46 @@ describe("editorGroups state management", () => {
         },
       };
 
-      const result = moveTabToQuadrant(state, "a.ts", "bottomLeft", "horizontal");
+      const withRight: EditorGroupsState = {
+        ...state,
+        layout: "horizontal",
+        groups: {
+          ...state.groups,
+          topRight: { tabs: [{ type: "file", id: "b.ts" }], activeTabId: "b.ts" },
+        },
+      };
+      const result = moveTabToQuadrant(withRight, "a.ts", "bottomLeft", "horizontal");
       expect(result.layout).toBe("horizontal");
-      expect(result.groups.topRight.tabs[0]?.id).toBe("a.ts");
+      expect(result.groups.bottomLeft.tabs[0]?.id).toBe("a.ts");
     });
   });
 
   describe("splitActiveTab", () => {
+    it("opens third column when two columns already filled", () => {
+      const state: EditorGroupsState = {
+        ...createEmptyEditorGroupsState(),
+        layout: "horizontal",
+        activeGroupId: "topLeft",
+        groups: {
+          ...createEmptyEditorGroupsState().groups,
+          topLeft: {
+            tabs: [
+              { type: "file", id: "file1.ts" },
+              { type: "chat", id: "thread1" },
+            ],
+            activeTabId: "file1.ts",
+          },
+          topRight: {
+            tabs: [{ type: "chat", id: "thread2" }],
+            activeTabId: "thread2",
+          },
+        },
+      };
+      const result = splitActiveTab(state);
+      expect(result.groups.bottomLeft.tabs[0]?.id).toBe("file1.ts");
+      expect(result.groups.topLeft.tabs.map((t) => t.id)).toEqual(["thread1"]);
+    });
+
     it("splits active tab to topRight", () => {
       const state: EditorGroupsState = {
         ...createEmptyEditorGroupsState(),
@@ -137,14 +172,51 @@ describe("editorGroups state management", () => {
   });
 
   describe("pane split helpers", () => {
-    it("maps edges to topLeft / topRight only", () => {
-      expect(destinationForPaneSplit("topLeft", "right")).toBe("topRight");
-      expect(destinationForPaneSplit("topRight", "left")).toBe("topLeft");
+    it("maps edges using column order up to four panes", () => {
+      const groups = createEmptyEditorGroupsState().groups;
+      expect(destinationForPaneSplit(groups, "topLeft", "right")).toBe("topRight");
+      const twoCols: EditorGroupsState["groups"] = {
+        ...groups,
+        topLeft: { tabs: [{ type: "file" as const, id: "a" }], activeTabId: "a" },
+        topRight: { tabs: [{ type: "file" as const, id: "b" }], activeTabId: "b" },
+      };
+      expect(destinationForPaneSplit(twoCols, "topRight", "right")).toBe("bottomLeft");
+      expect(destinationForPaneSplit(twoCols, "topRight", "left")).toBe("topLeft");
     });
 
     it("always enables horizontal layout from pane split edge", () => {
       expect(layoutAfterPaneSplitEdge("single", "right")).toBe("horizontal");
       expect(layoutAfterPaneSplitEdge("horizontal", "left")).toBe("horizontal");
+    });
+  });
+
+  describe("moveTabToGroup", () => {
+    it("inserts moved tab at target index in another column", () => {
+      const state: EditorGroupsState = {
+        ...createEmptyEditorGroupsState(),
+        layout: "horizontal",
+        activeGroupId: "topLeft",
+        groups: {
+          ...createEmptyEditorGroupsState().groups,
+          topLeft: {
+            tabs: [
+              { type: "chat", id: "thread-1" },
+              { type: "file", id: "a.ts" },
+            ],
+            activeTabId: "thread-1",
+          },
+          topRight: {
+            tabs: [{ type: "file", id: "b.ts" }],
+            activeTabId: "b.ts",
+          },
+        },
+      };
+
+      const result = moveTabToGroup(state, "a.ts", "topRight", 0);
+
+      expect(result.activeGroupId).toBe("topRight");
+      expect(result.groups.topRight.tabs.map((t) => t.id)).toEqual(["a.ts", "b.ts"]);
+      expect(result.groups.topLeft.tabs.map((t) => t.id)).toEqual(["thread-1"]);
     });
   });
 

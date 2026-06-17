@@ -8,7 +8,6 @@ import {
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
-  Columns2,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -89,15 +88,12 @@ type WorkspaceHeaderProps = {
   onToggleLeftPanel?: () => void;
   mergeWithContent?: boolean;
   resourceMonitor?: ReactNode;
-  onToggleSplit?: () => void;
   /** When provided (split mode), replaces the single default strip with caller-supplied per-pane strips while keeping the add + history controls in the same row. */
   splitTabStrips?: ReactNode;
   /** When provided, drives the visible tab order (e.g. from the active editor group) instead of the legacy section order. */
   orderedTabs?: TabItem[];
   /** Reorder a tab within the header row; enables in-row drag reordering when provided. */
   onReorderTab?: (tabId: string, toIndex: number) => void;
-  /** Optional per-tab quick-split action shown as a Columns2 button. */
-  onSplitTab?: (tab: TabItem) => void;
   onTabDragStart?: () => void;
   onTabDragEnd?: () => void;
 };
@@ -166,11 +162,9 @@ export function WorkspaceHeader({
   leftPanelVisible = true,
   onToggleLeftPanel,
   resourceMonitor,
-  onToggleSplit,
   splitTabStrips,
   orderedTabs,
   onReorderTab,
-  onSplitTab,
   onTabDragStart,
   onTabDragEnd,
   mergeWithContent = false,
@@ -515,21 +509,6 @@ export function WorkspaceHeader({
             </Button>
           )}
 
-          {onToggleSplit && (
-            <Button
-              type="button"
-              variant="secondary"
-              size="icon"
-              disabled={disabled}
-              aria-label="Split editor"
-              title="Split editor"
-              className="h-9 w-9 shrink-0"
-              onClick={onToggleSplit}
-              data-testid="workspace-split-editor-trigger"
-            >
-              <Columns2 className="h-4 w-4" />
-            </Button>
-          )}
         </div>
       </div>
 
@@ -600,7 +579,6 @@ export function WorkspaceHeader({
                 onCloseFileTab(tab.id);
               }
             }}
-            onSplitTab={onSplitTab}
             onReorderTab={onReorderTab}
             onPinFileTab={onPinFileTab}
             onRenameThread={onRenameThread}

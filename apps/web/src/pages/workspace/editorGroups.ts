@@ -4,8 +4,15 @@ import {
   EDITOR_QUADRANT_IDS,
   isEditorQuadrantId,
   layoutAfterEnablingHorizontalSplit,
-  visibleQuadrantsForLayout,
 } from "./editorGroupTypes";
+import {
+  activeColumnIds,
+  columnIndex,
+  compactEditorColumns,
+  firstEmptyColumnToTheRight,
+  HORIZONTAL_EDITOR_COLUMN_IDS,
+  visibleEditorColumnIds,
+} from "./editorColumns";
 
 export type TabType = "chat" | "terminal" | "review" | "file";
 
@@ -66,67 +73,8 @@ function emptyGroup(): EditorGroup {
   return { tabs: [], activeTabId: null };
 }
 
-/** Fold legacy bottom-row tabs into the top row and clear bottom quadrants. */
-function foldBottomRowIntoTop(state: EditorGroupsState): EditorGroupsState {
-  const bottomTabs = [
-    ...state.groups.bottomLeft.tabs,
-    ...state.groups.bottomRight.tabs,
-  ];
-  if (bottomTabs.length === 0) {
-    return state;
-  }
-
-  const topLeft = state.groups.topLeft;
-  const topRight = state.groups.topRight;
-  const mergedTopLeft = [...topLeft.tabs, ...bottomTabs];
-  let activeGroupId = state.activeGroupId;
-  if (activeGroupId === "bottomLeft" || activeGroupId === "bottomRight") {
-    activeGroupId = "topLeft";
-  }
-
-  return {
-    ...state,
-    layout: state.layout === "single" ? "single" : "horizontal",
-    activeGroupId,
-    groups: {
-      ...state.groups,
-      topLeft: {
-        tabs: mergedTopLeft,
-        activeTabId: topLeft.activeTabId ?? bottomTabs[0]?.id ?? null,
-      },
-      bottomLeft: emptyGroup(),
-      bottomRight: emptyGroup(),
-    },
-  };
-}
-
-function collapseEmptyQuadrants(state: EditorGroupsState): EditorGroupsState {
-  const folded = foldBottomRowIntoTop(state);
-  const visible = visibleQuadrantsForLayout(folded.layout);
-  const anyEmptyVisible = visible.some((id) => folded.groups[id].tabs.length === 0);
-  if (!anyEmptyVisible || folded.layout === "single") {
-    return withSplitModeFlag(folded);
-  }
-
-  if (folded.layout === "horizontal") {
-    if (folded.groups.topLeft.tabs.length === 0 && folded.groups.topRight.tabs.length > 0) {
-      return withSplitModeFlag({
-        ...folded,
-        layout: "single",
-        groups: {
-          ...folded.groups,
-          topLeft: { ...folded.groups.topRight },
-          topRight: emptyGroup(),
-        },
-        activeGroupId: "topLeft",
-      });
-    }
-    if (folded.groups.topRight.tabs.length === 0) {
-      return withSplitModeFlag({ ...folded, layout: "single" });
-    }
-  }
-
-  return withSplitModeFlag(folded);
+function collapseEmptyColumns(state: EditorGroupsState): EditorGroupsState {
+  return withSplitModeFlag(compactEditorColumns(state));
 }
 
 export function reconcileEditorGroups(
@@ -164,7 +112,7 @@ export function reconcileEditorGroups(
     };
   }
 
-  return collapseEmptyQuadrants({
+  return collapseEmptyColumns({
     ...state,
     groups: nextRecord,
   });
@@ -204,10 +152,23 @@ export function reorderTabInGroup(
 }
 
 export function destinationForPaneSplit(
-  _sourcePane: EditorQuadrantId,
+  groups: Record<EditorQuadrantId, EditorGroup>,
+  sourcePane: EditorQuadrantId,
   edge: "left" | "right",
 ): EditorQuadrantId {
-  return edge === "left" ? "topLeft" : "topRight";
+  if (edge === "left") {
+    const idx = columnIndex(sourcePane);
+    return idx > 0 ? HORIZONTAL_EDITOR_COLUMN_IDS[idx - 1] : sourcePane;
+  }
+  const empty = firstEmptyColumnToTheRight(groups, sourcePane);
+  if (empty) {
+    return empty;
+  }
+  const idx = columnIndex(sourcePane);
+  if (idx < HORIZONTAL_EDITOR_COLUMN_IDS.length - 1) {
+    return HORIZONTAL_EDITOR_COLUMN_IDS[idx + 1];
+  }
+  return sourcePane;
 }
 
 export function layoutAfterPaneSplitEdge(
@@ -224,14 +185,11 @@ export function moveTabToQuadrant(
   targetQuadrant: EditorQuadrantId,
   layoutOverride?: EditorLayoutMode,
 ): EditorGroupsState {
-  const horizontalTarget: EditorQuadrantId =
-    targetQuadrant === "bottomLeft" || targetQuadrant === "bottomRight" ? "topRight" : targetQuadrant;
-
   const sourceQuadrant = findTabQuadrant(state, tabId);
   if (sourceQuadrant === null) {
     return state;
   }
-  if (sourceQuadrant === horizontalTarget) {
+  if (sourceQuadrant === targetQuadrant) {
     return state;
   }
 
@@ -240,13 +198,11 @@ export function moveTabToQuadrant(
     return state;
   }
 
+  const targetEmpty = state.groups[targetQuadrant].tabs.length === 0;
   const nextLayout =
-    layoutOverride ??
-    (horizontalTarget === "topRight"
-      ? layoutAfterEnablingHorizontalSplit(state.layout)
-      : state.layout);
+    layoutOverride ?? (targetEmpty ? layoutAfterEnablingHorizontalSplit(state.layout) : state.layout);
   const sourceGroup = state.groups[sourceQuadrant];
-  const targetGroup = state.groups[horizontalTarget];
+  const targetGroup = state.groups[targetQuadrant];
 
   const nextSourceTabs = sourceGroup.tabs.filter((t) => t.id !== tabId);
   let nextSourceActive = sourceGroup.activeTabId;
@@ -254,16 +210,45 @@ export function moveTabToQuadrant(
     nextSourceActive = nextSourceTabs.length > 0 ? nextSourceTabs[nextSourceTabs.length - 1].id : null;
   }
 
-  const nextTargetTabs = [...targetGroup.tabs, tab];
+  const nextTargetTabs = targetEmpty ? [tab] : [...targetGroup.tabs, tab];
 
+  return commitTabMove(
+    state,
+    sourceQuadrant,
+    targetQuadrant,
+    nextSourceTabs,
+    nextSourceActive,
+    nextTargetTabs,
+    tabId,
+    nextLayout,
+  );
+}
+
+function insertTabAtIndex(tabs: TabItem[], tab: TabItem, toIndex: number): TabItem[] {
+  const clamped = Math.max(0, Math.min(tabs.length, toIndex));
+  const next = [...tabs];
+  next.splice(clamped, 0, tab);
+  return next;
+}
+
+function commitTabMove(
+  state: EditorGroupsState,
+  sourceQuadrant: EditorQuadrantId,
+  targetQuadrant: EditorQuadrantId,
+  nextSourceTabs: TabItem[],
+  nextSourceActive: string | null,
+  nextTargetTabs: TabItem[],
+  nextTargetActive: string | null,
+  nextLayout: EditorLayoutMode,
+): EditorGroupsState {
   const nextState: EditorGroupsState = {
     ...state,
     layout: nextLayout,
-    activeGroupId: horizontalTarget,
+    activeGroupId: targetQuadrant,
     groups: {
       ...state.groups,
       [sourceQuadrant]: { tabs: nextSourceTabs, activeTabId: nextSourceActive },
-      [horizontalTarget]: { tabs: nextTargetTabs, activeTabId: tabId },
+      [targetQuadrant]: { tabs: nextTargetTabs, activeTabId: nextTargetActive },
     },
   };
 
@@ -275,8 +260,48 @@ export function moveTabToGroup(
   state: EditorGroupsState,
   tabId: string,
   targetGroupId: EditorQuadrantId,
+  toIndex?: number,
 ): EditorGroupsState {
-  return moveTabToQuadrant(state, tabId, targetGroupId);
+  const sourceQuadrant = findTabQuadrant(state, tabId);
+  if (sourceQuadrant === null) {
+    return state;
+  }
+  if (sourceQuadrant === targetGroupId) {
+    return state;
+  }
+
+  const tab = state.groups[sourceQuadrant].tabs.find((t) => t.id === tabId);
+  if (!tab) {
+    return state;
+  }
+
+  const targetGroup = state.groups[targetGroupId];
+  const targetEmpty = targetGroup.tabs.length === 0;
+  const nextLayout = targetEmpty ? layoutAfterEnablingHorizontalSplit(state.layout) : state.layout;
+  const sourceGroup = state.groups[sourceQuadrant];
+
+  const nextSourceTabs = sourceGroup.tabs.filter((t) => t.id !== tabId);
+  let nextSourceActive = sourceGroup.activeTabId;
+  if (nextSourceActive === tabId) {
+    nextSourceActive = nextSourceTabs.length > 0 ? nextSourceTabs[nextSourceTabs.length - 1].id : null;
+  }
+
+  const nextTargetTabs = targetEmpty
+    ? [tab]
+    : toIndex !== undefined
+      ? insertTabAtIndex(targetGroup.tabs, tab, toIndex)
+      : [...targetGroup.tabs, tab];
+
+  return commitTabMove(
+    state,
+    sourceQuadrant,
+    targetGroupId,
+    nextSourceTabs,
+    nextSourceActive,
+    nextTargetTabs,
+    tabId,
+    nextLayout,
+  );
 }
 
 export function moveTab(
@@ -284,11 +309,11 @@ export function moveTab(
   tabId: string,
   targetGroupId: EditorQuadrantId,
 ): EditorGroupsState {
-  const target =
-    targetGroupId === "bottomLeft" || targetGroupId === "bottomRight" ? "topRight" : targetGroupId;
   const layout =
-    target === "topRight" ? layoutAfterEnablingHorizontalSplit(state.layout) : state.layout;
-  return moveTabToQuadrant(state, tabId, target, layout);
+    state.groups[targetGroupId].tabs.length === 0
+      ? layoutAfterEnablingHorizontalSplit(state.layout)
+      : state.layout;
+  return moveTabToQuadrant(state, tabId, targetGroupId, layout);
 }
 
 export function splitActiveTab(state: EditorGroupsState): EditorGroupsState {
@@ -297,8 +322,11 @@ export function splitActiveTab(state: EditorGroupsState): EditorGroupsState {
     return state;
   }
   const tabId = current.activeTabId;
+  const dest =
+    firstEmptyColumnToTheRight(state.groups, state.activeGroupId)
+    ?? destinationForPaneSplit(state.groups, state.activeGroupId, "right");
   const layout = layoutAfterEnablingHorizontalSplit(state.layout);
-  return moveTabToQuadrant(state, tabId, "topRight", layout);
+  return moveTabToQuadrant(state, tabId, dest, layout);
 }
 
 export function closeTabInGroup(
@@ -336,11 +364,11 @@ export function headerQuadrantsForLayout(layout: EditorLayoutMode): EditorQuadra
   if (layout === "single") {
     return ["topLeft"];
   }
-  return ["topLeft", "topRight"];
+  return [...HORIZONTAL_EDITOR_COLUMN_IDS];
 }
 
 export function bottomHeaderQuadrantsForLayout(_layout: EditorLayoutMode): EditorQuadrantId[] {
   return [];
 }
 
-export { isEditorQuadrantId };
+export { activeColumnIds, visibleEditorColumnIds, isEditorQuadrantId };

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { TabItem } from "../../pages/workspace/editorGroups";
+import type { EditorGroup, TabItem } from "../../pages/workspace/editorGroups";
 import type { EditorLayoutMode, EditorQuadrantId } from "../../pages/workspace/editorGroupTypes";
 import type { PaneSplitDropTarget } from "../../pages/workspace/editorPaneSplitDrop";
 import { cn } from "../../lib/utils";
@@ -8,6 +8,7 @@ import { EditorPaneDropOverlay } from "./EditorPaneDropOverlay";
 export type EditorSurfaceFrameProps = {
   paneGroupId: EditorQuadrantId;
   layout: EditorLayoutMode;
+  groups: Record<import("../../pages/workspace/editorGroupTypes").EditorQuadrantId, EditorGroup>;
   /** Mount pane-edge drop target (split drops). */
   paneDropEnabled?: boolean;
   tabDragActive?: boolean;
@@ -20,6 +21,7 @@ export type EditorSurfaceFrameProps = {
 export function EditorSurfaceFrame({
   paneGroupId,
   layout,
+  groups,
   paneDropEnabled = true,
   tabDragActive = false,
   className,
@@ -37,6 +39,7 @@ export function EditorSurfaceFrame({
       <EditorPaneDropOverlay
         paneGroupId={paneGroupId}
         layout={layout}
+        groups={groups}
         enabled={paneDropEnabled}
         tabDragActive={tabDragActive}
         onDrop={onPaneDrop}

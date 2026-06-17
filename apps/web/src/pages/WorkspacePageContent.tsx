@@ -27,7 +27,10 @@ import {
   splitActiveTab,
   closeTabInGroup,
   layoutAfterPaneSplitEdge,
+  destinationForPaneSplit,
+  visibleEditorColumnIds,
 } from "./workspace/editorGroups";
+import { firstEmptyColumnToTheRight, normalizeColumnWidths } from "./workspace/editorColumns";
 import type { EditorQuadrantId } from "./workspace/editorGroupTypes";
 import { EDITOR_QUADRANT_IDS } from "./workspace/editorGroupTypes";
 import {
@@ -36,10 +39,11 @@ import {
   scheduleEditorGridDomProbe,
   snapshotEditorGridState,
 } from "../lib/workspaceEditorGridDiagnose";
-import { ResizableSplit } from "../components/workspace/ResizableSplit";
-import { SplitEditorTabStrips } from "../components/workspace/SplitEditorTabStrips";
+import { ResizableColumns } from "../components/workspace/ResizableColumns";
+import { EditorMultiTabStrips } from "../components/workspace/EditorMultiTabStrips";
 import { EditorSurfaceFrame } from "../components/workspace/EditorSurfaceFrame";
 import { WorkspaceTabStrip } from "../components/workspace/WorkspaceTabStrip";
+import { clearActiveEditorTabDragPayload } from "../components/workspace/editorTabDrag";
 import {
   applyEditorTabPaneDrop,
   type PaneSplitDropTarget,
@@ -4328,8 +4332,21 @@ export function WorkspacePage() {
 
   // Split Panel State
   const [editorGroups, setEditorGroups] = useState<EditorGroupsState>(createEmptyEditorGroupsState);
-  const [horizontalSplit, setHorizontalSplit] = useState(50);
+  const [columnWidths, setColumnWidths] = useState<number[]>([50, 50]);
   const [isEditorTabDragging, setIsEditorTabDragging] = useState(false);
+
+  const visibleEditorColumns = useMemo(
+    () => visibleEditorColumnIds(editorGroups),
+    [editorGroups],
+  );
+
+  useEffect(() => {
+    const count = visibleEditorColumns.length;
+    if (count <= 1) {
+      return;
+    }
+    setColumnWidths((current) => normalizeColumnWidths(current, count));
+  }, [visibleEditorColumns.length]);
 
   useEffect(() => {
     focusComposerTargetGroupRef.current = editorGroups.activeGroupId;
@@ -4341,7 +4358,7 @@ export function WorkspacePage() {
     }
     const snapshot = snapshotEditorGridState({
       editorGroups,
-      horizontalSplit,
+      horizontalSplit: columnWidths[0] ?? 50,
       verticalSplit: 50,
       focusComposerSignals: focusComposerSignalByGroup,
       globalActiveView: activeView,
@@ -4353,7 +4370,7 @@ export function WorkspacePage() {
     editorGroups.splitMode,
     editorGroups.activeGroupId,
     editorGroups.groups,
-    horizontalSplit,
+    columnWidths,
     focusComposerSignalByGroup,
     activeView,
     repos.selectedWorktreeId,
@@ -4530,13 +4547,7 @@ export function WorkspacePage() {
   const handleDropGroupTab = useCallback(
     (targetGroupId: EditorQuadrantId, tab: TabItem, sourceGroupId: EditorQuadrantId, toIndex?: number) => {
       if (sourceGroupId === targetGroupId) return;
-      setEditorGroups((current) => {
-        const moved = moveTabToGroup(current, tab.id, targetGroupId);
-        if (toIndex === undefined) {
-          return moved;
-        }
-        return reorderTabInGroup(moved, targetGroupId, tab.id, toIndex);
-      });
+      setEditorGroups((current) => moveTabToGroup(current, tab.id, targetGroupId, toIndex));
       syncTabToUrl(tab);
     },
     [syncTabToUrl],
@@ -4562,7 +4573,17 @@ export function WorkspacePage() {
   }, []);
 
   const handleEditorTabDragEnd = useCallback(() => {
+    clearActiveEditorTabDragPayload();
     setIsEditorTabDragging(false);
+  }, []);
+
+  useEffect(() => {
+    const clearTabDrag = () => {
+      clearActiveEditorTabDragPayload();
+      setIsEditorTabDragging(false);
+    };
+    window.addEventListener("dragend", clearTabDrag);
+    return () => window.removeEventListener("dragend", clearTabDrag);
   }, []);
 
   const wrapUnsplitEditorSurface = useCallback(
@@ -4570,6 +4591,7 @@ export function WorkspacePage() {
       <EditorSurfaceFrame
         paneGroupId="topLeft"
         layout={editorGroups.layout}
+        groups={editorGroups.groups}
         paneDropEnabled
         tabDragActive={isEditorTabDragging}
         onPaneDrop={(tab, target) => handlePaneDropTab(tab, target, "topLeft")}
@@ -4578,7 +4600,7 @@ export function WorkspacePage() {
         {content}
       </EditorSurfaceFrame>
     ),
-    [editorGroups.layout, handleFocusGroup, handlePaneDropTab, isEditorTabDragging],
+    [editorGroups.groups, editorGroups.layout, handleFocusGroup, handlePaneDropTab, isEditorTabDragging],
   );
 
   const renderPaneContent = (groupId: EditorQuadrantId) => {
@@ -4731,25 +4753,6 @@ export function WorkspacePage() {
         onCloseTab={(tab) => handleCloseGroupTab(groupId, tab)}
         onReorderTab={(tabId, toIndex) => handleReorderGroupTab(groupId, tabId, toIndex)}
         onDropTabFromOtherGroup={(tab, sourceGroupId, toIndex) => handleDropGroupTab(groupId, tab, sourceGroupId, toIndex)}
-        onSplitTab={(tab) => {
-          const dest = groupId === "topLeft" ? "topRight" : "topLeft";
-          const layout = layoutAfterPaneSplitEdge(editorGroups.layout, groupId === "topLeft" ? "right" : "left");
-          setEditorGroups((current) =>
-            moveTabToQuadrant(
-              {
-                ...current,
-                activeGroupId: groupId,
-                groups: {
-                  ...current.groups,
-                  [groupId]: { ...current.groups[groupId], activeTabId: tab.id },
-                },
-              },
-              tab.id,
-              dest,
-              layout,
-            ),
-          );
-        }}
         onTabDragStart={handleEditorTabDragStart}
         onTabDragEnd={handleEditorTabDragEnd}
         onPinFileTab={handlePinFileTab}
@@ -4764,10 +4767,9 @@ export function WorkspacePage() {
   };
 
   const splitTabStrips = editorGroups.splitMode ? (
-    <SplitEditorTabStrips
-      dividerPosition={horizontalSplit}
-      left={renderGroupStrip("topLeft")}
-      right={renderGroupStrip("topRight")}
+    <EditorMultiTabStrips
+      columnWidths={columnWidths}
+      strips={visibleEditorColumns.map((columnId) => renderGroupStrip(columnId))}
     />
   ) : null;
 
@@ -4780,6 +4782,7 @@ export function WorkspacePage() {
         <EditorSurfaceFrame
           paneGroupId={groupId}
           layout={editorGroups.layout}
+          groups={editorGroups.groups}
           paneDropEnabled
         tabDragActive={isEditorTabDragging}
           onPaneDrop={(tab, target) => handlePaneDropTab(tab, target, groupId)}
@@ -5067,27 +5070,9 @@ export function WorkspacePage() {
                     onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
                     mergeWithContent={activeView === "file"}
                     resourceMonitor={!showMacDesktopTitleBar ? workspaceHeaderControls : null}
-                    onToggleSplit={() => setEditorGroups((current) => splitActiveTab(current))}
                     splitTabStrips={splitTabStrips}
                     orderedTabs={editorGroups.splitMode ? undefined : editorGroups.groups.topLeft.tabs}
                     onReorderTab={(tabId, toIndex) => handleReorderGroupTab("topLeft", tabId, toIndex)}
-                    onSplitTab={(tab) => {
-                      setEditorGroups((current) =>
-                        moveTabToQuadrant(
-                          {
-                            ...current,
-                            activeGroupId: "topLeft",
-                            groups: {
-                              ...current.groups,
-                              topLeft: { ...current.groups.topLeft, activeTabId: tab.id },
-                            },
-                          },
-                          tab.id,
-                          "topRight",
-                          layoutAfterPaneSplitEdge(current.layout, "right"),
-                        ),
-                      );
-                    }}
                     onTabDragStart={handleEditorTabDragStart}
                     onTabDragEnd={handleEditorTabDragEnd}
                   />
@@ -5238,12 +5223,10 @@ export function WorkspacePage() {
               </section>
             ) : editorGroups.splitMode ? (
               <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                <ResizableSplit
-                  splitMode
-                  dividerPosition={horizontalSplit}
-                  onDividerPositionChange={setHorizontalSplit}
-                  left={renderPane("topLeft")}
-                  right={renderPane("topRight")}
+                <ResizableColumns
+                  columnWidths={columnWidths}
+                  onColumnWidthsChange={setColumnWidths}
+                  columns={visibleEditorColumns.map((columnId) => renderPane(columnId))}
                 />
               </section>
             ) : terminalViewActive && activeTerminalTab && repos.selectedWorktreeId && selectedWorktreeOperational ? (

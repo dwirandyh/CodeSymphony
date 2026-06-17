@@ -2,7 +2,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EDITOR_TAB_DRAG_MIME } from "./editorTabDrag";
+import { createEmptyEditorGroupsState } from "../../pages/workspace/editorGroups";
 import { EditorPaneDropOverlay } from "./EditorPaneDropOverlay";
+
+const emptyGroups = createEmptyEditorGroupsState().groups;
 
 function dispatchDragEvent(
   target: HTMLElement,
@@ -72,13 +75,13 @@ describe("EditorPaneDropOverlay", () => {
     act(() => {
       root.render(
         <div style={{ position: "relative", width: 400, height: 400 }}>
-          <EditorPaneDropOverlay layout="single" paneGroupId="topLeft" tabDragActive onDrop={onDrop} />
+          <EditorPaneDropOverlay layout="single" paneGroupId="topLeft" groups={emptyGroups} tabDragActive onDrop={onDrop} />
         </div>,
       );
     });
 
     const overlay = container.querySelector('[data-testid="editor-pane-drop-overlay-topLeft"]') as HTMLElement;
-    const hitTarget = overlay.querySelector('[data-testid="editor-pane-drop-hit"]') as HTMLElement;
+    const hitTarget = overlay.querySelector('[data-testid="editor-pane-drop-hit-right"]') as HTMLElement;
     overlay.getBoundingClientRect = mockRect;
 
     const dataTransfer = createDataTransferStub();
@@ -102,13 +105,13 @@ describe("EditorPaneDropOverlay", () => {
     act(() => {
       root.render(
         <div style={{ position: "relative", width: 400, height: 400 }}>
-          <EditorPaneDropOverlay layout="single" paneGroupId="topLeft" tabDragActive onDrop={onDrop} />
+          <EditorPaneDropOverlay layout="single" paneGroupId="topLeft" groups={emptyGroups} tabDragActive onDrop={onDrop} />
         </div>,
       );
     });
 
     const overlay = container.querySelector('[data-testid="editor-pane-drop-overlay-topLeft"]') as HTMLElement;
-    const hitTarget = overlay.querySelector('[data-testid="editor-pane-drop-hit"]') as HTMLElement;
+    const hitTarget = overlay.querySelector('[data-testid="editor-pane-drop-hit-right"]') as HTMLElement;
     overlay.getBoundingClientRect = mockRect;
 
     const dataTransfer = createDataTransferStub();

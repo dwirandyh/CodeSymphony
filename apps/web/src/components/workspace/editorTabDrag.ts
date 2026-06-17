@@ -4,6 +4,17 @@ import { isEditorQuadrantId, migrateLegacyGroupId } from "../../pages/workspace/
 
 export const EDITOR_TAB_DRAG_MIME = "application/x-codesymphony-editor-tab";
 
+/** Browsers hide custom MIME in dragover; use this + hasEditorTabDragData until drop. */
+let activeEditorTabDragPayload: EditorTabDragPayload | null = null;
+
+export function setActiveEditorTabDragPayload(payload: EditorTabDragPayload | null): void {
+  activeEditorTabDragPayload = payload;
+}
+
+export function peekActiveEditorTabDragPayload(): EditorTabDragPayload | null {
+  return activeEditorTabDragPayload;
+}
+
 export type EditorTabDragPayload = {
   sourceGroupId: EditorQuadrantId;
   sourceIndex?: number;
@@ -35,11 +46,19 @@ export function writeEditorTabDragData(
   dataTransfer: DataTransfer,
   payload: EditorTabDragPayload,
 ): void {
+  setActiveEditorTabDragPayload(payload);
   dataTransfer.setData(EDITOR_TAB_DRAG_MIME, JSON.stringify(payload));
   dataTransfer.effectAllowed = "move";
 }
 
+export function clearActiveEditorTabDragPayload(): void {
+  setActiveEditorTabDragPayload(null);
+}
+
 export function hasEditorTabDragData(dataTransfer: DataTransfer | null): boolean {
+  if (activeEditorTabDragPayload !== null) {
+    return true;
+  }
   return Array.from(dataTransfer?.types ?? []).includes(EDITOR_TAB_DRAG_MIME);
 }
 
@@ -48,6 +67,11 @@ export function readEditorTabDragData(
 ): EditorTabDragPayload | null {
   if (!dataTransfer || !hasEditorTabDragData(dataTransfer)) {
     return null;
+  }
+
+  const fromSession = peekActiveEditorTabDragPayload();
+  if (fromSession) {
+    return fromSession;
   }
 
   try {

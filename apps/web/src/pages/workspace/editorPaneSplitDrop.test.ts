@@ -45,6 +45,8 @@ describe("resolvePaneEdgeFromPointer", () => {
 });
 
 describe("resolvePaneSplitDropTarget", () => {
+  const emptyGroups = createEmptyEditorGroupsState().groups;
+
   it("single pane: right edge → split-right; bottom band → null", () => {
     const r = rect(400, 400);
     const rightEdge = r.width * (1 - PANE_EDGE_BAND_RATIO) + 1;
@@ -53,6 +55,7 @@ describe("resolvePaneSplitDropTarget", () => {
       resolvePaneSplitDropTarget({
         layout: "single",
         paneGroupId: "topLeft",
+        groups: emptyGroups,
         rect: r,
         clientX: rightEdge,
         clientY: 200,
@@ -62,6 +65,7 @@ describe("resolvePaneSplitDropTarget", () => {
       resolvePaneSplitDropTarget({
         layout: "single",
         paneGroupId: "topLeft",
+        groups: emptyGroups,
         rect: r,
         clientX: 200,
         clientY: bottomEdge,
@@ -72,10 +76,16 @@ describe("resolvePaneSplitDropTarget", () => {
   it("horizontal: left pane right edge splits; right pane left edge moves", () => {
     const r = rect(400, 400);
     const rightEdge = r.width * (1 - PANE_EDGE_BAND_RATIO) + 1;
+    const twoPaneGroups: typeof emptyGroups = {
+      ...emptyGroups,
+      topLeft: { tabs: [{ type: "file" as const, id: "a" }], activeTabId: "a" },
+      topRight: { tabs: [{ type: "file" as const, id: "b" }], activeTabId: "b" },
+    };
     expect(
       resolvePaneSplitDropTarget({
         layout: "horizontal",
         paneGroupId: "topLeft",
+        groups: twoPaneGroups,
         rect: r,
         clientX: rightEdge,
         clientY: 200,
@@ -85,6 +95,7 @@ describe("resolvePaneSplitDropTarget", () => {
       resolvePaneSplitDropTarget({
         layout: "horizontal",
         paneGroupId: "topRight",
+        groups: twoPaneGroups,
         rect: r,
         clientX: 5,
         clientY: 200,

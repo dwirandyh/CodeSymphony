@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CalendarCog,
-  Columns2,
   Dot,
   GitPullRequestArrow,
   SquareTerminal,
@@ -13,6 +12,7 @@ import type { EditorQuadrantId } from "../../pages/workspace/editorGroupTypes";
 import type { WorkspaceFileTab, WorkspaceTerminalTab } from "./WorkspaceHeader";
 import { cn } from "../../lib/utils";
 import {
+  clearActiveEditorTabDragPayload,
   hasEditorTabDragData,
   readEditorTabDragData,
   writeEditorTabDragData,
@@ -46,8 +46,6 @@ export interface WorkspaceTabStripProps {
   enableScrollIntoView?: boolean;
   onSelectTab: (tab: TabItem) => void;
   onCloseTab: (tab: TabItem) => void;
-  /** Optional Columns2 quick-split action; hidden when omitted. */
-  onSplitTab?: (tab: TabItem) => void;
   /** Reorder within this group. Omit to disable in-row reordering. */
   onReorderTab?: (tabId: string, toIndex: number) => void;
   /** Accept a tab dragged from the other group, inserting at toIndex. */
@@ -95,7 +93,6 @@ export function WorkspaceTabStrip({
   enableScrollIntoView = false,
   onSelectTab,
   onCloseTab,
-  onSplitTab,
   onReorderTab,
   onDropTabFromOtherGroup,
   onPinFileTab,
@@ -339,7 +336,10 @@ export function WorkspaceTabStrip({
       onDragOver={handleRowDragOver}
       onDragLeave={handleRowDragLeave}
       onDrop={handleRowDrop}
-      onDragEnd={() => onTabDragEnd?.()}
+      onDragEnd={() => {
+        clearActiveEditorTabDragPayload();
+        onTabDragEnd?.();
+      }}
       className={cn(
         "min-w-0 overflow-x-auto overscroll-x-contain scroll-px-16 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
         fillWidth ? "flex-1" : (desktopApp ? "max-w-full" : "flex-1"),
@@ -426,22 +426,6 @@ export function WorkspaceTabStrip({
                   {resolved.dirty ? <Dot className="ml-1 inline h-4 w-4 align-middle text-amber-500" /> : null}
                 </button>
               )}
-
-              {onSplitTab ? (
-                <button
-                  type="button"
-                  aria-label={`Split ${resolved.label}`}
-                  title={`Split ${resolved.label}`}
-                  className="rounded-sm p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSplitTab(tab);
-                  }}
-                  disabled={disabled}
-                >
-                  <Columns2 className="h-3 w-3" />
-                </button>
-              ) : null}
 
               <button
                 type="button"

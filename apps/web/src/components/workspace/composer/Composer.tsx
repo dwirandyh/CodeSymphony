@@ -1622,7 +1622,7 @@ function ComposerContent({
           <div
             ref={setComposerPopoverHost}
             data-composer-popover-host="true"
-            className="pointer-events-none absolute inset-0 z-[60] overflow-visible"
+            className="pointer-events-none absolute bottom-full left-0 z-[60] mb-2 w-full overflow-visible"
           />
 
           {(isDragOver || isPathDragOver) && (

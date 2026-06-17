@@ -1,7 +1,10 @@
 import { createRoot, type Root } from "react-dom/client";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createEmptyEditorGroupsState } from "../../pages/workspace/editorGroups";
 import { EditorSurfaceFrame } from "./EditorSurfaceFrame";
+
+const emptyGroups = createEmptyEditorGroupsState().groups;
 
 describe("EditorSurfaceFrame", () => {
   let container: HTMLDivElement;
@@ -24,6 +27,7 @@ describe("EditorSurfaceFrame", () => {
         <EditorSurfaceFrame
           paneGroupId="topLeft"
           layout="horizontal"
+          groups={emptyGroups}
           paneDropEnabled={false}
           onPaneDrop={vi.fn()}
         >
@@ -43,6 +47,7 @@ describe("EditorSurfaceFrame", () => {
         <EditorSurfaceFrame
           paneGroupId="bottomRight"
           layout="horizontal"
+          groups={emptyGroups}
           tabDragActive={false}
           onPaneDrop={vi.fn()}
         >

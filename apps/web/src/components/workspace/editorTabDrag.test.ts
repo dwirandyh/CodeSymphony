@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   EDITOR_TAB_DRAG_MIME,
+  clearActiveEditorTabDragPayload,
   hasEditorTabDragData,
   readEditorTabDragData,
   writeEditorTabDragData,
@@ -26,6 +27,31 @@ function createDataTransferStub() {
 }
 
 describe("editorTabDrag", () => {
+  beforeEach(() => {
+    clearActiveEditorTabDragPayload();
+  });
+
+  afterEach(() => {
+    clearActiveEditorTabDragPayload();
+  });
+
+  it("detects drag via session payload when dataTransfer types are empty on dragover", () => {
+    clearActiveEditorTabDragPayload();
+    const dataTransfer = createDataTransferStub();
+    writeEditorTabDragData(dataTransfer, {
+      sourceGroupId: "topLeft",
+      tab: { type: "file", id: "a.ts" },
+    });
+
+    const dragoverTransfer = createDataTransferStub();
+    expect(hasEditorTabDragData(dragoverTransfer)).toBe(true);
+    expect(readEditorTabDragData(dragoverTransfer)).toEqual({
+      sourceGroupId: "topLeft",
+      tab: { type: "file", id: "a.ts" },
+    });
+    clearActiveEditorTabDragPayload();
+  });
+
   it("writes a tab payload with source group and tab metadata", () => {
     const dataTransfer = createDataTransferStub();
 
