@@ -37,6 +37,18 @@ describe("keyboardShortcuts", () => {
     expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.close_active_surface, "linux")).toBeNull();
   });
 
+  it("lists editor layout shortcuts including split and focus groups", () => {
+    const macSections = getVisibleWorkspaceShortcutSections("mac");
+    const editor = macSections.find((section) => section.id === "editor");
+    expect(editor?.shortcuts.map((s) => s.id)).toEqual([
+      "save_active_file",
+      "split_active_tab",
+      "focus_editor_group_left",
+      "focus_editor_group_right",
+    ]);
+    expect(getWorkspaceShortcutLabel(WORKSPACE_SHORTCUTS.split_active_tab, "mac")).toBe("⌘\\");
+  });
+
   it("filters out shortcuts that are unavailable on the selected platform", () => {
     const linuxSections = getVisibleWorkspaceShortcutSections("linux");
     const workspaceSection = linuxSections.find((section) => section.id === "workspace");

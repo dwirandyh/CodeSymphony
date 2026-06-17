@@ -41,4 +41,14 @@ describe("getWorkspaceMainClassName", () => {
 
     expect(className).toContain("lg:px-3");
   });
+
+  it("keeps desktop horizontal padding on header when editor split is active", () => {
+    const className = getWorkspaceHeaderContainerClassName({
+      activeView: "chat",
+      editorSplitActive: true,
+    });
+
+    expect(className).toContain("lg:px-3");
+    expect(className).not.toContain("lg:px-0");
+  });
 });

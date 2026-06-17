@@ -183,6 +183,95 @@ describe("issueReportService", () => {
     expect(debugLog).toContain("Invalid params");
   });
 
+  it("keeps workspace.ui diagnostic entries in issue reports", async () => {
+    appendRuntimeDebugLog({
+      source: "workspace.ui.emptyState",
+      message: "resolved",
+      data: {
+        threadId: "thread-1",
+        worktreeId: "worktree-1",
+        surface: "useChatSession",
+        resolved: "loading-thread",
+        legacyWouldShowLoading: true,
+      },
+    });
+    appendRuntimeDebugLog({
+      source: "workspace.ui.tabAlignment",
+      message: "geometry",
+      data: {
+        layout: "split",
+        tabUnderlineDeltaPx: 12.5,
+      },
+    });
+
+    for (let i = 0; i < 1_050; i += 1) {
+      appendRuntimeDebugLog({
+        source: "thread.workspace.event",
+        message: "worktree.git.updated",
+        data: { repositoryId: "repo-1", worktreeId: "worktree-1", seq: i },
+      });
+    }
+
+    const service = createIssueReportService({ prisma: createPrismaMock() });
+    const report = await service.createIssueReport({
+      description: "Empty thread shimmer",
+      repositoryId: "repo-1",
+      worktreeId: "worktree-1",
+      threadId: "thread-1",
+    });
+
+    const debugLog = await readFile(report.debugLogPath, "utf-8");
+    const diagnostics = JSON.parse(await readFile(report.diagnosticsPath, "utf-8")) as {
+      debug: { sources: string[] };
+    };
+
+    expect(debugLog).toContain("workspace.ui.emptyState");
+    expect(debugLog).toContain("legacyWouldShowLoading");
+    expect(debugLog).toContain("workspace.ui.tabAlignment");
+    expect(diagnostics.debug.sources).toContain("workspace.ui.emptyState");
+    expect(diagnostics.debug.sources).toContain("workspace.ui.tabAlignment");
+  });
+
+  it("merges client-attached debug entries into the issue report bundle", async () => {
+    appendRuntimeDebugLog({
+      source: "thread.bootstrap",
+      message: "selection.state",
+      data: { threadId: "thread-1", worktreeId: "worktree-1" },
+    });
+
+    const service = createIssueReportService({ prisma: createPrismaMock() });
+    const report = await service.createIssueReport({
+      description: "Client buffer only entry",
+      repositoryId: "repo-1",
+      worktreeId: "worktree-1",
+      threadId: "thread-1",
+      clientDebugEntries: [
+        {
+          seq: 99,
+          ts: 40.2,
+          source: "workspace.ui.emptyState",
+          message: "resolved",
+          data: {
+            threadId: "thread-1",
+            surface: "ChatMessageList",
+            resolved: "loading-thread",
+            extra: { showsSkeleton: true },
+          },
+        },
+      ],
+    });
+
+    const debugLog = await readFile(report.debugLogPath, "utf-8");
+    const diagnostics = JSON.parse(await readFile(report.diagnosticsPath, "utf-8")) as {
+      debug: { clientAttachedEntries: number; capturedEntries: number };
+    };
+
+    expect(debugLog).toContain("workspace.ui.emptyState");
+    expect(debugLog).toContain("showsSkeleton");
+    expect(diagnostics.debug.clientAttachedEntries).toBe(1);
+    expect(diagnostics.debug.capturedEntries).toBeGreaterThanOrEqual(2);
+  });
+
   it("keeps priority diagnosis entries even when noisy tail entries fill the report", async () => {
     appendRuntimeDebugLog({
       source: "diagnose.selection",

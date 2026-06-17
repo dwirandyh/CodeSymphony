@@ -121,12 +121,18 @@ function isExternalFileReference(filePath: string | null, worktreePath: string |
   return toWorktreeRelativePath(worktreePath, filePath) === null;
 }
 
+type EnsureFileTabResult =
+  | { ok: false }
+  | { ok: true; openedNewTab: boolean };
+
 interface UseWorkspaceFileEditorOptions {
   activeFilePath: string | null;
   activeGitBaselineVersionKey: string;
   activeView: WorkspaceSearch["view"] | undefined;
   fileEntries: FileEntry[];
   onError: (message: string | null) => void;
+  /** Fired when explorer (or equivalent) opens a file tab that was not already open. */
+  onExplorerFileTabOpened?: (filePath: string) => void;
   onOpenQuickFilePicker?: () => void;
   resolveSaveAutomationTargetSessionId?: (worktreeId: string) => string | null;
   saveAutomation?: SaveAutomationConfig | null;
@@ -142,6 +148,7 @@ export function useWorkspaceFileEditor({
   activeView,
   fileEntries,
   onError,
+  onExplorerFileTabOpened,
   onOpenQuickFilePicker,
   resolveSaveAutomationTargetSessionId,
   saveAutomation,
@@ -358,7 +365,7 @@ export function useWorkspaceFileEditor({
 
     if (existingTab) {
       if (!shouldPin || existingTab.pinned) {
-        return { ok: true as const };
+        return { ok: true as const, openedNewTab: false };
       }
 
       setOpenFileTabsByWorktreeId((current) => ({
@@ -367,12 +374,12 @@ export function useWorkspaceFileEditor({
           tab.path === filePath ? { ...tab, pinned: true } : tab
         ),
       }));
-      return { ok: true as const };
+      return { ok: true as const, openedNewTab: false };
     }
 
     if (!shouldPin && previewTab && previewTab.path !== filePath) {
       if (!confirmDiscardDirtyFile(worktreeId, previewTab.path)) {
-        return { ok: false as const };
+        return { ok: false };
       }
 
       setOpenFileTabsByWorktreeId((current) => ({
@@ -405,15 +412,16 @@ export function useWorkspaceFileEditor({
           [worktreeId]: rest,
         };
       });
-      return { ok: true as const };
+      onExplorerFileTabOpened?.(filePath);
+      return { ok: true as const, openedNewTab: true };
     }
 
     setOpenFileTabsByWorktreeId((current) => ({
       ...current,
       [worktreeId]: [...(current[worktreeId] ?? []), { path: filePath, pinned: shouldPin }],
     }));
-    return { ok: true as const };
-  }, [confirmDiscardDirtyFile, openFileTabsByWorktreeId]);
+    return { ok: true as const, openedNewTab: true };
+  }, [confirmDiscardDirtyFile, onExplorerFileTabOpened, openFileTabsByWorktreeId]);
 
   const confirmSwitchAwayFromActiveFile = useCallback(() => {
     if (!selectedWorktreeId || !activeFilePath) {
@@ -683,6 +691,9 @@ export function useWorkspaceFileEditor({
     if (!result.ok) {
       return;
     }
+    if (result.openedNewTab) {
+      onExplorerFileTabOpened?.(normalizedTarget.path);
+    }
     pushRecentFile(selectedWorktreeId, normalizedTarget.path);
     updateSearch({
       view: "file",
@@ -691,7 +702,7 @@ export function useWorkspaceFileEditor({
       fileColumn: normalizedTarget.column ?? undefined,
     });
     onError(null);
-  }, [activeFilePath, activeView, confirmSwitchAwayFromActiveFile, ensureFileTab, normalizeOpenFileTarget, onError, pushRecentFile, selectedWorktreeId, updateSearch]);
+  }, [activeFilePath, activeView, confirmSwitchAwayFromActiveFile, ensureFileTab, normalizeOpenFileTarget, onError, onExplorerFileTabOpened, pushRecentFile, selectedWorktreeId, updateSearch]);
 
   const closeQuickFilePicker = useCallback(() => {
     setQuickFilePicker({
@@ -1055,5 +1066,7 @@ export function useWorkspaceFileEditor({
     quickFilePicker,
     recentFilePaths,
     workspaceFileTabs,
+    activeWorktreeEditorStates,
+    activeWorktreeGitBaselines,
   };
 }

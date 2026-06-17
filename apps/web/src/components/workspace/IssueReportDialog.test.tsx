@@ -11,6 +11,22 @@ vi.mock("../../lib/api", () => ({
   },
 }));
 
+vi.mock("../../lib/debugLog", () => ({
+  flushPendingDebugLogs: vi.fn(async () => {}),
+}));
+
+vi.mock("../../lib/workspaceUiDiagnose", () => ({
+  collectIssueReportClientDebugEntries: vi.fn(() => [
+    {
+      seq: 1,
+      ts: 1,
+      source: "workspace.ui.emptyState",
+      message: "resolved",
+      data: { resolved: "existing-thread-empty" },
+    },
+  ]),
+}));
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -120,6 +136,15 @@ describe("IssueReportDialog", () => {
       repositoryId: "repo-1",
       worktreeId: "worktree-1",
       threadId: "thread-1",
+      clientDebugEntries: [
+        {
+          seq: 1,
+          ts: 1,
+          source: "workspace.ui.emptyState",
+          message: "resolved",
+          data: { resolved: "existing-thread-empty" },
+        },
+      ],
     });
     expect(document.body.textContent).toContain("Issue report created");
     expect(document.body.textContent).toContain("/tmp/codesymphony/report-1");

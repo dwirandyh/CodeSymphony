@@ -1,18 +1,13 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { ChatThread } from "@codesymphony/shared-types";
 import {
-  CalendarCog,
   ChevronDown,
   ChevronRight,
-  Dot,
   GitBranch,
-  GitPullRequestArrow,
   History,
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
-  SquareTerminal,
-  X,
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -20,10 +15,17 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import { debugLog } from "../../lib/debugLog";
+import {
+  logWorkspaceUiIssueReportSignal,
+  probeSingleHeaderTabAlignment,
+  scheduleWorkspaceUiGeometryProbe,
+} from "../../lib/workspaceUiDiagnose";
 import { formatRelativeTime } from "../../lib/formatRelativeTime";
 import { AgentIcon } from "./composer/AgentModelSelector";
 import { OpenInAppButton } from "./OpenInAppButton";
 import { CreateSessionButton } from "./CreateSessionButton";
+import { WorkspaceTabStrip } from "./WorkspaceTabStrip";
+import type { TabItem } from "../../pages/workspace/editorGroups";
 
 export type WorkspaceFileTab = {
   path: string;
@@ -36,11 +38,6 @@ export type WorkspaceTerminalTab = {
   title: string;
   sessionId: string;
 };
-
-function fileTabLabel(filePath: string): string {
-  const lastSlash = filePath.lastIndexOf("/");
-  return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath;
-}
 
 type WorkspaceHeaderProps = {
   desktopApp?: boolean;
@@ -91,6 +88,14 @@ type WorkspaceHeaderProps = {
   onToggleLeftPanel?: () => void;
   mergeWithContent?: boolean;
   resourceMonitor?: ReactNode;
+  /** When provided (split mode), replaces the single default strip with caller-supplied per-pane strips while keeping the add + history controls in the same row. */
+  splitTabStrips?: ReactNode;
+  /** When provided, drives the visible tab order (e.g. from the active editor group) instead of the legacy section order. */
+  orderedTabs?: TabItem[];
+  /** Reorder a tab within the header row; enables in-row drag reordering when provided. */
+  onReorderTab?: (tabId: string, toIndex: number) => void;
+  onTabDragStart?: () => void;
+  onTabDragEnd?: () => void;
 };
 
 function FilledPlayIcon({ className }: { className?: string }) {
@@ -107,21 +112,6 @@ function FilledPauseIcon({ className }: { className?: string }) {
       <rect x="3.5" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
       <rect x="9" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
     </svg>
-  );
-}
-
-function ThreadTabLabel({ thread }: { thread: ChatThread }) {
-  return (
-    <span className="flex min-w-0 items-center gap-1.5">
-      {thread.isAutomation ? (
-        <CalendarCog
-          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-          data-testid={`thread-${thread.id}-automation-icon`}
-          aria-hidden="true"
-        />
-      ) : null}
-      <span className="truncate">{thread.title}</span>
-    </span>
   );
 }
 
@@ -172,18 +162,17 @@ export function WorkspaceHeader({
   leftPanelVisible = true,
   onToggleLeftPanel,
   resourceMonitor,
+  splitTabStrips,
+  orderedTabs,
+  onReorderTab,
+  onTabDragStart,
+  onTabDragEnd,
+  mergeWithContent = false,
 }: WorkspaceHeaderProps) {
-  const SESSION_TAB_EDGE_INSET_PX = 64;
-  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
-  const [editingTerminalTabId, setEditingTerminalTabId] = useState<string | null>(null);
   const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [targetBranchFilter, setTargetBranchFilter] = useState("");
-  const renameInputRef = useRef<HTMLInputElement | null>(null);
-  const terminalRenameInputRef = useRef<HTMLInputElement | null>(null);
   const targetBranchFilterInputRef = useRef<HTMLInputElement | null>(null);
-  const sessionTabsScrollRef = useRef<HTMLDivElement | null>(null);
-  const selectedThreadTabRef = useRef<HTMLButtonElement | null>(null);
   const lastLoggedTabStateRef = useRef<string | null>(null);
 
   const branchContextLabel = selectedWorktreeBranch
@@ -201,32 +190,37 @@ export function WorkspaceHeader({
   const filteredTargetBranchOptions = normalizedTargetBranchFilter
     ? targetBranchOptions.filter((branchOption) => branchOption.toLowerCase().includes(normalizedTargetBranchFilter))
     : targetBranchOptions;
-  const selectedThreadMissingFromTabs = !!selectedThreadId && !threads.some((thread) => thread.id === selectedThreadId);
-  const threadTabs = selectedThreadMissingFromTabs
-    ? [
-      ...threads.map((thread) => ({ thread, pending: false })),
-      {
-        thread: {
-          id: selectedThreadId,
-          worktreeId: "",
-          title: selectedThreadFallbackTitle || "Loading thread...",
-          kind: "default" as const,
-          permissionProfile: "default" as const,
-          permissionMode: "default" as const,
-          mode: "default" as const,
-          titleEditedManually: false,
-          claudeSessionId: null,
-          active: false,
-          createdAt: new Date(0).toISOString(),
-          updatedAt: new Date(0).toISOString(),
-        },
-        pending: true,
-      },
-    ]
-    : threads.map((thread) => ({ thread, pending: false }));
+  const selectedThreadMissingFromTabs =
+    splitTabStrips == null
+    && !!selectedThreadId
+    && !threads.some((thread) => thread.id === selectedThreadId);
+  const pendingThread = selectedThreadMissingFromTabs && selectedThreadId
+    ? { id: selectedThreadId, title: selectedThreadFallbackTitle || "Loading thread..." }
+    : null;
+
+  // The currently active tab id, derived from the selection-style props.
+  const activeTabId: string | null = reviewTabActive
+    ? "review"
+    : activeFilePath
+      ? activeFilePath
+      : terminalTabActive
+        ? activeTerminalTabId
+        : selectedThreadId;
+
+  // Build the ordered tab list. When `orderedTabs` is provided (driven by the active
+  // editor group) we use it verbatim; otherwise we fall back to the legacy section
+  // order: threads -> terminals -> review -> files.
+  const fallbackTabs: TabItem[] = [
+    ...threads.map((thread): TabItem => ({ type: "chat", id: thread.id })),
+    ...(pendingThread ? [{ type: "chat", id: pendingThread.id } as TabItem] : []),
+    ...terminalTabs.map((tab): TabItem => ({ type: "terminal", id: tab.id })),
+    ...(showReviewTab ? [{ type: "review", id: "review" } as TabItem] : []),
+    ...fileTabs.map((tab): TabItem => ({ type: "file", id: tab.path })),
+  ];
+  const stripTabs = orderedTabs != null && orderedTabs.length > 0 ? orderedTabs : fallbackTabs;
+  const renderedThreadIds = stripTabs.filter((tab) => tab.type === "chat").map((tab) => tab.id);
 
   useEffect(() => {
-    const renderedThreadIds = threadTabs.map(({ thread }) => thread.id);
     const tabState = {
       selectedThreadId,
       renderedThreadIds,
@@ -242,6 +236,19 @@ export function WorkspaceHeader({
       return;
     }
     lastLoggedTabStateRef.current = signature;
+
+    logWorkspaceUiIssueReportSignal(
+      "header.tabs",
+      {
+        orderedTabsProvided: orderedTabs != null,
+        orderedTabsLength: orderedTabs?.length ?? null,
+        stripTabsLength: stripTabs.length,
+        renderedThreadCount: renderedThreadIds.length,
+        splitTabStripsActive: splitTabStrips != null,
+        selectedThreadMissingFromTabs,
+      },
+      { threadId: selectedThreadId },
+    );
 
     debugLog("workspace.header.tabs", "tabs.state.changed", {
       ...tabState,
@@ -272,57 +279,26 @@ export function WorkspaceHeader({
     targetBranch,
     terminalTabActive,
     terminalTabs,
-    threadTabs,
+    orderedTabs,
+    renderedThreadIds,
+    splitTabStrips,
+    stripTabs.length,
     threads,
   ]);
 
   useEffect(() => {
-    if (!editingThreadId) {
+    if (splitTabStrips) {
       return;
     }
-
-    if (!threads.some((thread) => thread.id === editingThreadId)) {
-      setEditingThreadId(null);
-    }
-  }, [editingThreadId, threads]);
-
-  useEffect(() => {
-    if (!editingThreadId) {
-      return;
-    }
-
-    const input = renameInputRef.current;
-    if (!input) {
-      return;
-    }
-
-    input.focus();
-    input.select();
-  }, [editingThreadId]);
-
-  useEffect(() => {
-    if (!editingTerminalTabId) {
-      return;
-    }
-
-    if (!terminalTabs.some((tab) => tab.id === editingTerminalTabId)) {
-      setEditingTerminalTabId(null);
-    }
-  }, [editingTerminalTabId, terminalTabs]);
-
-  useEffect(() => {
-    if (!editingTerminalTabId) {
-      return;
-    }
-
-    const input = terminalRenameInputRef.current;
-    if (!input) {
-      return;
-    }
-
-    input.focus();
-    input.select();
-  }, [editingTerminalTabId]);
+    scheduleWorkspaceUiGeometryProbe(() => {
+      probeSingleHeaderTabAlignment(mergeWithContent);
+    });
+  }, [
+    activeTabId,
+    mergeWithContent,
+    splitTabStrips,
+    stripTabs.length,
+  ]);
 
   useEffect(() => {
     if (!targetBranchSelectorOpen) {
@@ -337,88 +313,6 @@ export function WorkspaceHeader({
 
     return () => window.clearTimeout(timeoutId);
   }, [targetBranchSelectorOpen]);
-
-  useEffect(() => {
-    if (reviewTabActive || terminalTabActive || activeFilePath) {
-      return;
-    }
-
-    const scrollRegion = sessionTabsScrollRef.current;
-    const selectedThreadTab = selectedThreadTabRef.current;
-    if (!scrollRegion || !selectedThreadTab) {
-      return;
-    }
-    if (typeof selectedThreadTab.scrollIntoView !== "function") {
-      return;
-    }
-
-    const scrollRegionRect = scrollRegion.getBoundingClientRect();
-    const selectedThreadRect = selectedThreadTab.getBoundingClientRect();
-    const tooCloseToLeftEdge = selectedThreadRect.left < scrollRegionRect.left + SESSION_TAB_EDGE_INSET_PX;
-    const tooCloseToRightEdge = selectedThreadRect.right > scrollRegionRect.right - SESSION_TAB_EDGE_INSET_PX;
-    if (!tooCloseToLeftEdge && !tooCloseToRightEdge) {
-      return;
-    }
-
-    selectedThreadTab.scrollIntoView({
-      block: "nearest",
-      inline: "center",
-    });
-  }, [activeFilePath, reviewTabActive, selectedThreadId, terminalTabActive, threads]);
-
-  function startThreadRename(threadId: string, isSelected: boolean) {
-    if (!isSelected || disabled) {
-      return;
-    }
-
-    setEditingThreadId(threadId);
-  }
-
-  function cancelThreadRename() {
-    setEditingThreadId(null);
-  }
-
-  function saveThreadRename(threadId: string, currentTitle: string, rawTitle: string) {
-    if (editingThreadId !== threadId) {
-      return;
-    }
-
-    const nextTitle = rawTitle.trim();
-    cancelThreadRename();
-
-    if (!nextTitle || nextTitle === currentTitle) {
-      return;
-    }
-
-    void onRenameThread(threadId, nextTitle);
-  }
-
-  function startTerminalTabRename(terminalTabId: string, isSelected: boolean) {
-    if (!isSelected || disabled) {
-      return;
-    }
-
-    setEditingTerminalTabId(terminalTabId);
-  }
-
-  function cancelTerminalTabRename() {
-    setEditingTerminalTabId(null);
-  }
-
-  function saveTerminalTabRename(terminalTabId: string, currentTitle: string, rawTitle: string) {
-    if (editingTerminalTabId !== terminalTabId) {
-      return;
-    }
-
-    const nextTitle = rawTitle.trim();
-    cancelTerminalTabRename();
-
-    if (!nextTitle || nextTitle === currentTitle) {
-      return;
-    }
-
-    void onRenameTerminalTab?.(terminalTabId, nextTitle);
-  }
 
   const historyPopover = (
     <Popover open={historyOpen} onOpenChange={setHistoryOpen}>
@@ -618,257 +512,95 @@ export function WorkspaceHeader({
         </div>
       </div>
 
-      <div className="flex items-center gap-1">
-        <div
-          ref={sessionTabsScrollRef}
-          className={cn(
-            "min-w-0 overflow-x-auto overscroll-x-contain scroll-px-16 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
-            desktopApp ? "max-w-full" : "flex-1",
-          )}
-          role="tablist"
-          aria-label="Sessions"
-          data-testid="session-tabs-scroll"
-        >
-          <div className={cn("flex w-max items-center gap-0.5 whitespace-nowrap", !desktopApp && "min-w-full")}>
-            {threadTabs.map(({ thread, pending }) => {
-              const isSelected = thread.id === selectedThreadId && !reviewTabActive && !activeFilePath && !terminalTabActive;
-              const isAnyThreadClosing = closingThreadId !== null;
-              const isProtected = protectedThreadId === thread.id;
-              const isEditing = editingThreadId === thread.id;
-
-              return (
-                <div
-                  key={thread.id}
-                  className={cn(
-                    "group flex shrink-0 items-center border-b-2 border-b-transparent text-muted-foreground",
-                    isSelected && "border-b-primary text-foreground",
-                  )}
-                >
-                  {isEditing ? (
-                    <input
-                      ref={renameInputRef}
-                      defaultValue={thread.title}
-                      onBlur={(event) => saveThreadRename(thread.id, thread.title, event.currentTarget.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          saveThreadRename(thread.id, thread.title, event.currentTarget.value);
-                          return;
-                        }
-
-                        if (event.key === "Escape") {
-                          event.preventDefault();
-                          cancelThreadRename();
-                        }
-                      }}
-                      aria-label="Rename thread title"
-                      className="w-[180px] rounded-sm border border-border bg-background px-2 py-1 text-xs font-medium text-foreground outline-none focus:ring-1 focus:ring-ring"
-                    />
-                  ) : (
-                    <button
-                      ref={isSelected ? selectedThreadTabRef : null}
-                      type="button"
-                      role="tab"
-                      aria-selected={isSelected}
-                      title={thread.title}
-                      className={cn(
-                        "flex max-w-[180px] min-w-0 items-center px-2 py-1.5 text-xs font-medium transition-colors",
-                        isSelected && "text-foreground",
-                      )}
-                      onClick={() => onSelectThread(thread.id)}
-                      onDoubleClick={() => {
-                        if (!pending) {
-                          startThreadRename(thread.id, isSelected);
-                        }
-                      }}
-                      onPointerEnter={() => onPrefetchThread?.(thread.id)}
-                      onFocus={() => onPrefetchThread?.(thread.id)}
-                      disabled={disabled}
-                    >
-                      <ThreadTabLabel thread={thread} />
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    aria-label={`Close session ${thread.title}`}
-                    title={`Close ${thread.title}`}
-                    className={cn(
-                      "rounded-sm p-1 text-muted-foreground transition-opacity hover:text-destructive disabled:opacity-50",
-                      isSelected ? "opacity-100" : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
-                    )}
-                    onClick={() => onCloseThread(thread.id)}
-                    disabled={disabled || pending || isAnyThreadClosing || isEditing || isProtected}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              );
-            })}
-
-            {terminalTabs.map((terminalTab) => {
-              const isSelected = terminalTabActive && activeTerminalTabId === terminalTab.id;
-              const isEditing = editingTerminalTabId === terminalTab.id;
-
-              return (
-                <div
-                  key={terminalTab.id}
-                  className={cn(
-                    "group flex shrink-0 items-center border-b-2 border-b-transparent text-muted-foreground",
-                    isSelected && "border-b-primary text-foreground",
-                  )}
-                >
-                  {isEditing ? (
-                    <input
-                      ref={terminalRenameInputRef}
-                      defaultValue={terminalTab.title}
-                      onBlur={(event) => saveTerminalTabRename(terminalTab.id, terminalTab.title, event.currentTarget.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          saveTerminalTabRename(terminalTab.id, terminalTab.title, event.currentTarget.value);
-                          return;
-                        }
-
-                        if (event.key === "Escape") {
-                          event.preventDefault();
-                          cancelTerminalTabRename();
-                        }
-                      }}
-                      aria-label="Rename terminal tab title"
-                      className="w-[180px] rounded-sm border border-border bg-background px-2 py-1 text-xs font-medium text-foreground outline-none focus:ring-1 focus:ring-ring"
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={isSelected}
-                      title={terminalTab.title}
-                      className={cn(
-                        "flex max-w-[180px] min-w-0 items-center gap-1.5 px-2 py-1.5 text-xs font-medium transition-colors",
-                        isSelected && "text-foreground",
-                      )}
-                      onClick={() => onSelectTerminalTab?.(terminalTab.id)}
-                      onDoubleClick={() => startTerminalTabRename(terminalTab.id, isSelected)}
-                      disabled={disabled}
-                    >
-                      <SquareTerminal className="h-3.5 w-3.5 shrink-0" />
-                      <span className="truncate">{terminalTab.title}</span>
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    aria-label={`Close terminal ${terminalTab.title}`}
-                    title={`Close ${terminalTab.title}`}
-                    className={cn(
-                      "rounded-sm p-1 text-muted-foreground transition-opacity hover:text-destructive",
-                      isSelected ? "opacity-100" : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
-                    )}
-                    onClick={() => onCloseTerminalTab?.(terminalTab.id)}
-                    disabled={disabled || isEditing}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              );
-            })}
-
-            {/* Review Changes tab */}
-            {showReviewTab && (
-              <div
-                className={cn(
-                  "group flex shrink-0 items-center border-b-2 border-b-transparent text-muted-foreground",
-                  reviewTabActive && "border-b-primary text-foreground",
-                )}
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={reviewTabActive}
-                  className={cn(
-                    "flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium transition-colors",
-                    reviewTabActive && "text-foreground",
-                  )}
-                  onClick={onSelectReviewTab}
-                >
-                  <GitPullRequestArrow className="h-3 w-3" />
-                  Review Changes
-                </button>
-                <button
-                  type="button"
-                  aria-label="Close review tab"
-                  title="Close review"
-                  className={cn(
-                    "rounded-sm p-1 text-muted-foreground transition-opacity hover:text-destructive",
-                    reviewTabActive ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-                  )}
-                  onClick={onCloseReviewTab}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
+      <div
+        className={cn(
+          "flex gap-1",
+          splitTabStrips ? "relative w-full min-w-0 shrink-0 items-center" : "items-center",
+        )}
+      >
+        {splitTabStrips ? (
+          <>
+            <div
+              className="flex min-w-0 flex-1 items-center overflow-hidden"
+              data-testid="split-tab-strips-host"
+            >
+              {splitTabStrips}
+            </div>
+            <div
+              className="pointer-events-none absolute inset-y-0 right-0 z-10 flex items-center gap-1 bg-gradient-to-l from-background via-background to-transparent pl-6"
+              data-testid="split-tab-strips-trailing-controls"
+            >
+              <div className="pointer-events-auto flex items-center gap-1">
+                <CreateSessionButton
+                  preferenceScopeKey={worktreePath}
+                  threadDisabled={createThreadDisabled ?? disabled}
+                  terminalDisabled={createTerminalDisabled ?? disabled}
+                  onCreateThread={onCreateThread}
+                  onCreateTerminal={onCreateTerminal ?? onCreateThread}
+                  className="shrink-0"
+                />
+                {historyPopover}
               </div>
-            )}
+            </div>
+          </>
+        ) : (
+          <WorkspaceTabStrip
+            groupId="topLeft"
+            tabs={stripTabs}
+            activeTabId={activeTabId}
+            threads={threads}
+            pendingThread={pendingThread}
+            terminalTabs={terminalTabs}
+            fileTabs={fileTabs}
+            disabled={disabled}
+            closingThreadId={closingThreadId}
+            protectedThreadId={protectedThreadId}
+            desktopApp={desktopApp}
+            enableScrollIntoView
+            onSelectTab={(tab) => {
+              if (tab.type === "chat") {
+                onSelectThread(tab.id);
+              } else if (tab.type === "terminal") {
+                onSelectTerminalTab?.(tab.id);
+              } else if (tab.type === "review") {
+                onSelectReviewTab?.();
+              } else {
+                onSelectFileTab(tab.id);
+              }
+            }}
+            onCloseTab={(tab) => {
+              if (tab.type === "chat") {
+                onCloseThread(tab.id);
+              } else if (tab.type === "terminal") {
+                onCloseTerminalTab?.(tab.id);
+              } else if (tab.type === "review") {
+                onCloseReviewTab?.();
+              } else {
+                onCloseFileTab(tab.id);
+              }
+            }}
+            onReorderTab={onReorderTab}
+            onPinFileTab={onPinFileTab}
+            onRenameThread={onRenameThread}
+            onRenameTerminalTab={onRenameTerminalTab}
+            onPrefetchThread={onPrefetchThread}
+            onTabDragStart={onTabDragStart}
+            onTabDragEnd={onTabDragEnd}
+          />
+        )}
 
-            {fileTabs.map((fileTab) => {
-              const label = fileTabLabel(fileTab.path);
-              const isSelected = activeFilePath === fileTab.path;
+        {!splitTabStrips ? (
+          <CreateSessionButton
+            preferenceScopeKey={worktreePath}
+            threadDisabled={createThreadDisabled ?? disabled}
+            terminalDisabled={createTerminalDisabled ?? disabled}
+            onCreateThread={onCreateThread}
+            onCreateTerminal={onCreateTerminal ?? onCreateThread}
+            className="shrink-0"
+          />
+        ) : null}
 
-              return (
-                <div
-                  key={fileTab.path}
-                  className={cn(
-                    "group flex shrink-0 items-center border-b-2 border-b-transparent text-muted-foreground",
-                    isSelected && "border-b-primary text-foreground",
-                  )}
-                >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isSelected}
-                    title={fileTab.path}
-                    className={cn(
-                      "max-w-[180px] truncate px-2 py-1.5 text-xs font-medium transition-colors",
-                      !fileTab.pinned && "italic text-muted-foreground/90",
-                      isSelected && "text-foreground",
-                    )}
-                    onClick={() => onSelectFileTab(fileTab.path)}
-                    onDoubleClick={() => onPinFileTab(fileTab.path)}
-                    disabled={disabled}
-                  >
-                    <span>{label}</span>
-                    {fileTab.dirty ? <Dot className="ml-1 inline h-4 w-4 align-middle text-amber-500" /> : null}
-                  </button>
-
-                  <button
-                    type="button"
-                    aria-label={`Close file ${label}`}
-                    title={`Close ${label}`}
-                    className={cn(
-                      "rounded-sm p-1 text-muted-foreground transition-opacity hover:text-destructive",
-                      isSelected ? "opacity-100" : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
-                    )}
-                    onClick={() => onCloseFileTab(fileTab.path)}
-                    disabled={disabled}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        <CreateSessionButton
-          preferenceScopeKey={worktreePath}
-          threadDisabled={createThreadDisabled ?? disabled}
-          terminalDisabled={createTerminalDisabled ?? disabled}
-          onCreateThread={onCreateThread}
-          onCreateTerminal={onCreateTerminal ?? onCreateThread}
-          className="shrink-0"
-        />
-
-        <div className="ml-auto shrink-0">{historyPopover}</div>
+        {!splitTabStrips ? <div className="ml-auto shrink-0">{historyPopover}</div> : null}
       </div>
     </section>
   );

@@ -1,4 +1,4 @@
-import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Bug, Menu, Settings, X } from "lucide-react";
 import {
   type ClaudeModelCatalogEntry,
@@ -11,8 +11,43 @@ import {
 import { Composer } from "../components/workspace/composer";
 import { AGENT_LABELS } from "../components/workspace/composer/AgentModelSelector";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
+import { ChatPane } from "../components/workspace/ChatPane";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { disposeTerminalRuntime } from "../components/workspace/terminalRuntimeRegistry";
+import {
+  type TabItem,
+  type EditorGroupsState,
+  createEmptyEditorGroupsState,
+  getEditorGroup,
+  reconcileEditorGroups,
+  moveTab,
+  moveTabToQuadrant,
+  moveTabToGroup,
+  reorderTabInGroup,
+  splitActiveTab,
+  closeTabInGroup,
+  layoutAfterPaneSplitEdge,
+  destinationForPaneSplit,
+  visibleEditorColumnIds,
+} from "./workspace/editorGroups";
+import { firstEmptyColumnToTheRight, normalizeColumnWidths } from "./workspace/editorColumns";
+import type { EditorQuadrantId } from "./workspace/editorGroupTypes";
+import { EDITOR_QUADRANT_IDS } from "./workspace/editorGroupTypes";
+import {
+  logEditorGridFocusAttempt,
+  logEditorGridStateChange,
+  scheduleEditorGridDomProbe,
+  snapshotEditorGridState,
+} from "../lib/workspaceEditorGridDiagnose";
+import { ResizableColumns } from "../components/workspace/ResizableColumns";
+import { EditorMultiTabStrips } from "../components/workspace/EditorMultiTabStrips";
+import { EditorSurfaceFrame } from "../components/workspace/EditorSurfaceFrame";
+import { WorkspaceTabStrip } from "../components/workspace/WorkspaceTabStrip";
+import { clearActiveEditorTabDragPayload } from "../components/workspace/editorTabDrag";
+import {
+  applyEditorTabPaneDrop,
+  type PaneSplitDropTarget,
+} from "./workspace/editorPaneSplitDrop";
 const MobileRepositoryPanel = lazy(() =>
   import("../components/workspace/RepositoryPanel").then(m => ({ default: m.RepositoryPanel }))
 );
@@ -170,11 +205,14 @@ import {
   isPendingWorktreeStatus,
   isRootWorktree,
   isSelectableWorktreeStatus,
+  isAbsoluteFsPath,
+  toWorktreeRelativePath,
 } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
 import type { ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
 import { useChatSession } from "./workspace/hooks/chat-session";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
+import { useGateRequestNavigation } from "./workspace/hooks/useGateRequestNavigation";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgroundWorktreeStatusStream";
@@ -2163,11 +2201,18 @@ export function WorkspacePage() {
       return Promise.resolve();
     }
 
-    return queryClient.prefetchQuery({
-      queryKey: queryKeys.threads.timelineSnapshot(threadId),
-      queryFn: () => api.getTimelineSnapshot(threadId),
-      staleTime: THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS,
-    });
+    return Promise.all([
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.threads.timelineSnapshot(threadId, "compact"),
+        queryFn: () => api.getTimelineSnapshot(threadId, { mode: "compact" }),
+        staleTime: THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS,
+      }),
+      queryClient.prefetchQuery({
+        queryKey: queryKeys.threads.statusSnapshot(threadId),
+        queryFn: () => api.getThreadStatusSnapshot(threadId),
+        staleTime: THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS,
+      }),
+    ]).then(() => undefined);
   }, [isThreadHistoryLocallyComplete, queryClient]);
   const prefetchWorktreeNavigationTarget = useCallback(async (worktreeId: string, preferredThreadId?: string | null) => {
     const inFlight = navigationPrefetchRef.current.get(worktreeId);
@@ -2441,40 +2486,14 @@ export function WorkspacePage() {
     },
   });
   pushStartupRenderProfileSection("pending-gates");
-  const [activePermissionRequestId, setActivePermissionRequestId] = useState<string | null>(null);
-  const [activeQuestionRequestId, setActiveQuestionRequestId] = useState<string | null>(null);
-
-  const activePermissionIndex = useMemo(() => {
-    if (gates.pendingPermissionRequests.length === 0) {
-      return -1;
-    }
-
-    if (!activePermissionRequestId) {
-      return 0;
-    }
-
-    return gates.pendingPermissionRequests.findIndex((request) => request.requestId === activePermissionRequestId);
-  }, [activePermissionRequestId, gates.pendingPermissionRequests]);
-
-  const activePermissionRequest = activePermissionIndex >= 0
-    ? gates.pendingPermissionRequests[activePermissionIndex] ?? null
-    : null;
-  const hasMultiplePendingPermissions = gates.pendingPermissionRequests.length > 1;
-  const activeQuestionIndex = useMemo(() => {
-    if (gates.pendingQuestionRequests.length === 0) {
-      return -1;
-    }
-
-    if (!activeQuestionRequestId) {
-      return 0;
-    }
-
-    return gates.pendingQuestionRequests.findIndex((request) => request.requestId === activeQuestionRequestId);
-  }, [activeQuestionRequestId, gates.pendingQuestionRequests]);
-  const activeQuestionRequest = activeQuestionIndex >= 0
-    ? gates.pendingQuestionRequests[activeQuestionIndex] ?? null
-    : null;
-  const hasMultiplePendingQuestions = gates.pendingQuestionRequests.length > 1;
+  const permissionNav = useGateRequestNavigation(gates.pendingPermissionRequests);
+  const questionNav = useGateRequestNavigation(gates.pendingQuestionRequests);
+  const activePermissionRequest = permissionNav.activeRequest;
+  const activePermissionIndex = permissionNav.activeIndex;
+  const hasMultiplePendingPermissions = permissionNav.hasMultiple;
+  const activeQuestionRequest = questionNav.activeRequest;
+  const activeQuestionIndex = questionNav.activeIndex;
+  const hasMultiplePendingQuestions = questionNav.hasMultiple;
   const { showPermissionGate, showQuestionGate } = deriveVisibleUserGates({
     pendingPermissionRequestCount: gates.pendingPermissionRequests.length,
     pendingQuestionRequestCount: gates.pendingQuestionRequests.length,
@@ -2559,7 +2578,16 @@ export function WorkspacePage() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [issueReportOpen, setIssueReportOpen] = useState(false);
-  const [focusComposerSignal, setFocusComposerSignal] = useState(0);
+  const [focusComposerSignalByGroup, setFocusComposerSignalByGroup] = useState<
+    Record<EditorQuadrantId, number>
+  >({
+    topLeft: 0,
+    topRight: 0,
+    bottomLeft: 0,
+    bottomRight: 0,
+  });
+  const focusComposerTargetGroupRef = useRef<EditorQuadrantId>("topLeft");
+  const editorGroupsRef = useRef<EditorGroupsState>(createEmptyEditorGroupsState());
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
   const openSettingsDialog = useCallback(() => {
@@ -2675,6 +2703,11 @@ export function WorkspacePage() {
     });
   }, [activeView, enableNonCriticalWorkspaceData, repos.selectedWorktreeId]);
 
+  const pendingExplorerFileTabIdsRef = useRef<Set<string>>(new Set());
+  const handleExplorerFileTabOpened = useCallback((filePath: string) => {
+    pendingExplorerFileTabIdsRef.current.add(filePath);
+  }, []);
+
   const {
     activeEditorFileState,
     activeEditorGitBaselineState,
@@ -2700,12 +2733,15 @@ export function WorkspacePage() {
     quickFilePicker,
     recentFilePaths,
     workspaceFileTabs,
+    activeWorktreeEditorStates,
+    activeWorktreeGitBaselines,
   } = useWorkspaceFileEditor({
     activeFilePath,
     activeGitBaselineVersionKey,
     activeView,
     fileEntries: fileIndex.entries,
     onError: setError,
+    onExplorerFileTabOpened: handleExplorerFileTabOpened,
     onOpenQuickFilePicker: () => {
       markWorkspaceFileIndexRequested(repos.selectedWorktreeId);
       setMobilePanelOpen(null);
@@ -2717,6 +2753,8 @@ export function WorkspacePage() {
     selectedWorktreePath: repos.selectedWorktree?.path ?? null,
     updateSearch,
   });
+
+
   useEffect(() => {
     const threadIds = chat.threads.map((thread) => thread.id);
     const fileTabPaths = workspaceFileTabs.map((tab) => tab.path);
@@ -2884,43 +2922,20 @@ export function WorkspacePage() {
       });
     }
 
-    setFocusComposerSignal((current) => current + 1);
-  }, [activeView, confirmSwitchAwayFromActiveFile, updateSearch]);
+    const groupId = focusComposerTargetGroupRef.current;
+    logEditorGridFocusAttempt(
+      "composerShortcut",
+      { groupId, activeView },
+      repos.selectedWorktreeId,
+    );
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (settingsOpen) {
-        return;
-      }
+    setFocusComposerSignalByGroup((current) => ({
+      ...current,
+      [groupId]: current[groupId] + 1,
+    }));
+  }, [activeView, confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, updateSearch]);
 
-      const isMac = isMacLikePlatform();
 
-      if (matchesOpenSettingsShortcut(event, isMac)) {
-        event.preventDefault();
-        event.stopPropagation();
-        openSettingsDialog();
-        return;
-      }
-
-      if (matchesToggleWorkspaceSidebarShortcut(event, isMac)) {
-        event.preventDefault();
-        event.stopPropagation();
-        handleToggleLeftSidebar();
-        return;
-      }
-
-      if (matchesFocusChatInputShortcut(event, isMac)) {
-        event.preventDefault();
-        event.stopPropagation();
-        handleFocusChatInput();
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [handleFocusChatInput, handleToggleLeftSidebar, openSettingsDialog, settingsOpen]);
 
   const threadlessFallbackSurface = useMemo(
     () => resolveWorkspaceThreadlessFallbackSurface({
@@ -3205,46 +3220,6 @@ export function WorkspacePage() {
   const openIssueReportDialog = useCallback(() => {
     setIssueReportOpen(true);
   }, []);
-
-  useEffect(() => {
-    if (gates.pendingPermissionRequests.length === 0) {
-      setActivePermissionRequestId(null);
-      return;
-    }
-
-    if (
-      activePermissionRequestId
-      && gates.pendingPermissionRequests.some((request) => request.requestId === activePermissionRequestId)
-    ) {
-      return;
-    }
-
-    const fallbackIndex = activePermissionIndex >= 0
-      ? Math.min(activePermissionIndex, gates.pendingPermissionRequests.length - 1)
-      : 0;
-    const fallbackRequest = gates.pendingPermissionRequests[fallbackIndex] ?? gates.pendingPermissionRequests[0];
-    setActivePermissionRequestId(fallbackRequest?.requestId ?? null);
-  }, [activePermissionIndex, activePermissionRequestId, gates.pendingPermissionRequests]);
-
-  useEffect(() => {
-    if (gates.pendingQuestionRequests.length === 0) {
-      setActiveQuestionRequestId(null);
-      return;
-    }
-
-    if (
-      activeQuestionRequestId
-      && gates.pendingQuestionRequests.some((request) => request.requestId === activeQuestionRequestId)
-    ) {
-      return;
-    }
-
-    const fallbackIndex = activeQuestionIndex >= 0
-      ? Math.min(activeQuestionIndex, gates.pendingQuestionRequests.length - 1)
-      : 0;
-    const fallbackRequest = gates.pendingQuestionRequests[fallbackIndex] ?? gates.pendingQuestionRequests[0];
-    setActiveQuestionRequestId(fallbackRequest?.requestId ?? null);
-  }, [activeQuestionIndex, activeQuestionRequestId, gates.pendingQuestionRequests]);
 
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
@@ -3780,49 +3755,10 @@ export function WorkspacePage() {
     void handleRunScript();
   }, [handleRunScript, handleStopRunScript, selectedBottomPanelState.runScriptActive]);
 
-  const handleShowPreviousPermission = useCallback(() => {
-    if (activePermissionIndex <= 0) {
-      return;
-    }
-
-    const previousRequest = gates.pendingPermissionRequests[activePermissionIndex - 1];
-    if (previousRequest) {
-      setActivePermissionRequestId(previousRequest.requestId);
-    }
-  }, [activePermissionIndex, gates.pendingPermissionRequests]);
-
-  const handleShowNextPermission = useCallback(() => {
-    if (activePermissionIndex < 0 || activePermissionIndex >= gates.pendingPermissionRequests.length - 1) {
-      return;
-    }
-
-    const nextRequest = gates.pendingPermissionRequests[activePermissionIndex + 1];
-    if (nextRequest) {
-      setActivePermissionRequestId(nextRequest.requestId);
-    }
-  }, [activePermissionIndex, gates.pendingPermissionRequests]);
-
-  const handleShowPreviousQuestion = useCallback(() => {
-    if (activeQuestionIndex <= 0) {
-      return;
-    }
-
-    const previousRequest = gates.pendingQuestionRequests[activeQuestionIndex - 1];
-    if (previousRequest) {
-      setActiveQuestionRequestId(previousRequest.requestId);
-    }
-  }, [activeQuestionIndex, gates.pendingQuestionRequests]);
-
-  const handleShowNextQuestion = useCallback(() => {
-    if (activeQuestionIndex < 0 || activeQuestionIndex >= gates.pendingQuestionRequests.length - 1) {
-      return;
-    }
-
-    const nextRequest = gates.pendingQuestionRequests[activeQuestionIndex + 1];
-    if (nextRequest) {
-      setActiveQuestionRequestId(nextRequest.requestId);
-    }
-  }, [activeQuestionIndex, gates.pendingQuestionRequests]);
+  const handleShowPreviousPermission = permissionNav.showPrevious;
+  const handleShowNextPermission = permissionNav.showNext;
+  const handleShowPreviousQuestion = questionNav.showPrevious;
+  const handleShowNextQuestion = questionNav.showNext;
 
   const handleSelectDiffFile = useCallback((filePath: string) => {
     if (!confirmSwitchAwayFromActiveFile()) {
@@ -4391,6 +4327,552 @@ export function WorkspacePage() {
     ? liveError
     : null;
 
+  const isExternalFileReference = (filePath: string | null, worktreePath: string | null): boolean => {
+    if (!filePath || !isAbsoluteFsPath(filePath)) {
+      return false;
+    }
+    if (!worktreePath) {
+      return true;
+    }
+    return toWorktreeRelativePath(worktreePath, filePath) === null;
+  };
+
+  // Split Panel State
+  const [editorGroups, setEditorGroups] = useState<EditorGroupsState>(createEmptyEditorGroupsState);
+  const [columnWidths, setColumnWidths] = useState<number[]>([50, 50]);
+  const [isEditorTabDragging, setIsEditorTabDragging] = useState(false);
+
+  const visibleEditorColumns = useMemo(
+    () => visibleEditorColumnIds(editorGroups),
+    [editorGroups],
+  );
+
+  useEffect(() => {
+    const count = visibleEditorColumns.length;
+    if (count <= 1) {
+      return;
+    }
+    setColumnWidths((current) => normalizeColumnWidths(current, count));
+  }, [visibleEditorColumns.length]);
+
+  useEffect(() => {
+    editorGroupsRef.current = editorGroups;
+    focusComposerTargetGroupRef.current = editorGroups.activeGroupId;
+  }, [editorGroups]);
+
+  useEffect(() => {
+    if (!editorGroups.splitMode) {
+      return;
+    }
+    const snapshot = snapshotEditorGridState({
+      editorGroups,
+      horizontalSplit: columnWidths[0] ?? 50,
+      verticalSplit: 50,
+      focusComposerSignals: focusComposerSignalByGroup,
+      globalActiveView: activeView,
+    });
+    logEditorGridStateChange("split-layout-changed", snapshot, repos.selectedWorktreeId);
+    scheduleEditorGridDomProbe(repos.selectedWorktreeId, 150);
+  }, [
+    editorGroups.layout,
+    editorGroups.splitMode,
+    editorGroups.activeGroupId,
+    editorGroups.groups,
+    columnWidths,
+    focusComposerSignalByGroup,
+    activeView,
+    repos.selectedWorktreeId,
+  ]);
+
+  // Reconcile open tabs from hooks into editor groups state
+  const sourceTabs = useMemo<TabItem[]>(() => {
+    const tabs: TabItem[] = [];
+
+    // Order mirrors the legacy header sections: threads -> terminals -> review -> files.
+    openThreads.forEach((th) => {
+      tabs.push({ type: "chat", id: th.id });
+    });
+
+    selectedTerminalTabsState.tabs.forEach((tt) => {
+      tabs.push({ type: "terminal", id: tt.id });
+    });
+
+    if (reviewTabOpen) {
+      tabs.push({ type: "review", id: "review" });
+    }
+
+    workspaceFileTabs.forEach((ft) => {
+      tabs.push({ type: "file", id: ft.path });
+    });
+
+    return tabs;
+  }, [workspaceFileTabs, selectedTerminalTabsState.tabs, reviewTabOpen, openThreads]);
+
+  useEffect(() => {
+    setEditorGroups((current) => {
+      const pending = pendingExplorerFileTabIdsRef.current;
+      const newFileTabIds = [...pending].filter((id) =>
+        sourceTabs.some((t) => t.type === "file" && t.id === id),
+      );
+      for (const id of newFileTabIds) {
+        pending.delete(id);
+      }
+      return reconcileEditorGroups(current, sourceTabs, {
+        newFileTabIds: newFileTabIds.length > 0 ? newFileTabIds : undefined,
+      });
+    });
+  }, [sourceTabs]);
+
+  // The tab id currently selected via external navigation (sidebar, shortcuts, URL).
+  const currentSelectionTabId: string | null = reviewTabOpen
+    ? "review"
+    : activeFilePath
+      ? activeFilePath
+      : terminalViewActive
+        ? (activeTerminalTab?.id ?? null)
+        : chat.selectedThreadId;
+
+  // Keep the active group's active tab aligned with the external selection while not
+  // split, so toggling a split (Cmd+\) operates on the visually-active tab.
+  useEffect(() => {
+    if (!currentSelectionTabId) {
+      return;
+    }
+    setEditorGroups((current) => {
+      if (current.layout !== "single") {
+        return current;
+      }
+      const topLeft = current.groups.topLeft;
+      if (topLeft.activeTabId === currentSelectionTabId) {
+        return current;
+      }
+      if (!topLeft.tabs.some((t) => t.id === currentSelectionTabId)) {
+        return current;
+      }
+      return {
+        ...current,
+        activeGroupId: "topLeft",
+        groups: {
+          ...current.groups,
+          topLeft: { ...topLeft, activeTabId: currentSelectionTabId },
+        },
+      };
+    });
+  }, [currentSelectionTabId]);
+
+  const syncTabToUrl = useCallback((tab: TabItem) => {
+    if (tab.type === "file") {
+      updateSearch({
+        view: "file",
+        file: tab.id,
+        fileLine: undefined,
+        fileColumn: undefined,
+      });
+    } else if (tab.type === "chat") {
+      updateSearch({
+        view: "chat",
+        threadId: tab.id,
+        file: undefined,
+      });
+    } else if (tab.type === "terminal") {
+      handleSelectTerminalTab(tab.id);
+    } else if (tab.type === "review") {
+      updateSearch({
+        view: "review",
+        file: undefined,
+      });
+    }
+  }, [updateSearch, handleSelectTerminalTab]);
+
+  const handleFocusGroup = useCallback((groupId: EditorQuadrantId) => {
+    logEditorGridFocusAttempt("focusGroup", { groupId, refTarget: focusComposerTargetGroupRef.current }, repos.selectedWorktreeId);
+    const group = editorGroupsRef.current.groups[groupId];
+    const activeTab = group.tabs.find((t) => t.id === group.activeTabId);
+    if (activeTab?.type === "chat") {
+      setFocusComposerSignalByGroup((signals) => ({
+        ...signals,
+        [groupId]: signals[groupId] + 1,
+      }));
+    } else if (activeTab?.type === "terminal") {
+      window.setTimeout(() => {
+        const pane = document.querySelector(`[data-editor-quadrant="${groupId}"]`);
+        const textarea = pane?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+        textarea?.focus();
+      }, 0);
+    }
+    setEditorGroups((current) => {
+      if (current.activeGroupId === groupId) {
+        return current;
+      }
+      const tab = current.groups[groupId].tabs.find((t) => t.id === current.groups[groupId].activeTabId);
+      if (tab) {
+        syncTabToUrl(tab);
+      }
+      return { ...current, activeGroupId: groupId };
+    });
+  }, [repos.selectedWorktreeId, syncTabToUrl]);
+
+  const handleSelectGroupTab = useCallback((groupId: EditorQuadrantId, tab: TabItem) => {
+    setEditorGroups((current) => {
+      const group = current.groups[groupId];
+      return {
+        ...current,
+        activeGroupId: groupId,
+        groups: {
+          ...current.groups,
+          [groupId]: { ...group, activeTabId: tab.id },
+        },
+      };
+    });
+    syncTabToUrl(tab);
+    logEditorGridFocusAttempt(
+      "selectGroupTab",
+      { groupId, tabType: tab.type, tabId: tab.id, splitMode: editorGroups.splitMode },
+      repos.selectedWorktreeId,
+    );
+    if (tab.type === "chat") {
+      void prefetchDisplayThreadSnapshot(tab.id);
+      setFocusComposerSignalByGroup((current) => ({
+        ...current,
+        [groupId]: current[groupId] + 1,
+      }));
+    } else if (tab.type === "terminal") {
+      window.setTimeout(() => {
+        const pane = document.querySelector(`[data-editor-quadrant="${groupId}"]`);
+        const textarea = pane?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+        textarea?.focus();
+      }, 0);
+    }
+  }, [editorGroups.splitMode, prefetchDisplayThreadSnapshot, repos.selectedWorktreeId, syncTabToUrl]);
+
+  const handleCloseGroupTab = useCallback((groupId: EditorQuadrantId, tab: TabItem) => {
+    setEditorGroups((current) => {
+      const { nextState } = closeTabInGroup(current, tab.id, groupId);
+      return nextState;
+    });
+
+    // Side effects: delegate actual close to the workspace hooks
+    if (tab.type === "file") {
+      handleCloseFileTab(tab.id);
+    } else if (tab.type === "chat") {
+      handleRequestCloseThread(tab.id);
+    } else if (tab.type === "terminal") {
+      handleCloseTerminalTab(tab.id);
+    } else if (tab.type === "review") {
+      handleCloseReview();
+    }
+  }, [handleCloseFileTab, handleRequestCloseThread, handleCloseTerminalTab, handleCloseReview]);
+
+  const handleDropGroupTab = useCallback(
+    (targetGroupId: EditorQuadrantId, tab: TabItem, sourceGroupId: EditorQuadrantId, toIndex?: number) => {
+      if (sourceGroupId === targetGroupId) return;
+      setEditorGroups((current) => moveTabToGroup(current, tab.id, targetGroupId, toIndex));
+      syncTabToUrl(tab);
+    },
+    [syncTabToUrl],
+  );
+
+  const handleReorderGroupTab = useCallback(
+    (groupId: EditorQuadrantId, tabId: string, toIndex: number) => {
+      setEditorGroups((current) => reorderTabInGroup(current, groupId, tabId, toIndex));
+    },
+    [],
+  );
+
+  const handlePaneDropTab = useCallback(
+    (tab: TabItem, target: PaneSplitDropTarget, sourcePane: EditorQuadrantId) => {
+      setEditorGroups((current) => applyEditorTabPaneDrop(current, tab.id, target, sourcePane));
+      syncTabToUrl(tab);
+    },
+    [syncTabToUrl],
+  );
+
+  const handleEditorTabDragStart = useCallback(() => {
+    setIsEditorTabDragging(true);
+  }, []);
+
+  const handleEditorTabDragEnd = useCallback(() => {
+    clearActiveEditorTabDragPayload();
+    setIsEditorTabDragging(false);
+  }, []);
+
+  useEffect(() => {
+    const clearTabDrag = () => {
+      clearActiveEditorTabDragPayload();
+      setIsEditorTabDragging(false);
+    };
+    window.addEventListener("dragend", clearTabDrag);
+    return () => window.removeEventListener("dragend", clearTabDrag);
+  }, []);
+
+  const wrapUnsplitEditorSurface = useCallback(
+    (content: ReactNode) => (
+      <EditorSurfaceFrame
+        paneGroupId="topLeft"
+        layout={editorGroups.layout}
+        groups={editorGroups.groups}
+        paneDropEnabled
+        tabDragActive={isEditorTabDragging}
+        onPaneDrop={(tab, target) => handlePaneDropTab(tab, target, "topLeft")}
+        onFocusPane={() => handleFocusGroup("topLeft")}
+      >
+        {content}
+      </EditorSurfaceFrame>
+    ),
+    [editorGroups.groups, editorGroups.layout, handleFocusGroup, handlePaneDropTab, isEditorTabDragging],
+  );
+
+  const renderPaneContent = (groupId: EditorQuadrantId) => {
+    const group = editorGroups.groups[groupId];
+    if (!group.activeTabId) {
+      if (editorGroups.splitMode && group.tabs.length === 0) {
+        logEditorGridFocusAttempt(
+          "paneClick",
+          { groupId, reason: "empty-quadrant-no-active-tab", layout: editorGroups.layout },
+          repos.selectedWorktreeId,
+        );
+      }
+      return null;
+    }
+
+    const activeTab = group.tabs.find((t) => t.id === group.activeTabId);
+    if (!activeTab) return null;
+
+    if (activeTab.type === "file") {
+      const filePath = activeTab.id;
+      const editorState = activeWorktreeEditorStates[filePath];
+      const gitBaselineState = activeWorktreeGitBaselines[filePath];
+      const activeGitChange = gitChanges.entries.find((entry) => entry.path === filePath) ?? null;
+
+      return (
+        <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+          <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading editor...</div>}>
+            <CodeEditorPanel
+              key={`${repos.selectedWorktreeId ?? "none"}:${filePath}`}
+              filePath={filePath}
+              externalFile={isExternalFileReference(filePath, repos.selectedWorktree?.path ?? null)}
+              targetLine={activeFilePath === filePath ? (activeFileLine ?? undefined) : undefined}
+              targetColumn={activeFilePath === filePath ? (activeFileColumn ?? undefined) : undefined}
+              fileEntries={fileIndex.entries}
+              content={editorState?.draftContent ?? ""}
+              mimeType={editorState?.mimeType ?? "text/plain"}
+              gitHeadContent={gitBaselineState?.headContent ?? null}
+              gitBaselineReady={gitBaselineState?.loaded ?? false}
+              gitBaselineLoading={gitBaselineState?.loading ?? false}
+              gitBranch={gitChanges.branch}
+              gitStatus={activeGitChange?.status ?? null}
+              loading={editorState?.loading ?? false}
+              saving={editorState?.saving ?? false}
+              dirty={!!(editorState && editorState.loaded && editorState.draftContent !== editorState.savedContent)}
+              error={editorState?.error ?? null}
+              desktopApp={desktopApp}
+              mobileBottomOffset={mobileKeyboardOffset}
+              onChange={(content) => handleEditorDraftChange(filePath, content)}
+              onSave={() => void handleSaveActiveFile()}
+              onRetry={handleRetryActiveFileLoad}
+              onOpenFile={(path) => void openReadFile(path)}
+            />
+          </Suspense>
+        </section>
+      );
+    }
+
+    if (activeTab.type === "chat") {
+      const threadId = activeTab.id;
+      const paneThread = chat.threads.find((thread) => thread.id === threadId) ?? null;
+
+      // Each split pane owns a fully independent ChatPane scoped to its own
+      // thread, so a non-focused pane renders its real surface (timeline +
+      // composer + gates) instead of a forced shimmer.
+      return (
+        <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
+          <ChatPane
+            threadId={threadId}
+            thread={paneThread}
+            worktreeId={repos.selectedWorktreeId}
+            repositoryId={repos.selectedRepositoryId}
+            worktreeOperational={selectedWorktreeOperational}
+            worktreePath={repos.selectedWorktree?.path ?? null}
+            providers={modelProviders}
+            claudeModels={claudeModels}
+            codexModels={codexModels}
+            cursorModels={cursorModels}
+            opencodeModels={opencodeModels}
+            modelCatalogReadyByAgent={modelCatalogReadyByAgent}
+            runtimeInfo={runtimeInfo.data ?? null}
+            slashCommands={slashCommandCatalogWorktreeId ? composerSlashCommands : undefined}
+            slashCommandsLoading={slashCommandCatalogWorktreeId ? composerSlashCommandsLoading : undefined}
+            sendMessagesWith={generalSettings.sendMessagesWith}
+            autoConvertLongTextEnabled={generalSettings.autoConvertLongTextEnabled}
+            onSubmitMessage={(content, mode, attachments, targetThreadId) =>
+              chat.submitMessage(content, mode, attachments, targetThreadId)}
+            onSetThreadMode={(targetThreadId, mode) => chat.setThreadMode(targetThreadId, mode)}
+            onSetThreadAgentSelection={(targetThreadId, selection) =>
+              chat.setThreadAgentSelection(targetThreadId, selection)}
+            onSetThreadPermissionMode={(targetThreadId, permissionMode) =>
+              chat.setThreadPermissionMode(targetThreadId, permissionMode)}
+            onStopAssistantRun={(targetThreadId) => chat.stopAssistantRun(targetThreadId)}
+            onError={setError}
+            onOpenReadFile={openReadFile}
+            focusSignal={focusComposerSignalByGroup[groupId] > 0 ? focusComposerSignalByGroup[groupId] : undefined}
+            onFocusPane={() => handleFocusGroup(groupId)}
+            onAgentModelSelectorOpen={handleOpenAgentModelSelector}
+          />
+        </Suspense>
+      );
+    }
+
+    if (activeTab.type === "terminal") {
+      const terminalTabId = activeTab.id;
+      const terminalTab = selectedTerminalTabsState.tabs.find((t) => t.id === terminalTabId);
+
+      if (!terminalTab) return null;
+
+      return (
+        <Suspense fallback={<div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+          <WorkspaceTerminalSurface
+            key={terminalTab.id}
+            sessionId={terminalTab.sessionId}
+            cwd={repos.selectedWorktree?.path ?? null}
+            mobileBottomOffset={mobileKeyboardOffset}
+            onOpenFile={(path) => void openReadFile(path)}
+            showMobileKeyboardToolbar={!desktopLayout}
+          />
+        </Suspense>
+      );
+    }
+
+    if (activeTab.type === "review") {
+      if (!reviewTabOpen || !repos.selectedWorktreeId) return null;
+      return (
+        <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading review...</div>}>
+          <DiffReviewPanel worktreeId={repos.selectedWorktreeId} selectedFilePath={selectedDiffFilePath} />
+        </Suspense>
+      );
+    }
+
+    return null;
+  };
+
+  const renderGroupStrip = (groupId: EditorQuadrantId) => {
+    const group = editorGroups.groups[groupId];
+    return (
+      <WorkspaceTabStrip
+        groupId={groupId}
+        tabs={group.tabs}
+        activeTabId={group.activeTabId}
+        threads={openThreads}
+        terminalTabs={selectedTerminalTabsState.tabs}
+        fileTabs={workspaceFileTabs}
+        disabled={false}
+        closingThreadId={chat.closingThreadId}
+        protectedThreadId={chat.showStopAction ? chat.selectedThreadId : null}
+        fillWidth
+        isActiveGroup={editorGroups.activeGroupId === groupId}
+        onSelectTab={(tab) => handleSelectGroupTab(groupId, tab)}
+        onCloseTab={(tab) => handleCloseGroupTab(groupId, tab)}
+        onReorderTab={(tabId, toIndex) => handleReorderGroupTab(groupId, tabId, toIndex)}
+        onDropTabFromOtherGroup={(tab, sourceGroupId, toIndex) => handleDropGroupTab(groupId, tab, sourceGroupId, toIndex)}
+        onTabDragStart={handleEditorTabDragStart}
+        onTabDragEnd={handleEditorTabDragEnd}
+        onPinFileTab={handlePinFileTab}
+        onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
+        onRenameTerminalTab={handleRenameTerminalTab}
+        onPrefetchThread={(threadId) => {
+          void prefetchDisplayThreadSnapshot(threadId);
+        }}
+        onFocusGroup={() => handleFocusGroup(groupId)}
+      />
+    );
+  };
+
+  const splitTabStrips = editorGroups.splitMode ? (
+    <EditorMultiTabStrips
+      columnWidths={columnWidths}
+      strips={visibleEditorColumns.map((columnId) => renderGroupStrip(columnId))}
+    />
+  ) : null;
+
+  const renderPane = (groupId: EditorQuadrantId) => {
+    return (
+      <div
+        className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-background"
+        data-editor-quadrant={groupId}
+      >
+        <EditorSurfaceFrame
+          paneGroupId={groupId}
+          layout={editorGroups.layout}
+          groups={editorGroups.groups}
+          paneDropEnabled
+        tabDragActive={isEditorTabDragging}
+          onPaneDrop={(tab, target) => handlePaneDropTab(tab, target, groupId)}
+          onFocusPane={() => handleFocusGroup(groupId)}
+        >
+          {renderPaneContent(groupId)}
+        </EditorSurfaceFrame>
+      </div>
+    );
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (settingsOpen) {
+        return;
+      }
+
+      const isMac = isMacLikePlatform();
+
+      // Split panel shortcuts
+      if ((event.metaKey || event.ctrlKey) && event.key === "\\") {
+        event.preventDefault();
+        event.stopPropagation();
+        setEditorGroups((current) => splitActiveTab(current));
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key === "1") {
+        event.preventDefault();
+        event.stopPropagation();
+        handleFocusGroup("topLeft");
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key === "2") {
+        if (editorGroups.splitMode) {
+          event.preventDefault();
+          event.stopPropagation();
+          handleFocusGroup("topRight");
+        }
+        return;
+      }
+
+      if (matchesOpenSettingsShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        openSettingsDialog();
+        return;
+      }
+
+      if (matchesToggleWorkspaceSidebarShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleToggleLeftSidebar();
+        return;
+      }
+
+      if (matchesFocusChatInputShortcut(event, isMac)) {
+        event.preventDefault();
+        event.stopPropagation();
+        handleFocusChatInput();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [handleFocusChatInput, handleToggleLeftSidebar, openSettingsDialog, settingsOpen, editorGroups.splitMode, handleFocusGroup]);
+
   return (
     <div
       className={cn(
@@ -4520,6 +5002,7 @@ export function WorkspacePage() {
                 className={cn(
                   getWorkspaceHeaderContainerClassName({
                     activeView,
+                    editorSplitActive: editorGroups.splitMode,
                   }),
                   mobileInlinePanel && !desktopApp && "hidden lg:block",
                 )}
@@ -4556,21 +5039,21 @@ export function WorkspacePage() {
                     }
                     enableInstalledAppsQuery={enableNonCriticalWorkspaceData}
                     worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : resolvedStartupWorktreePath}
-                    threads={openThreads}
+                    threads={editorGroups.splitMode ? [] : openThreads}
                     closedThreads={closedThreads}
-                    terminalTabs={selectedTerminalTabsState.tabs}
+                    terminalTabs={editorGroups.splitMode ? [] : selectedTerminalTabsState.tabs}
                     activeTerminalTabId={activeTerminalTab?.id ?? null}
                     terminalTabActive={terminalViewActive}
                     selectedThreadId={chat.selectedThreadId}
                     selectedThreadFallbackTitle={selectedThreadTitle}
-                    fileTabs={workspaceFileTabs}
+                    fileTabs={editorGroups.splitMode ? [] : workspaceFileTabs}
                     activeFilePath={activeFilePath}
                     disabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
                     createThreadDisabled={!repos.selectedWorktreeId || !selectedWorktreeOperational || chat.sendingMessage}
                     createTerminalDisabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
                     closingThreadId={chat.closingThreadId}
                     protectedThreadId={chat.showStopAction ? chat.selectedThreadId : null}
-                    showReviewTab={reviewTabOpen}
+                    showReviewTab={editorGroups.splitMode ? false : reviewTabOpen}
                     reviewTabActive={activeView === "review"}
                     onSelectThread={handleSelectThread}
                     onSelectTerminalTab={handleSelectTerminalTab}
@@ -4607,6 +5090,11 @@ export function WorkspacePage() {
                     onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
                     mergeWithContent={activeView === "file"}
                     resourceMonitor={!showMacDesktopTitleBar ? workspaceHeaderControls : null}
+                    splitTabStrips={splitTabStrips}
+                    orderedTabs={editorGroups.splitMode ? undefined : editorGroups.groups.topLeft.tabs}
+                    onReorderTab={(tabId, toIndex) => handleReorderGroupTab("topLeft", tabId, toIndex)}
+                    onTabDragStart={handleEditorTabDragStart}
+                    onTabDragEnd={handleEditorTabDragEnd}
                   />
                 </Suspense>
 
@@ -4753,56 +5241,70 @@ export function WorkspacePage() {
                   />
                 </Suspense>
               </section>
+            ) : editorGroups.splitMode ? (
+              <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-1.5 sm:px-2.5 lg:px-3">
+                <ResizableColumns
+                  columnWidths={columnWidths}
+                  onColumnWidthsChange={setColumnWidths}
+                  columns={visibleEditorColumns.map((columnId) => renderPane(columnId))}
+                />
+              </section>
             ) : terminalViewActive && activeTerminalTab && repos.selectedWorktreeId && selectedWorktreeOperational ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="flex min-h-0 flex-1 overflow-hidden bg-[#0f1218]">
-                  <Suspense fallback={<div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
-                    <WorkspaceTerminalSurface
-                      key={activeTerminalTab.id}
-                      sessionId={activeTerminalTab.sessionId}
-                      cwd={repos.selectedWorktree?.path ?? null}
-                      mobileBottomOffset={mobileKeyboardOffset}
-                      onOpenFile={(path) => void openReadFile(path)}
-                      showMobileKeyboardToolbar={!desktopLayout}
-                    />
-                  </Suspense>
-                </div>
+                {wrapUnsplitEditorSurface(
+                  <div className="flex min-h-0 flex-1 overflow-hidden bg-[#0f1218]">
+                    <Suspense fallback={<div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+                      <WorkspaceTerminalSurface
+                        key={activeTerminalTab.id}
+                        sessionId={activeTerminalTab.sessionId}
+                        cwd={repos.selectedWorktree?.path ?? null}
+                        mobileBottomOffset={mobileKeyboardOffset}
+                        onOpenFile={(path) => void openReadFile(path)}
+                        showMobileKeyboardToolbar={!desktopLayout}
+                      />
+                    </Suspense>
+                  </div>,
+                )}
               </section>
             ) : activeView === "review" && reviewTabOpen && repos.selectedWorktreeId && selectedWorktreeOperational ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading review...</div>}>
-                  <DiffReviewPanel worktreeId={repos.selectedWorktreeId} selectedFilePath={selectedDiffFilePath} />
-                </Suspense>
+                {wrapUnsplitEditorSurface(
+                  <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading review...</div>}>
+                    <DiffReviewPanel worktreeId={repos.selectedWorktreeId} selectedFilePath={selectedDiffFilePath} />
+                  </Suspense>,
+                )}
               </section>
             ) : activeView === "file" && activeFilePath ? (
               <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading editor...</div>}>
-                  <CodeEditorPanel
-                    key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
-                    filePath={activeFilePath}
-                    externalFile={activeFileExternal}
-                    targetLine={activeFileLine ?? undefined}
-                    targetColumn={activeFileColumn ?? undefined}
-                    fileEntries={fileIndex.entries}
-                    content={activeEditorFileState?.draftContent ?? ""}
-                    mimeType={activeEditorFileState?.mimeType ?? "text/plain"}
-                    gitHeadContent={activeEditorGitBaselineState?.headContent ?? null}
-                    gitBaselineReady={activeEditorGitBaselineState?.loaded ?? false}
-                    gitBaselineLoading={activeEditorGitBaselineState?.loading ?? false}
-                    gitBranch={gitChanges.branch}
-                    gitStatus={activeGitChangeEntry?.status ?? null}
-                    loading={activeEditorFileState?.loading ?? false}
-                    saving={activeEditorFileState?.saving ?? false}
-                    dirty={activeFileDirty}
-                    error={activeEditorFileState?.error ?? null}
-                    desktopApp={desktopApp}
-                    mobileBottomOffset={mobileKeyboardOffset}
-                    onChange={(content) => handleEditorDraftChange(activeFilePath, content)}
-                    onSave={() => void handleSaveActiveFile()}
-                    onRetry={handleRetryActiveFileLoad}
-                    onOpenFile={(path) => void openReadFile(path)}
-                  />
-                </Suspense>
+                {wrapUnsplitEditorSurface(
+                  <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading editor...</div>}>
+                    <CodeEditorPanel
+                      key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
+                      filePath={activeFilePath}
+                      externalFile={activeFileExternal}
+                      targetLine={activeFileLine ?? undefined}
+                      targetColumn={activeFileColumn ?? undefined}
+                      fileEntries={fileIndex.entries}
+                      content={activeEditorFileState?.draftContent ?? ""}
+                      mimeType={activeEditorFileState?.mimeType ?? "text/plain"}
+                      gitHeadContent={activeEditorGitBaselineState?.headContent ?? null}
+                      gitBaselineReady={activeEditorGitBaselineState?.loaded ?? false}
+                      gitBaselineLoading={activeEditorGitBaselineState?.loading ?? false}
+                      gitBranch={gitChanges.branch}
+                      gitStatus={activeGitChangeEntry?.status ?? null}
+                      loading={activeEditorFileState?.loading ?? false}
+                      saving={activeEditorFileState?.saving ?? false}
+                      dirty={activeFileDirty}
+                      error={activeEditorFileState?.error ?? null}
+                      desktopApp={desktopApp}
+                      mobileBottomOffset={mobileKeyboardOffset}
+                      onChange={(content) => handleEditorDraftChange(activeFilePath, content)}
+                      onSave={() => void handleSaveActiveFile()}
+                      onRetry={handleRetryActiveFileLoad}
+                      onOpenFile={(path) => void openReadFile(path)}
+                    />
+                  </Suspense>,
+                )}
               </section>
             ) : activeView === "automations" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -4878,9 +5380,10 @@ export function WorkspacePage() {
             ) : (
               <>
                 <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  <div className="min-h-0 min-w-0 flex-1">
-                    <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
-                      <ChatMessageList
+                  {wrapUnsplitEditorSurface(
+                    <div className="min-h-0 min-w-0 flex-1">
+                      <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
+                        <ChatMessageList
                         threadId={chat.selectedThreadId}
                         items={chat.timelineItems}
                         emptyState={chat.messageListEmptyState}
@@ -4913,9 +5416,10 @@ export function WorkspacePage() {
                             />
                           </Suspense>
                         ) : null}
-                      />
-                    </Suspense>
-                  </div>
+                        />
+                      </Suspense>
+                    </div>,
+                  )}
                 </section>
                 {showPermissionGate ? (
                   <section className="mx-auto w-full max-w-3xl px-3" data-testid="permission-prompts-container">
@@ -5009,7 +5513,7 @@ export function WorkspacePage() {
                     <Composer
                       attachedTop={false}
                       disabled={chat.composerDisabled || gates.planActionBusy}
-                      focusSignal={focusComposerSignal > 0 ? focusComposerSignal : undefined}
+                      focusSignal={focusComposerSignalByGroup.topLeft > 0 ? focusComposerSignalByGroup.topLeft : undefined}
                       sending={chat.sendingMessage}
                       showStop={chat.showStopAction}
                       stopping={chat.stoppingRun}

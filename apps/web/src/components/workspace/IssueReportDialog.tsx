@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
 import { flushPendingDebugLogs } from "../../lib/debugLog";
+import { collectIssueReportClientDebugEntries } from "../../lib/workspaceUiDiagnose";
 
 type IssueReportDialogProps = {
   open: boolean;
@@ -61,6 +62,7 @@ export function IssueReportDialog({
         repositoryId,
         worktreeId,
         threadId,
+        clientDebugEntries: collectIssueReportClientDebugEntries(),
       });
       setReport(createdReport);
     } catch (submitError) {

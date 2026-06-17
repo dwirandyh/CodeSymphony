@@ -221,7 +221,10 @@ describe("PlanDecisionComposer", () => {
     act(() => codexAgentButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
 
     const builtinCodexButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.includes("GPT-5.4") && button.textContent?.includes("Built-in"));
+      .find((button) => {
+        const label = button.querySelector(".font-medium")?.textContent ?? button.textContent ?? "";
+        return label.includes("GPT-5.4") && !label.includes("Codex");
+      });
     if (!builtinCodexButton) {
       throw new Error("Built-in Codex model button not found");
     }
@@ -258,7 +261,10 @@ describe("PlanDecisionComposer", () => {
     act(() => claudeAgentButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
 
     const sonnetButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.includes("Sonnet 4.6") && button.textContent?.includes("Built-in"));
+      .find((button) => {
+        const label = button.querySelector(".font-medium")?.textContent ?? button.textContent ?? "";
+        return label.includes("Sonnet 4.6") && !label.includes("Claude");
+      });
     if (!sonnetButton) {
       throw new Error("Claude Sonnet 4.6 button not found");
     }

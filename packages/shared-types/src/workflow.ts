@@ -558,11 +558,21 @@ export const ClipboardTextSchema = z.object({
 });
 export type ClipboardText = z.infer<typeof ClipboardTextSchema>;
 
+export const IssueReportClientDebugEntrySchema = z.object({
+  seq: z.number().int().nonnegative().optional(),
+  ts: z.number().finite().nonnegative(),
+  source: z.string().min(1),
+  message: z.string(),
+  data: z.unknown().optional(),
+});
+export type IssueReportClientDebugEntry = z.infer<typeof IssueReportClientDebugEntrySchema>;
+
 export const CreateIssueReportInputSchema = z.object({
   description: z.string().trim().min(1),
   repositoryId: z.string().trim().min(1).nullable().optional(),
   worktreeId: z.string().trim().min(1).nullable().optional(),
   threadId: z.string().trim().min(1).nullable().optional(),
+  clientDebugEntries: z.array(IssueReportClientDebugEntrySchema).max(500).optional(),
 });
 export type CreateIssueReportInput = z.infer<typeof CreateIssueReportInputSchema>;
 

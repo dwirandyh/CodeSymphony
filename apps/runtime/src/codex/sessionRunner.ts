@@ -320,6 +320,20 @@ async function withCodexAppServerSession<T>(params: {
     stdio: ["pipe", "pipe", "pipe"],
     shell: process.platform === "win32",
   });
+  // Attach a synchronous error guard before the first `await` below. Bun can
+  // assign `child.pid` optimistically even when the spawn fails (e.g. ENOENT
+  // when the `codex` binary is missing), and the 'error' event is emitted
+  // asynchronously. If the session unwinds (dead stdin -> sendRequest throws)
+  // before that tick, finish() runs first and removes every listener; the late
+  // ENOENT then escapes as an uncaughtException and crashes the runtime
+  // (exit code 7). Capturing it here, plus the post-cleanup swallow in finish(),
+  // keeps a listener attached at all times.
+  let earlySpawnError: Error | null = null;
+  const captureEarlySpawnError = (error: Error) => {
+    earlySpawnError = error;
+  };
+  child.on("error", captureEarlySpawnError);
+
   const output = readline.createInterface({ input: child.stdout });
   const pending = new Map<string, PendingRequest>();
   const stderrLines: string[] = [];
@@ -343,6 +357,9 @@ async function withCodexAppServerSession<T>(params: {
     output.close();
     child.removeAllListeners();
     child.stderr.removeAllListeners();
+    // Keep a permanent no-op error listener so a late async ENOENT (emitted by
+    // Bun after the session already settled) cannot throw as an uncaught error.
+    child.on("error", () => {});
 
     if (!child.killed) {
       killChildProcess(child);
@@ -409,9 +426,13 @@ async function withCodexAppServerSession<T>(params: {
       entry.resolve(parsed.result);
     });
 
+    child.removeListener("error", captureEarlySpawnError);
     child.on("error", (error) => {
       finish(error);
     });
+    if (earlySpawnError) {
+      throw earlySpawnError;
+    }
 
     child.on("exit", (code, signal) => {
       if (finished) {

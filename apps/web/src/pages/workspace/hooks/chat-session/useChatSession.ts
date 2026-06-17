@@ -93,6 +93,14 @@ import {
   extractLatestThreadMetadata,
 } from "./snapshotSeed";
 import { useThreadEventStream } from "./useThreadEventStream";
+import {
+  explainThreadPaneEmptyStatePending,
+  resolveThreadPaneMessageListEmptyState,
+} from "./threadPaneEmptyState";
+import {
+  logWorkspaceEmptyStateResolution,
+  logWorkspaceUiIssueReportSignal,
+} from "../../../../lib/workspaceUiDiagnose";
 import { resolveAgentDefaultModel } from "../../../../lib/agentModelDefaults";
 import { isOptimisticThreadId } from "../../../../lib/threadIds";
 
@@ -1981,6 +1989,8 @@ export function useChatSession(
     compactThreadSnapshotFetching || canonicalThreadSnapshotFetching;
   const {
     data: queriedThreadStatusSnapshot,
+    isLoading: threadStatusSnapshotLoading,
+    isFetching: threadStatusSnapshotFetching,
   } = useThreadStatusSnapshot(selectedServerThreadIdForRemote, {
     enabled: selectedServerThreadIdForRemote != null,
   });
@@ -3713,37 +3723,42 @@ export function useChatSession(
     await setThreadAgentSelectionInternal(threadId, selection);
   }
 
-  async function setComposerPermissionMode(permissionMode: ChatThreadPermissionMode) {
+  // Explicit-threadId permission-mode update. A split pane targets its OWN
+  // thread regardless of global focus, so this resolves the thread by the
+  // passed threadId rather than activeThreadIdRef.
+  async function setThreadPermissionMode(
+    threadId: string,
+    permissionMode: ChatThreadPermissionMode,
+  ) {
     const normalizedMode = permissionMode === "full_access" ? "full_access" : "default";
-    const activeThread = findThreadForWorktree(
+    const targetThread = findThreadForWorktree(
       threadsRef.current,
-      activeThreadIdRef.current,
+      threadId,
       selectedWorktreeId,
     );
 
-    if (!activeThread) {
-      setPendingComposerPermissionMode(normalizedMode);
+    if (!targetThread) {
       return;
     }
 
-    if (activeThread.permissionMode === normalizedMode) {
+    if (targetThread.permissionMode === normalizedMode) {
       return;
     }
 
     onError(null);
     const previousThreads = threads;
-    const cacheWorktreeId = selectedWorktreeId ?? activeThread.worktreeId;
+    const cacheWorktreeId = selectedWorktreeId ?? targetThread.worktreeId;
 
-    setThreads((current) => applyThreadPermissionModeUpdate(current, activeThread.id, normalizedMode));
+    setThreads((current) => applyThreadPermissionModeUpdate(current, targetThread.id, normalizedMode));
     if (cacheWorktreeId) {
       queryClient.setQueryData<ChatThread[] | undefined>(
         queryKeys.threads.list(cacheWorktreeId),
-        (current) => current ? applyThreadPermissionModeUpdate(current, activeThread.id, normalizedMode) : current,
+        (current) => current ? applyThreadPermissionModeUpdate(current, targetThread.id, normalizedMode) : current,
       );
     }
 
     try {
-      const updated = await api.updateThreadPermissionMode(activeThread.id, { permissionMode: normalizedMode });
+      const updated = await api.updateThreadPermissionMode(targetThread.id, { permissionMode: normalizedMode });
       setThreads((current) => applyThreadPermissionModeUpdate(current, updated.id, updated.permissionMode));
       const updatedCacheWorktreeId = selectedWorktreeId ?? updated.worktreeId;
       if (updatedCacheWorktreeId) {
@@ -3761,10 +3776,27 @@ export function useChatSession(
     }
   }
 
+  async function setComposerPermissionMode(permissionMode: ChatThreadPermissionMode) {
+    const normalizedMode = permissionMode === "full_access" ? "full_access" : "default";
+    const activeThread = findThreadForWorktree(
+      threadsRef.current,
+      activeThreadIdRef.current,
+      selectedWorktreeId,
+    );
+
+    if (!activeThread) {
+      setPendingComposerPermissionMode(normalizedMode);
+      return;
+    }
+
+    await setThreadPermissionMode(activeThread.id, normalizedMode);
+  }
+
   async function submitMessage(
     content: string,
     mode: ChatMode,
     messageAttachments: Array<AttachmentInput & { sizeBytes?: number; isInline?: boolean }>,
+    targetThreadId?: string,
   ) {
     if (!selectedWorktreeOperational) {
       onError(WORKTREE_PREPARING_MESSAGE);
@@ -3780,7 +3812,10 @@ export function useChatSession(
       source: att.source,
     }));
 
-    const threadId = activeThreadIdRef.current;
+    // A split pane sends to its OWN thread (targetThreadId), not the globally
+    // active thread. Default to the active thread so the non-split path is
+    // unchanged.
+    const threadId = targetThreadId ?? activeThreadIdRef.current;
     if (!threadId || (!content.trim() && attachmentsToSend.length === 0)) {
       logNewThreadSendDebug("submitMessage.skipped.emptyOrNoThread", {
         threadId,
@@ -4365,12 +4400,6 @@ export function useChatSession(
       && !allowUnselectedThread
       && !staleRequestedThreadSettledEmpty
     );
-  const selectedExistingThreadBootstrapPending =
-    selectedThreadId != null
-    && !selectedThreadCreatedLocally
-    && !selectedThreadFreshlyCreated
-    && !selectedThreadHasLocalState
-    && queriedThreadSnapshot == null;
   const messageListEmptyState:
     | "no-thread-selected"
     | "creating-thread"
@@ -4390,13 +4419,114 @@ export function useChatSession(
             : "no-thread-selected"
         : selectedThreadCreatedLocally || selectedThreadFreshlyCreated
           ? "new-thread-empty"
-          : (
-            threadSnapshotLoading
-            || (threadSnapshotFetching && queriedThreadSnapshot == null)
-            || selectedExistingThreadBootstrapPending
-          ) && !selectedThreadHasLocalState
-            ? "loading-thread"
-            : "existing-thread-empty";
+          : selectedThreadHasLocalState
+            ? null
+            : resolveThreadPaneMessageListEmptyState({
+              timelineItemCount: timelineItems.length,
+              isOptimisticThread: isOptimisticThreadId(selectedThreadId),
+              messageCount: messages.length,
+              eventCount: events.length,
+              statusSnapshot: {
+                isLoading: threadStatusSnapshotLoading,
+                isFetching: threadStatusSnapshotFetching,
+                data: queriedThreadStatusSnapshot,
+              },
+              timelineSnapshot: {
+                isLoading: threadSnapshotLoading,
+                isFetching: threadSnapshotFetching,
+                data: queriedThreadSnapshot,
+              },
+            });
+
+  const emptyStateDiagnoseSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    const pending = explainThreadPaneEmptyStatePending({
+      statusSnapshot: {
+        isLoading: threadStatusSnapshotLoading,
+        isFetching: threadStatusSnapshotFetching,
+        data: queriedThreadStatusSnapshot,
+      },
+      timelineSnapshot: {
+        isLoading: threadSnapshotLoading,
+        isFetching: threadSnapshotFetching,
+        data: queriedThreadSnapshot,
+      },
+    });
+    const legacyWouldShowLoading =
+      !selectedThreadCreatedLocally
+      && (
+        threadSnapshotLoading
+        || (threadSnapshotFetching && queriedThreadSnapshot == null)
+        || selectedThreadNeedsBootstrapFromServer
+      )
+      && !selectedThreadHasLocalState;
+    const signature = JSON.stringify({
+      messageListEmptyState,
+      selectedThreadId,
+      legacyWouldShowLoading,
+      ...pending,
+    });
+    if (emptyStateDiagnoseSignatureRef.current === signature) {
+      return;
+    }
+    emptyStateDiagnoseSignatureRef.current = signature;
+    logWorkspaceEmptyStateResolution("useChatSession", {
+      resolved: messageListEmptyState,
+      threadId: selectedThreadId,
+      timelineItemCount: timelineItems.length,
+      messageCount: messages.length,
+      eventCount: events.length,
+      statusPending: pending.statusPending,
+      timelinePending: pending.timelinePending,
+      legacyWouldShowLoading,
+      threadSnapshotLoading,
+      threadSnapshotFetching,
+      queriedThreadSnapshotPresent: queriedThreadSnapshot != null,
+      threadStatusSnapshotLoading,
+      threadStatusSnapshotFetching,
+      composerDisabled,
+      extra: {
+        requestedThreadBootstrapPending,
+        selectedThreadNeedsBootstrapFromServer,
+      },
+    });
+    logWorkspaceUiIssueReportSignal(
+      "emptyState.snapshot",
+      {
+        surface: "useChatSession",
+        resolved: messageListEmptyState,
+        legacyWouldShowLoading,
+        statusPending: pending.statusPending,
+        timelinePending: pending.timelinePending,
+        threadSnapshotLoading,
+        threadSnapshotFetching,
+        queriedThreadSnapshotPresent: queriedThreadSnapshot != null,
+        selectedThreadCreatedLocally,
+        selectedThreadFreshlyCreated,
+        composerDisabled,
+      },
+      { threadId: selectedThreadId, worktreeId: selectedWorktreeId },
+    );
+  }, [
+    composerDisabled,
+    events.length,
+    messageListEmptyState,
+    messages.length,
+    queriedThreadSnapshot,
+    queriedThreadStatusSnapshot,
+    threadSnapshotFetching,
+    threadSnapshotLoading,
+    threadStatusSnapshotFetching,
+    threadStatusSnapshotLoading,
+    requestedThreadBootstrapPending,
+    selectedThreadCreatedLocally,
+    selectedThreadFreshlyCreated,
+    selectedThreadHasLocalState,
+    selectedThreadId,
+    selectedThreadNeedsBootstrapFromServer,
+    selectedWorktreeId,
+    timelineItems.length,
+  ]);
 
   const lastSelectedMessage = selectedThreadId != null
     ? [...messages].reverse().find((message) => message.threadId === selectedThreadId) ?? null
@@ -4891,6 +5021,7 @@ export function useChatSession(
     setComposerAgentSelection,
     setComposerMode,
     setComposerPermissionMode,
+    setThreadPermissionMode,
     submitMessage,
     queueDraft,
     updateQueuedDraft,

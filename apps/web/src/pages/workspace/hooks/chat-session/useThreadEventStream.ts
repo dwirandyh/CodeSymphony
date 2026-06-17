@@ -334,7 +334,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     repositoryId,
     selectedThreadIsPrMr,
     locallyDeletedThreadIdsRef,
-    activeThreadIdRef,
     waitingAssistantRef,
     setThreads,
     setWaitingAssistant,
@@ -528,10 +527,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
       try {
         const statusSnapshot = await api.getThreadStatusSnapshot(selectedThreadId);
+        // No activeThreadIdRef guard: each pane owns its own stream effect and
+        // `disposed` covers teardown. Gating on the globally-active thread would
+        // starve a non-focused split pane of its own resync.
         if (
           disposed
           || locallyDeletedThreadIdsRef.current.has(selectedThreadId)
-          || activeThreadIdRef.current !== selectedThreadId
         ) {
           return;
         }
@@ -563,7 +564,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         if (
           disposed
           || locallyDeletedThreadIdsRef.current.has(selectedThreadId)
-          || activeThreadIdRef.current !== selectedThreadId
         ) {
           return;
         }
@@ -1041,7 +1041,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             if (
               disposed
               || locallyDeletedThreadIdsRef.current.has(bootstrapThreadId)
-              || activeThreadIdRef.current !== bootstrapThreadId
             ) {
               return;
             }

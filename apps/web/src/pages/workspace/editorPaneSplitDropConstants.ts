@@ -1,0 +1,1 @@
+export const PANE_EDGE_BAND_RATIO = 0.25;

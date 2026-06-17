@@ -182,6 +182,7 @@ function HookHarness({
   initialWaitingAssistant = null,
   initialThreads = [],
   observeWorktreeStatus = false,
+  activeThreadIdOverride,
 }: {
   selectedThreadId: string | null;
   repositoryId?: string | null;
@@ -189,6 +190,8 @@ function HookHarness({
   initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
   initialThreads?: ChatThread[];
   observeWorktreeStatus?: boolean;
+  /** When set, simulates a non-focused split pane: activeThreadIdRef points elsewhere. */
+  activeThreadIdOverride?: string | null;
 }) {
   const [threads, setThreads] = useState<ChatThread[]>(initialThreads);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(initialWaitingAssistant);
@@ -207,7 +210,7 @@ function HookHarness({
   const locallyDeletedThreadIdsRef = useRef<Set<string>>(new Set());
   const activeThreadIdRef = useRef<string | null>(selectedThreadId);
   const waitingAssistantRef = useRef<{ threadId: string; afterIdx: number } | null>(waitingAssistant);
-  activeThreadIdRef.current = selectedThreadId;
+  activeThreadIdRef.current = activeThreadIdOverride !== undefined ? activeThreadIdOverride : selectedThreadId;
   waitingAssistantRef.current = waitingAssistant;
   useThreads(observeWorktreeStatus ? "wt-1" : null);
 
@@ -246,6 +249,7 @@ function renderHook(
     initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
     initialThreads?: ChatThread[];
     observeWorktreeStatus?: boolean;
+    activeThreadIdOverride?: string | null;
   },
 ) {
   act(() => {
@@ -258,6 +262,7 @@ function renderHook(
           initialWaitingAssistant={options?.initialWaitingAssistant}
           initialThreads={options?.initialThreads}
           observeWorktreeStatus={options?.observeWorktreeStatus}
+          activeThreadIdOverride={options?.activeThreadIdOverride}
         />
       </QueryClientProvider>,
     );
@@ -1370,6 +1375,71 @@ describe("useThreadEventStream", () => {
       "event-8",
     ]);
     expect(latestWaitingAssistant).toBeNull();
+  });
+
+  it("resyncs a non-focused pane thread even when activeThreadIdRef points at another thread", async () => {
+    // Split-pane: this stream watches "pane-thread" while the globally active
+    // thread (activeThreadIdRef) is "other-thread". The watchdog must NOT bail
+    // its status/timeline resync just because activeThreadIdRef differs — each
+    // pane stream owns its own thread and is torn down via `disposed`.
+    const threadId = "pane-thread";
+    const startedEvent = makeEvent({
+      id: "event-1",
+      threadId,
+      idx: 1,
+      type: "tool.started",
+      payload: { toolUseId: "tool-1", toolName: "Read" },
+    });
+    const finishedEvent = makeEvent({
+      id: "event-8",
+      threadId,
+      idx: 8,
+      type: "tool.finished",
+      payload: { toolUseId: "tool-1", toolName: "Read", summary: "Read fresh.txt" },
+    });
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot([
+      startedEvent,
+    ]));
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+      {
+        id: threadId,
+        worktreeId: "wt-1",
+        title: "Pane Thread",
+        kind: "default",
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: true,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      } satisfies ChatThread,
+    ]);
+    getThreadStatusSnapshotMock.mockResolvedValueOnce({ status: "running", newestIdx: 8 });
+    getTimelineSnapshotMock.mockResolvedValueOnce(makeSnapshot([startedEvent, finishedEvent]));
+
+    renderHook(threadId, {
+      initialWaitingAssistant: { threadId, afterIdx: 1 },
+      activeThreadIdOverride: "other-thread",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(8_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getThreadStatusSnapshotMock).toHaveBeenCalledWith(threadId);
+    expect(getTimelineSnapshotMock).toHaveBeenCalledWith(threadId);
+    expect((getThreadEventsCollection(threadId).toArray as ChatEvent[]).map((event) => event.id)).toEqual([
+      "event-1",
+      "event-8",
+    ]);
   });
 
   it("keeps an open stream healthy when heartbeat events arrive without chat events", async () => {
