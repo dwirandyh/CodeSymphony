@@ -37,6 +37,8 @@ export type ThreadMetadataSnapshot = {
 
 export interface UseChatSessionOptions {
   desiredThreadId?: string;
+  /** When set (including `null`), wins over `desiredThreadId` until cleared — tab clicks, not stale URL. */
+  userIntentThreadId?: string | null;
   desiredWorktreeId?: string | null;
   repositoryId?: string | null;
   worktreeStatus?: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" | null;

@@ -98,6 +98,7 @@ type ComposerProps = {
   showStop: boolean;
   stopping: boolean;
   attachedTop?: boolean;
+  mobileBottomOffset?: number;
   focusSignal?: number;
   /** Split panes: activate this editor group when the composer is tapped. */
   onFocusPane?: () => void;
@@ -290,6 +291,7 @@ function ComposerContent({
   showStop,
   stopping,
   attachedTop = false,
+  mobileBottomOffset = 0,
   focusSignal,
   onFocusPane,
   threadId,
@@ -429,6 +431,16 @@ function ComposerContent({
       setMobileSessionSheetOpen(false);
     }
   }, [isMobile]);
+
+  useEffect(() => {
+    if (!isMobile || mobileBottomOffset <= 0) {
+      return;
+    }
+    debugLog("composer.mobileKeyboard", "offset.applied", {
+      mobileBottomOffset,
+      threadId,
+    });
+  }, [isMobile, mobileBottomOffset, threadId]);
 
   useEffect(() => {
     if (!mobileSessionSheetOpen) {
@@ -761,7 +773,7 @@ function ComposerContent({
       return;
     }
 
-    editor.focus();
+    editor.focus({ preventScroll: true });
     moveComposerCaretToEnd(editor);
     logWorkspaceEmptyStateResolution("Composer", {
       resolved: null,
@@ -1112,19 +1124,35 @@ function ComposerContent({
         return;
       }
 
-      onFocusPane?.();
-
       const editor = editorRef.current;
       if (!editor) {
         return;
       }
-      if (target === editor || editor.contains(target)) {
-        window.requestAnimationFrame(() => {
-          editor.focus({ preventScroll: true });
-        });
+
+      const tappedEditor = target === editor || editor.contains(target);
+      const focusEditor = () => {
+        editor.focus({ preventScroll: true });
+      };
+
+      if (tappedEditor) {
+        if (isMobile) {
+          focusEditor();
+          debugLog("composer.mobileKeyboard", "editor.focus", {
+            tappedEditor: true,
+            mobileBottomOffset,
+            threadId,
+            activeTag: document.activeElement instanceof HTMLElement ? document.activeElement.tagName : null,
+          });
+        } else {
+          window.requestAnimationFrame(focusEditor);
+        }
+      } else if (!isMobile) {
+        window.requestAnimationFrame(focusEditor);
       }
+
+      onFocusPane?.();
     },
-    [disabled, onFocusPane],
+    [disabled, isMobile, mobileBottomOffset, onFocusPane, threadId],
   );
 
   const handleEditorAttachmentClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -1624,7 +1652,14 @@ function ComposerContent({
   const editingModelOptions = resolveModelOptions(modelOptionsEditingTarget);
 
   return (
-    <section className="px-1.5 pb-1 pt-0.5 safe-bottom sm:px-2.5 lg:px-3 lg:pb-2 lg:pt-1">
+    <section
+      className={cn(
+        "px-1.5 pb-1 pt-0.5 sm:px-2.5 lg:px-3 lg:pb-2 lg:pt-1",
+        isMobile && mobileBottomOffset > 0 ? "z-30" : "safe-bottom",
+      )}
+      style={isMobile && mobileBottomOffset > 0 ? { marginBottom: "var(--cs-mobile-keyboard-offset, 0px)" } : undefined}
+      data-composer-mobile-keyboard-offset={isMobile && mobileBottomOffset > 0 ? "true" : undefined}
+    >
       <div className="mx-auto w-full max-w-3xl">
         {canRenderQueuedMessages ? (
           <div className="mx-auto w-[calc(100%-1.5rem)] max-w-[calc(48rem-1.5rem)]">

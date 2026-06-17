@@ -1,5 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { ClipboardTextSchema, OpenInAppInputSchema, OpenPathInputSchema } from "@codesymphony/shared-types";
+import { clearAllRuntimeCaches } from "../services/runtimeCacheService.js";
+import { clearAllWorktreeGitQueryCaches } from "../services/worktreeGitQueryCache.js";
+import { clearRegisteredModelCatalogCaches } from "../services/modelCatalogCacheRegistry.js";
 
 export async function registerSystemRoutes(app: FastifyInstance) {
   app.post("/system/pick-directory", async (_request, reply) => {
@@ -88,6 +91,21 @@ export async function registerSystemRoutes(app: FastifyInstance) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to open path";
       return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/system/cache/clear", async (_request, reply) => {
+    try {
+      const data = await clearAllRuntimeCaches({
+        clearInMemoryCaches: async () => {
+          await clearRegisteredModelCatalogCaches();
+          clearAllWorktreeGitQueryCaches();
+        },
+      });
+      return { data };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to clear runtime cache";
+      return reply.code(500).send({ error: message });
     }
   });
 }

@@ -53,6 +53,37 @@ describe("Cursor SDK catalog", () => {
     expect(fakeCursorSdkModelListRequests).toEqual([{ apiKey: "cursor-key" }]);
   });
 
+  it("does not duplicate the base model name when a variant displayName already includes it", async () => {
+    vi.doMock("@cursor/sdk", () => FakeCursorSdkModule);
+    configureFakeCursorSdk({
+      models: [
+        {
+          id: "claude-sonnet-4-6",
+          displayName: "Claude Sonnet 4.6",
+          variants: [
+            {
+              displayName: "Claude Sonnet 4.6 [effort=medium][fast]",
+              params: [
+                { id: "thinking", value: "true" },
+                { id: "effort", value: "medium" },
+                { id: "fast", value: "true" },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const { listCursorSdkModels } = await import("../src/cursor/sdk/catalog");
+
+    await expect(listCursorSdkModels({ apiKey: "cursor-key" })).resolves.toEqual([
+      {
+        id: "claude-sonnet-4-6[thinking=true,effort=medium,fast=true]",
+        name: "Claude Sonnet 4.6 [effort=medium][fast]",
+      },
+    ]);
+  });
+
   it("lists slash commands by scanning Cursor skills", async () => {
     vi.doMock("@cursor/sdk", () => FakeCursorSdkModule);
     const cwd = await mkdtemp(join(tmpdir(), "cursor-sdk-skills-"));

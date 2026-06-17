@@ -145,3 +145,35 @@ export function formatModelOptionsDisplaySummary(
   }
   return parts.join(" · ");
 }
+
+function catalogLabelAlreadyShowsCursorVariantOptions(catalogLabel: string): boolean {
+  return /\[(?:effort|reasoning|fast)\s*[=:\]]|\[fast\]/i.test(catalogLabel);
+}
+
+export function formatModelOptionsSummaryForSelector(
+  agent: CliAgent,
+  catalogLabel: string,
+  capabilities: ModelCapabilities,
+  selections: readonly ProviderOptionSelection[],
+): string {
+  const summary = formatModelOptionsDisplaySummary(capabilities, selections);
+  if (!summary || agent !== "cursor") {
+    return summary;
+  }
+
+  if (catalogLabelAlreadyShowsCursorVariantOptions(catalogLabel)) {
+    return "";
+  }
+
+  const labelLower = catalogLabel.toLowerCase();
+  const effortLabel = formatReasoningEffortDisplayLabel(capabilities, selections);
+  if (effortLabel && labelLower.includes(effortLabel.toLowerCase())) {
+    return "";
+  }
+
+  if (isFastModeEnabled(capabilities, selections) && /\bfast\b/i.test(catalogLabel)) {
+    return "";
+  }
+
+  return summary;
+}

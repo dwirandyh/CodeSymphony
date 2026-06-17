@@ -90,8 +90,10 @@ type WorkspaceHeaderProps = {
   resourceMonitor?: ReactNode;
   /** When provided (split mode), replaces the single default strip with caller-supplied per-pane strips while keeping the add + history controls in the same row. */
   splitTabStrips?: ReactNode;
-  /** When provided, drives the visible tab order (e.g. from the active editor group) instead of the legacy section order. */
+  /** When provided, drives the visible tab order (e.g. from the active editor group) instead of the legacy section order. An empty array means no open tabs — do not fall back to legacy thread tabs. */
   orderedTabs?: TabItem[];
+  /** When `orderedTabs` is set, highlights this tab id in the strip (typically the editor group's `activeTabId`). */
+  editorActiveTabId?: string | null;
   /** Reorder a tab within the header row; enables in-row drag reordering when provided. */
   onReorderTab?: (tabId: string, toIndex: number) => void;
   onTabDragStart?: () => void;
@@ -164,6 +166,7 @@ export function WorkspaceHeader({
   resourceMonitor,
   splitTabStrips,
   orderedTabs,
+  editorActiveTabId = null,
   onReorderTab,
   onTabDragStart,
   onTabDragEnd,
@@ -190,26 +193,40 @@ export function WorkspaceHeader({
   const filteredTargetBranchOptions = normalizedTargetBranchFilter
     ? targetBranchOptions.filter((branchOption) => branchOption.toLowerCase().includes(normalizedTargetBranchFilter))
     : targetBranchOptions;
+  const usingEditorOrderedTabs = orderedTabs != null;
+
   const selectedThreadMissingFromTabs =
     splitTabStrips == null
     && !!selectedThreadId
     && !threads.some((thread) => thread.id === selectedThreadId);
-  const pendingThread = selectedThreadMissingFromTabs && selectedThreadId
+  const pendingThread = !usingEditorOrderedTabs
+    && selectedThreadMissingFromTabs
+    && selectedThreadId
     ? { id: selectedThreadId, title: selectedThreadFallbackTitle || "Loading thread..." }
     : null;
 
-  // The currently active tab id, derived from the selection-style props.
-  const activeTabId: string | null = reviewTabActive
-    ? "review"
-    : activeFilePath
-      ? activeFilePath
-      : terminalTabActive
-        ? activeTerminalTabId
-        : selectedThreadId;
+  // Highlight: when editor-ordered tabs are active, prefer the group's active tab id so
+  // the strip stays aligned with the visible pane (chat / file / terminal / review).
+  const activeTabId: string | null = usingEditorOrderedTabs
+    ? (editorActiveTabId
+      ?? (reviewTabActive
+        ? "review"
+        : activeFilePath
+          ? activeFilePath
+          : terminalTabActive
+            ? activeTerminalTabId
+            : selectedThreadId))
+    : (reviewTabActive
+      ? "review"
+      : activeFilePath
+        ? activeFilePath
+        : terminalTabActive
+          ? activeTerminalTabId
+          : selectedThreadId);
 
   // Build the ordered tab list. When `orderedTabs` is provided (driven by the active
-  // editor group) we use it verbatim; otherwise we fall back to the legacy section
-  // order: threads -> terminals -> review -> files.
+  // editor group) we use it verbatim — including `[]` when every tab is closed.
+  // Otherwise fall back to the legacy section order: threads -> terminals -> review -> files.
   const fallbackTabs: TabItem[] = [
     ...threads.map((thread): TabItem => ({ type: "chat", id: thread.id })),
     ...(pendingThread ? [{ type: "chat", id: pendingThread.id } as TabItem] : []),
@@ -217,7 +234,7 @@ export function WorkspaceHeader({
     ...(showReviewTab ? [{ type: "review", id: "review" } as TabItem] : []),
     ...fileTabs.map((tab): TabItem => ({ type: "file", id: tab.path })),
   ];
-  const stripTabs = orderedTabs != null && orderedTabs.length > 0 ? orderedTabs : fallbackTabs;
+  const stripTabs = usingEditorOrderedTabs ? orderedTabs : fallbackTabs;
   const renderedThreadIds = stripTabs.filter((tab) => tab.type === "chat").map((tab) => tab.id);
 
   useEffect(() => {

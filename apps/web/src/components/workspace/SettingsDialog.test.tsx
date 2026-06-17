@@ -40,6 +40,7 @@ const apiMocks = vi.hoisted(() => ({
   createModelProviderModel: vi.fn(),
   deleteModelProviderModel: vi.fn(),
   testModelProvider: vi.fn(),
+  clearRuntimeCache: vi.fn(),
 }));
 
 vi.mock("../../lib/api", () => ({
@@ -53,6 +54,7 @@ vi.mock("../../lib/api", () => ({
     createModelProviderModel: apiMocks.createModelProviderModel,
     deleteModelProviderModel: apiMocks.deleteModelProviderModel,
     testModelProvider: apiMocks.testModelProvider,
+    clearRuntimeCache: apiMocks.clearRuntimeCache,
   },
 }));
 
@@ -710,6 +712,28 @@ describe("SettingsDialog", () => {
     await openModelsTab();
 
     expect(document.body.textContent).toContain("Loading...");
+  });
+
+  it("clears runtime cache from the General tab", async () => {
+    apiMocks.clearRuntimeCache.mockResolvedValue({ cleared: true, clearedPaths: ["/tmp/cache"] });
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openGeneralTab();
+
+    const clearButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Clear cache"),
+    );
+    if (!clearButton) {
+      throw new Error("Clear cache button not found");
+    }
+
+    await act(async () => {
+      clearButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(apiMocks.clearRuntimeCache).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain("Runtime cache cleared");
   });
 
   it("keeps legacy built-in model selections visible when the runtime catalog uses new ids", async () => {

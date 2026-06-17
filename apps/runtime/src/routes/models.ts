@@ -22,6 +22,7 @@ import { getOpencodeModelCapabilities } from "../opencode/modelCapabilities.js";
 import * as codexSessionRunner from "../codex/sessionRunner.js";
 import * as cursorSessionRunner from "../cursor/sessionRunner.js";
 import * as opencodeModelCatalog from "../opencode/modelCatalog.js";
+import { registerModelCatalogCaches } from "../services/modelCatalogCacheRegistry.js";
 import { createPersistentExpiringCache } from "../services/persistentExpiringCache.js";
 
 const MODEL_CATALOG_CACHE_TTL_MS = 3 * 24 * 60 * 60_000;
@@ -190,6 +191,13 @@ export async function registerModelRoutes(app: FastifyInstance) {
       fetchedAt: "1970-01-01T00:00:00.000Z",
     }).models,
   });
+
+  registerModelCatalogCaches([
+    claudeModelCatalogCache,
+    codexModelCatalogCache,
+    cursorModelCatalogCache,
+    opencodeModelCatalogCache,
+  ]);
 
   app.get("/claude/models", async (_request, reply) => {
     try {

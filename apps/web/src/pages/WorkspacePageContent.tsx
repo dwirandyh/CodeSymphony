@@ -8,9 +8,6 @@ import {
   type Repository,
   type Worktree,
 } from "@codesymphony/shared-types";
-import { Composer } from "../components/workspace/composer";
-import { AGENT_LABELS } from "../components/workspace/composer/AgentModelSelector";
-import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { ChatPane } from "../components/workspace/ChatPane";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { disposeTerminalRuntime } from "../components/workspace/terminalRuntimeRegistry";
@@ -56,15 +53,6 @@ const WorkspaceTerminalSurface = lazy(() =>
 );
 const CodeEditorPanel = lazy(() =>
   import("../components/workspace/CodeEditorPanel").then(m => ({ default: m.CodeEditorPanel }))
-);
-const PermissionPromptCard = lazy(() =>
-  import("../components/workspace/PermissionPromptCard").then(m => ({ default: m.PermissionPromptCard }))
-);
-const PlanDecisionComposer = lazy(() =>
-  import("../components/workspace/PlanDecisionComposer").then(m => ({ default: m.PlanDecisionComposer }))
-);
-const QuestionCard = lazy(() =>
-  import("../components/workspace/QuestionCard").then(m => ({ default: m.QuestionCard }))
 );
 const MacDesktopTitleBar = lazy(() =>
   import("../components/workspace/MacDesktopTitleBar").then(m => ({ default: m.MacDesktopTitleBar }))
@@ -211,8 +199,6 @@ import {
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
 import type { ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
 import { useChatSession } from "./workspace/hooks/chat-session";
-import { usePendingGates } from "./workspace/hooks/usePendingGates";
-import { useGateRequestNavigation } from "./workspace/hooks/useGateRequestNavigation";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgroundWorktreeStatusStream";
@@ -265,7 +251,6 @@ import { refetchGitStatusCollection } from "../collections/gitStatus";
 import { getExistingThreadsCollection, getThreadsCollection, replaceThreadsCollection } from "../collections/threads";
 import { writeWorkspaceShellStateSnapshot } from "../collections/workspaceShellState";
 import { buildRepositoryWorktreeIndex } from "../collections/worktrees";
-import { useThreadThinkingActive } from "../collections/threadStreamState";
 import { WorkspaceHeaderShell } from "./workspace/WorkspaceHeaderShell";
 import { WorkspaceRightPanelShell } from "./workspace/WorkspaceRightPanelShell";
 import { WorkspaceSidebarShell } from "./workspace/WorkspaceSidebarShell";
@@ -274,7 +259,7 @@ import {
   shouldReleaseStartupSelectionFallback,
   shouldPreserveStartupThreadFallback,
 } from "./workspace/startupShellPersistence";
-import { buildPlanHandoffSearchPatch } from "./workspace/planHandoffNavigation";
+import { resolveUnsplitChatPaneThreadId } from "./workspace/unsplitChatSurface";
 import {
   shouldAutoLoadAllWorkspaceAgentCatalogs,
   shouldLoadWorkspaceAgentCatalog,
@@ -319,13 +304,10 @@ import {
 } from "./workspace/visibleRepositorySelection";
 import {
   buildInitialWorkspaceLandingHoldState,
-  deriveVisibleUserGates,
-  deriveWorkingStatus,
   FilledPauseIcon,
   FilledPlayIcon,
   resolveWorkspaceThreadlessFallbackSurface,
   shouldReturnToWorkspaceLandingAfterClosingContent,
-  shouldShowThinkingPlaceholder,
   shouldShowWorkspaceEmptyState,
 } from "./workspace/workspacePageUtils";
 import {
@@ -703,6 +685,22 @@ export function WorkspacePage() {
   const pendingDesiredSelection = pendingWorktreeSearchSelectionRef.current;
   const desiredChatWorktreeId = pendingDesiredSelection?.worktreeId ?? restoredWorktreeId ?? null;
   const desiredChatThreadId = pendingDesiredSelection?.threadId ?? restoredThreadId ?? undefined;
+  const [userIntentThreadId, setUserIntentThreadId] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (userIntentThreadId === undefined) {
+      return;
+    }
+    if (userIntentThreadId === null) {
+      if (search.threadId == null) {
+        setUserIntentThreadId(undefined);
+      }
+      return;
+    }
+    if (search.threadId === userIntentThreadId) {
+      setUserIntentThreadId(undefined);
+    }
+  }, [search.threadId, userIntentThreadId]);
 
   useEffect(() => {
     const pendingSelection = pendingWorktreeSearchSelectionRef.current;
@@ -1020,6 +1018,11 @@ export function WorkspacePage() {
       [restoredRepoId, restoredWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
     ),
   });
+
+  useEffect(() => {
+    setUserIntentThreadId(undefined);
+  }, [repos.selectedWorktreeId]);
+
   const repositoriesLoadError = repos.repositoriesError instanceof Error
     ? repos.repositoriesError.message
     : null;
@@ -1353,6 +1356,7 @@ export function WorkspacePage() {
 
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     desiredThreadId: desiredChatThreadId,
+    userIntentThreadId,
     desiredWorktreeId: desiredChatWorktreeId,
     repositoryId: repos.selectedRepositoryId,
     worktreeStatus: selectedWorktreeStatus,
@@ -1380,7 +1384,12 @@ export function WorkspacePage() {
         if (startupSelectionFallbackActive) {
           setStartupSelectionFallbackActive(false);
         }
-        updateSearch({ threadId: threadId ?? undefined });
+        setUserIntentThreadId(threadId);
+        updateSearch({
+          view: threadId == null ? undefined : "chat",
+          file: undefined,
+          threadId: threadId ?? undefined,
+        });
       },
       [repos.selectedRepositoryId, repos.selectedWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
     ),
@@ -1777,8 +1786,8 @@ export function WorkspacePage() {
     ?? null;
   const startupWorktreePath = repos.selectedWorktree?.path
     ?? null;
-  const selectedThreadShell = chat.threads.find((thread) => thread.id === search.threadId)
-    ?? chat.threads.find((thread) => thread.id === chat.selectedThreadId)
+  const selectedThreadShell = chat.threads.find((thread) => thread.id === chat.selectedThreadId)
+    ?? chat.threads.find((thread) => thread.id === search.threadId)
     ?? null;
   const startupShellFallback = resolveStartupShellFallbackState({
     snapshot: startupState.snapshot,
@@ -2451,53 +2460,6 @@ export function WorkspacePage() {
     selectedThreadIdForLiveStatus,
   ]);
 
-  const gates = usePendingGates(chat.selectedThreadIdForData ?? chat.selectedThreadId, {
-    onError: setError,
-    startWaitingAssistant: chat.startWaitingAssistant,
-    clearWaitingAssistantForThread: chat.clearWaitingAssistantForThread,
-    authoritativeThreadStatus: chat.authoritativeThreadStatus,
-    onPlanApproved: (result) => {
-      if (result.executionKind === "handoff") {
-        const handoffSearchPatch = buildPlanHandoffSearchPatch(result.executionThreadId);
-        hideTerminalView(repos.selectedWorktreeId);
-        setWorkspaceLandingHold(repos.selectedWorktreeId, false);
-        chat.registerPendingHandoffThread({
-          sourceThreadId: result.sourceThreadId,
-          executionThreadId: result.executionThreadId,
-          sourceThread: selectedThreadShell,
-        });
-        chat.setSelectedThreadId(result.executionThreadId, { preserveWhileMissing: true });
-        chat.startWaitingAssistant(result.executionThreadId);
-        updateSearch(handoffSearchPatch);
-        debugLog("thread.plan.handoff", "navigated to handoff execution thread", {
-          sourceThreadId: result.sourceThreadId,
-          executionThreadId: result.executionThreadId,
-          selectedWorktreeId: repos.selectedWorktreeId,
-          activeView,
-          activeFilePath,
-          terminalViewActive,
-          searchPatch: handoffSearchPatch,
-        }, {
-          threadId: result.executionThreadId,
-          worktreeId: repos.selectedWorktreeId,
-          force: true,
-        });
-      }
-    },
-  });
-  pushStartupRenderProfileSection("pending-gates");
-  const permissionNav = useGateRequestNavigation(gates.pendingPermissionRequests);
-  const questionNav = useGateRequestNavigation(gates.pendingQuestionRequests);
-  const activePermissionRequest = permissionNav.activeRequest;
-  const activePermissionIndex = permissionNav.activeIndex;
-  const hasMultiplePendingPermissions = permissionNav.hasMultiple;
-  const activeQuestionRequest = questionNav.activeRequest;
-  const activeQuestionIndex = questionNav.activeIndex;
-  const hasMultiplePendingQuestions = questionNav.hasMultiple;
-  const { showPermissionGate, showQuestionGate } = deriveVisibleUserGates({
-    pendingPermissionRequestCount: gates.pendingPermissionRequests.length,
-    pendingQuestionRequestCount: gates.pendingQuestionRequests.length,
-  });
   const [mobilePanelOpen, setMobilePanelOpen] = useState<MobilePanelState>(null);
   const [mobileReposOrigin, setMobileReposOrigin] = useState<MobileReposOrigin | null>(null);
   const [isDesktopViewport, setIsDesktopViewport] = useState(() => desktopApp || isDesktopViewportNow());
@@ -3186,10 +3148,20 @@ export function WorkspacePage() {
       }
 
       const nextKeyboardVisible = nextState.measuredVisible || (allowFocusedFallback && nextState.activeIsEditable);
-      if (keyboardVisibleRef !== nextKeyboardVisible) {
-        keyboardVisibleRef = nextKeyboardVisible;
-        rootElement.dataset.mobileKeyboardVisible = nextKeyboardVisible ? "true" : "false";
-        setMobileKeyboardOffset(nextKeyboardVisible ? 1 : 0);
+      if (keyboardVisibleRef !== nextKeyboardVisible || nextState.bottomInsetPx > 0) {
+        if (keyboardVisibleRef !== nextKeyboardVisible) {
+          keyboardVisibleRef = nextKeyboardVisible;
+          rootElement.dataset.mobileKeyboardVisible = nextKeyboardVisible ? "true" : "false";
+          setMobileKeyboardOffset(nextKeyboardVisible ? 1 : 0);
+        }
+        debugLog("workspace.mobileKeyboard", "state.changed", {
+          reason,
+          visible: nextKeyboardVisible,
+          bottomInsetPx: nextState.bottomInsetPx,
+          measuredVisible: nextState.measuredVisible,
+          activeIsEditable: nextState.activeIsEditable,
+          activeTag: document.activeElement instanceof HTMLElement ? document.activeElement.tagName : null,
+        });
       }
     };
 
@@ -3223,22 +3195,6 @@ export function WorkspacePage() {
 
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
-  const thinkingActive = useThreadThinkingActive(chat.selectedThreadId);
-  const workingStatus = useMemo(
-    () => deriveWorkingStatus({
-      thinkingActive,
-      events: chat.events,
-      selectedThreadUiStatus: chat.selectedThreadUiStatus,
-      timelineItems: chat.timelineItems,
-    }),
-    [chat.events, chat.selectedThreadUiStatus, chat.timelineItems, thinkingActive],
-  );
-  const showThinkingPlaceholder = shouldShowThinkingPlaceholder({
-    selectedThreadUiStatus: chat.selectedThreadUiStatus,
-    isWaitingForUserGate: gates.isWaitingForUserGate,
-    timelineItems: chat.timelineItems,
-    workingStatus,
-  });
   useEffect(() => {
     if (
       !repos.selectedWorktreeId
@@ -3755,11 +3711,6 @@ export function WorkspacePage() {
     void handleRunScript();
   }, [handleRunScript, handleStopRunScript, selectedBottomPanelState.runScriptActive]);
 
-  const handleShowPreviousPermission = permissionNav.showPrevious;
-  const handleShowNextPermission = permissionNav.showNext;
-  const handleShowPreviousQuestion = questionNav.showPrevious;
-  const handleShowNextQuestion = questionNav.showNext;
-
   const handleSelectDiffFile = useCallback((filePath: string) => {
     if (!confirmSwitchAwayFromActiveFile()) {
       return;
@@ -3795,7 +3746,30 @@ export function WorkspacePage() {
         routeWorktreeId: search.worktreeId ?? null,
         routeThreadId: search.threadId ?? null,
       }, { threadId, worktreeId: repos.selectedWorktreeId, force: true });
+      setUserIntentThreadId(threadId);
       chat.setSelectedThreadId(threadId);
+      if (threadId != null) {
+        setEditorGroups((current) => {
+          if (current.splitMode) {
+            return current;
+          }
+          const topLeft = current.groups.topLeft;
+          if (!topLeft.tabs.some((tab) => tab.type === "chat" && tab.id === threadId)) {
+            return current;
+          }
+          if (topLeft.activeTabId === threadId) {
+            return current;
+          }
+          return {
+            ...current,
+            activeGroupId: "topLeft",
+            groups: {
+              ...current.groups,
+              topLeft: { ...topLeft, activeTabId: threadId },
+            },
+          };
+        });
+      }
       updateSearch({ view: undefined, file: undefined, threadId: threadId ?? undefined });
     },
     [chat.selectedThreadId, chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, search.repoId, search.threadId, search.worktreeId, setWorkspaceLandingHold, updateSearch],
@@ -4524,7 +4498,11 @@ export function WorkspacePage() {
         },
       };
     });
-    syncTabToUrl(tab);
+    if (tab.type === "chat") {
+      handleSelectThread(tab.id);
+    } else {
+      syncTabToUrl(tab);
+    }
     logEditorGridFocusAttempt(
       "selectGroupTab",
       { groupId, tabType: tab.type, tabId: tab.id, splitMode: editorGroups.splitMode },
@@ -4543,7 +4521,7 @@ export function WorkspacePage() {
         textarea?.focus();
       }, 0);
     }
-  }, [editorGroups.splitMode, prefetchDisplayThreadSnapshot, repos.selectedWorktreeId, syncTabToUrl]);
+  }, [editorGroups.splitMode, handleSelectThread, prefetchDisplayThreadSnapshot, repos.selectedWorktreeId, syncTabToUrl]);
 
   const handleCloseGroupTab = useCallback((groupId: EditorQuadrantId, tab: TabItem) => {
     setEditorGroups((current) => {
@@ -4622,6 +4600,80 @@ export function WorkspacePage() {
     [editorGroups.groups, editorGroups.layout, handleFocusGroup, handlePaneDropTab, isEditorTabDragging],
   );
 
+  const unsplitChatPaneThreadId = useMemo(
+    () => resolveUnsplitChatPaneThreadId({
+      splitMode: editorGroups.splitMode,
+      editorGroups,
+      selectedThreadId: chat.selectedThreadId,
+    }),
+    [editorGroups, chat.selectedThreadId],
+  );
+
+  const renderChatPaneForThread = useCallback(
+    (threadId: string, focusSignal?: number, onFocusPane?: () => void) => {
+      const paneThread = chat.threads.find((thread) => thread.id === threadId) ?? null;
+      return (
+        <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
+          <ChatPane
+            key={threadId}
+            threadId={threadId}
+            thread={paneThread}
+            worktreeId={repos.selectedWorktreeId}
+            repositoryId={repos.selectedRepositoryId}
+            worktreeOperational={selectedWorktreeOperational}
+            worktreePath={repos.selectedWorktree?.path ?? null}
+            providers={modelProviders}
+            claudeModels={claudeModels}
+            codexModels={codexModels}
+            cursorModels={cursorModels}
+            opencodeModels={opencodeModels}
+            modelCatalogReadyByAgent={modelCatalogReadyByAgent}
+            runtimeInfo={runtimeInfo.data ?? null}
+            slashCommands={slashCommandCatalogWorktreeId ? composerSlashCommands : undefined}
+            slashCommandsLoading={slashCommandCatalogWorktreeId ? composerSlashCommandsLoading : undefined}
+            sendMessagesWith={generalSettings.sendMessagesWith}
+            autoConvertLongTextEnabled={generalSettings.autoConvertLongTextEnabled}
+            onSubmitMessage={(content, mode, attachments, targetThreadId) =>
+              chat.submitMessage(content, mode, attachments, targetThreadId)}
+            onSetThreadMode={(targetThreadId, mode) => chat.setThreadMode(targetThreadId, mode)}
+            onSetThreadAgentSelection={(targetThreadId, selection) =>
+              chat.setThreadAgentSelection(targetThreadId, selection)}
+            onSetThreadPermissionMode={(targetThreadId, permissionMode) =>
+              chat.setThreadPermissionMode(targetThreadId, permissionMode)}
+            onStopAssistantRun={(targetThreadId) => chat.stopAssistantRun(targetThreadId)}
+            onError={setError}
+            onOpenReadFile={openReadFile}
+            focusSignal={focusSignal}
+            onFocusPane={onFocusPane}
+            onAgentModelSelectorOpen={handleOpenAgentModelSelector}
+          />
+        </Suspense>
+      );
+    },
+    [
+      chat,
+      claudeModels,
+      codexModels,
+      composerSlashCommands,
+      composerSlashCommandsLoading,
+      cursorModels,
+      generalSettings.autoConvertLongTextEnabled,
+      generalSettings.sendMessagesWith,
+      handleOpenAgentModelSelector,
+      modelCatalogReadyByAgent,
+      modelProviders,
+      opencodeModels,
+      openReadFile,
+      repos.selectedRepositoryId,
+      repos.selectedWorktree?.path,
+      repos.selectedWorktreeId,
+      runtimeInfo.data,
+      selectedWorktreeOperational,
+      setError,
+      slashCommandCatalogWorktreeId,
+    ],
+  );
+
   const renderPaneContent = (groupId: EditorQuadrantId) => {
     const group = editorGroups.groups[groupId];
     if (!group.activeTabId) {
@@ -4678,47 +4730,10 @@ export function WorkspacePage() {
     }
 
     if (activeTab.type === "chat") {
-      const threadId = activeTab.id;
-      const paneThread = chat.threads.find((thread) => thread.id === threadId) ?? null;
-
-      // Each split pane owns a fully independent ChatPane scoped to its own
-      // thread, so a non-focused pane renders its real surface (timeline +
-      // composer + gates) instead of a forced shimmer.
-      return (
-        <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
-          <ChatPane
-            threadId={threadId}
-            thread={paneThread}
-            worktreeId={repos.selectedWorktreeId}
-            repositoryId={repos.selectedRepositoryId}
-            worktreeOperational={selectedWorktreeOperational}
-            worktreePath={repos.selectedWorktree?.path ?? null}
-            providers={modelProviders}
-            claudeModels={claudeModels}
-            codexModels={codexModels}
-            cursorModels={cursorModels}
-            opencodeModels={opencodeModels}
-            modelCatalogReadyByAgent={modelCatalogReadyByAgent}
-            runtimeInfo={runtimeInfo.data ?? null}
-            slashCommands={slashCommandCatalogWorktreeId ? composerSlashCommands : undefined}
-            slashCommandsLoading={slashCommandCatalogWorktreeId ? composerSlashCommandsLoading : undefined}
-            sendMessagesWith={generalSettings.sendMessagesWith}
-            autoConvertLongTextEnabled={generalSettings.autoConvertLongTextEnabled}
-            onSubmitMessage={(content, mode, attachments, targetThreadId) =>
-              chat.submitMessage(content, mode, attachments, targetThreadId)}
-            onSetThreadMode={(targetThreadId, mode) => chat.setThreadMode(targetThreadId, mode)}
-            onSetThreadAgentSelection={(targetThreadId, selection) =>
-              chat.setThreadAgentSelection(targetThreadId, selection)}
-            onSetThreadPermissionMode={(targetThreadId, permissionMode) =>
-              chat.setThreadPermissionMode(targetThreadId, permissionMode)}
-            onStopAssistantRun={(targetThreadId) => chat.stopAssistantRun(targetThreadId)}
-            onError={setError}
-            onOpenReadFile={openReadFile}
-            focusSignal={focusComposerSignalByGroup[groupId] > 0 ? focusComposerSignalByGroup[groupId] : undefined}
-            onFocusPane={() => handleFocusGroup(groupId)}
-            onAgentModelSelectorOpen={handleOpenAgentModelSelector}
-          />
-        </Suspense>
+      return renderChatPaneForThread(
+        activeTab.id,
+        focusComposerSignalByGroup[groupId] > 0 ? focusComposerSignalByGroup[groupId] : undefined,
+        () => handleFocusGroup(groupId),
       );
     }
 
@@ -5092,6 +5107,7 @@ export function WorkspacePage() {
                     resourceMonitor={!showMacDesktopTitleBar ? workspaceHeaderControls : null}
                     splitTabStrips={splitTabStrips}
                     orderedTabs={editorGroups.splitMode ? undefined : editorGroups.groups.topLeft.tabs}
+                    editorActiveTabId={editorGroups.splitMode ? null : editorGroups.groups.topLeft.activeTabId}
                     onReorderTab={(tabId, toIndex) => handleReorderGroupTab("topLeft", tabId, toIndex)}
                     onTabDragStart={handleEditorTabDragStart}
                     onTabDragEnd={handleEditorTabDragEnd}
@@ -5377,198 +5393,29 @@ export function WorkspacePage() {
                   }}
                 />
               </Suspense>
+            ) : unsplitChatPaneThreadId ? (
+              <section
+                key={unsplitChatPaneThreadId}
+                className="flex min-h-0 flex-1 flex-col overflow-hidden"
+              >
+                {wrapUnsplitEditorSurface(
+                  <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+                    {renderChatPaneForThread(
+                      unsplitChatPaneThreadId,
+                      focusComposerSignalByGroup.topLeft > 0 ? focusComposerSignalByGroup.topLeft : undefined,
+                      () => handleFocusGroup("topLeft"),
+                    )}
+                  </div>,
+                )}
+              </section>
             ) : (
-              <>
-                <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  {wrapUnsplitEditorSurface(
-                    <div className="min-h-0 min-w-0 flex-1">
-                      <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
-                        <ChatMessageList
-                        threadId={chat.selectedThreadId}
-                        items={chat.timelineItems}
-                        emptyState={chat.messageListEmptyState}
-                        showThinkingPlaceholder={showThinkingPlaceholder}
-                        workingStatus={workingStatus}
-                        onOpenReadFile={openReadFile}
-                        worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
-                        footer={gates.showPlanDecisionComposer ? (
-                          <Suspense fallback={null}>
-                            <PlanDecisionComposer
-                              busy={gates.planActionBusy}
-                              currentSelection={{
-                                agent: chat.composerAgent,
-                                model: chat.composerModel,
-                                modelProviderId: chat.composerModelProviderId,
-                              }}
-                              threadKind={selectedChatThread?.kind ?? null}
-                              hasMessages={chat.messages.length > 0}
-                              providers={modelProviders}
-                              claudeModels={claudeModels}
-                              codexModels={codexModels}
-                              cursorModels={cursorModels}
-                              opencodeModels={opencodeModels}
-                              modelCatalogReadyByAgent={modelCatalogReadyByAgent}
-                              runtimeInfo={runtimeInfo.data ?? null}
-                              onAgentModelSelectorOpen={handleOpenAgentModelSelector}
-                              onApprove={(selection) => void gates.handleApprovePlan(selection)}
-                              onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
-                              onDismiss={() => void gates.handleDismissPlan()}
-                            />
-                          </Suspense>
-                        ) : null}
-                        />
-                      </Suspense>
-                    </div>,
-                  )}
-                </section>
-                {showPermissionGate ? (
-                  <section className="mx-auto w-full max-w-3xl px-3" data-testid="permission-prompts-container">
-                    <div className="space-y-2">
-                      {hasMultiplePendingPermissions ? (
-                        activePermissionRequest ? (
-                          <Suspense fallback={null}>
-                            <PermissionPromptCard
-                              key={activePermissionRequest.requestId}
-                              requestId={activePermissionRequest.requestId}
-                              toolName={activePermissionRequest.toolName}
-                              command={activePermissionRequest.command}
-                              editTarget={activePermissionRequest.editTarget}
-                              blockedPath={activePermissionRequest.blockedPath}
-                              decisionReason={activePermissionRequest.decisionReason}
-                              busy={gates.resolvingPermissionIds.has(activePermissionRequest.requestId)}
-                              canAlwaysAllow={activePermissionRequest.canAlwaysAllow}
-                              alwaysAllowScope={activePermissionRequest.alwaysAllowScope}
-                              alwaysAllowDescription={activePermissionRequest.alwaysAllowDescription}
-                              position={{
-                                current: activePermissionIndex + 1,
-                                total: gates.pendingPermissionRequests.length,
-                              }}
-                              onPrevious={handleShowPreviousPermission}
-                              onNext={handleShowNextPermission}
-                              onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
-                              onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
-                              onDeny={(requestId) => {
-                                void gates.resolvePermission(requestId, "deny");
-                              }}
-                            />
-                          </Suspense>
-                        ) : null
-                      ) : (
-                        gates.pendingPermissionRequests.map((request) => (
-                          <Suspense fallback={null} key={request.requestId}>
-                            <PermissionPromptCard
-                              requestId={request.requestId}
-                              toolName={request.toolName}
-                              command={request.command}
-                              editTarget={request.editTarget}
-                              blockedPath={request.blockedPath}
-                              decisionReason={request.decisionReason}
-                              busy={gates.resolvingPermissionIds.has(request.requestId)}
-                              canAlwaysAllow={request.canAlwaysAllow}
-                              alwaysAllowScope={request.alwaysAllowScope}
-                              alwaysAllowDescription={request.alwaysAllowDescription}
-                              onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
-                              onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
-                              onDeny={(requestId) => {
-                                void gates.resolvePermission(requestId, "deny");
-                              }}
-                            />
-                          </Suspense>
-                        ))
-                      )}
-                    </div>
-                  </section>
-                ) : null}
-                {showQuestionGate ? (
-                  <section className="mx-auto w-full max-w-3xl px-3" data-testid="question-prompts-container">
-                    <div className="space-y-2">
-                      {activeQuestionRequest ? (
-                        <Suspense fallback={null} key={activeQuestionRequest.requestId}>
-                          <QuestionCard
-                            requestId={activeQuestionRequest.requestId}
-                            agentLabel={AGENT_LABELS[selectedChatThread?.agent ?? "claude"]}
-                            questions={activeQuestionRequest.questions}
-                            busy={
-                              gates.answeringQuestionIds.has(activeQuestionRequest.requestId)
-                              || gates.dismissingQuestionIds.has(activeQuestionRequest.requestId)
-                            }
-                            position={hasMultiplePendingQuestions ? {
-                              current: activeQuestionIndex + 1,
-                              total: gates.pendingQuestionRequests.length,
-                            } : undefined}
-                            onPrevious={handleShowPreviousQuestion}
-                            onNext={handleShowNextQuestion}
-                            onAnswer={(requestId, answers) => void gates.answerQuestion(requestId, answers)}
-                            onDismiss={(requestId) => void gates.dismissQuestion(requestId)}
-                          />
-                        </Suspense>
-                      ) : null}
-                    </div>
-                  </section>
-                ) : null}
-                {!gates.showPlanDecisionComposer && gates.isWaitingForUserGate ? <div className="pb-2 pt-1" /> : null}
-
-                {!gates.isWaitingForUserGate ? (
-                  <Suspense fallback={<div className="px-3 pb-3 pt-2 text-xs text-muted-foreground">Loading composer...</div>}>
-                    <Composer
-                      attachedTop={false}
-                      disabled={chat.composerDisabled || gates.planActionBusy}
-                      focusSignal={focusComposerSignalByGroup.topLeft > 0 ? focusComposerSignalByGroup.topLeft : undefined}
-                      sending={chat.sendingMessage}
-                      showStop={chat.showStopAction}
-                      stopping={chat.stoppingRun}
-                      threadId={chat.selectedThreadId}
-                      worktreeId={repos.selectedWorktreeId}
-                      mode={chat.composerMode}
-                      modeLocked={chat.composerModeLocked}
-                      slashCommands={slashCommandCatalogWorktreeId ? composerSlashCommands : undefined}
-                      slashCommandsLoading={slashCommandCatalogWorktreeId ? composerSlashCommandsLoading : undefined}
-                      providers={modelProviders}
-                      claudeModels={claudeModels}
-                      codexModels={codexModels}
-                      cursorModels={cursorModels}
-                      opencodeModels={opencodeModels}
-                      modelCatalogReadyByAgent={modelCatalogReadyByAgent}
-                      runtimeInfo={runtimeInfo.data ?? null}
-                      agent={chat.composerAgent}
-                      model={chat.composerModel}
-                      modelProviderId={chat.composerModelProviderId}
-                      modelOptions={chat.composerModelOptions}
-                      modelOptionsPerModel={chat.composerModelOptionsPerModel}
-                      threadKind={selectedChatThread?.kind ?? null}
-                      threadRunning={chat.selectedThreadUiStatus === "running"}
-                      permissionMode={chat.composerPermissionMode}
-                      sendMessagesWith={generalSettings.sendMessagesWith}
-                      autoConvertLongTextEnabled={generalSettings.autoConvertLongTextEnabled}
-                      hasMessages={chat.messages.length > 0}
-                      queuedMessages={chat.queuedMessages}
-                      onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
-                      onQueueDraft={({ content, mode, attachments }) => chat.queueDraft(content, mode, attachments)}
-                      onModeChange={(mode) => {
-                        void chat.setComposerMode(mode);
-                      }}
-                      onStop={() => void chat.stopAssistantRun()}
-                      onAgentSelectionChange={(selection) => {
-                        void chat.setComposerAgentSelection(selection);
-                      }}
-                      onAgentModelSelectorOpen={handleOpenAgentModelSelector}
-                      onPermissionModeChange={(permissionMode) => {
-                        void chat.setComposerPermissionMode(permissionMode);
-                      }}
-                      onUpdateQueuedMessage={(queueMessageId, content) => chat.updateQueuedDraft(queueMessageId, content)}
-                      onDeleteQueuedMessage={(queueMessageId) => {
-                        void chat.deleteQueuedDraft(queueMessageId);
-                      }}
-                      onDispatchQueuedMessage={(queueMessageId) => {
-                        void chat.dispatchQueuedDraft(queueMessageId);
-                      }}
-                      onCancelQueuedMessageDispatch={(queueMessageId) => {
-                        void chat.cancelQueuedDraftDispatch(queueMessageId);
-                      }}
-                    />
-                  </Suspense>
-                ) : null}
-              </>
+              <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                {wrapUnsplitEditorSurface(
+                  <div className="flex h-full min-h-0 items-center justify-center text-xs text-muted-foreground">
+                    No conversation selected
+                  </div>,
+                )}
+              </section>
             )}
           </div>
 

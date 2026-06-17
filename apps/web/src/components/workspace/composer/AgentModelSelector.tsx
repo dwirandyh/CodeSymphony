@@ -11,7 +11,7 @@ import {
   type CursorModelCatalogEntry,
   type ModelProvider,
   type OpencodeModelCatalogEntry,
-  formatModelOptionsDisplaySummary,
+  formatModelOptionsSummaryForSelector,
   resolveModelCapabilities,
   buildProviderOptionSelectionsFromDescriptors,
 } from "@codesymphony/shared-types";
@@ -90,7 +90,12 @@ function buildModelOptionsSummary(
 
   const capabilities = resolveModelCapabilities(option.agent, option.model);
   const resolved = buildProviderOptionSelectionsFromDescriptors(capabilities, selections);
-  return formatModelOptionsDisplaySummary(capabilities, resolved);
+  return formatModelOptionsSummaryForSelector(
+    option.agent,
+    option.label,
+    capabilities,
+    resolved,
+  );
 }
 
 function buildModelCapabilitiesUrl(selection: AgentModelSelection): string {

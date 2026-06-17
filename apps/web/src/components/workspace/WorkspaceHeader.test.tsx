@@ -117,13 +117,39 @@ describe("WorkspaceHeader", () => {
     });
   }
 
-  it("falls back to legacy thread tabs when orderedTabs is an empty array", () => {
+  it("shows no session tabs when orderedTabs is an empty array", () => {
     renderHeader({ orderedTabs: [] });
 
     const tabs = container.querySelectorAll('button[role="tab"]');
-    expect(tabs.length).toBeGreaterThanOrEqual(2);
-    expect(container.textContent).toContain("New Thread");
-    expect(container.textContent).toContain("Secondary Thread");
+    expect(tabs.length).toBe(0);
+  });
+
+  it("does not inject a pending thread tab when orderedTabs is empty but selection is stale", () => {
+    renderHeader({
+      orderedTabs: [],
+      threads: [],
+      selectedThreadId: "missing-thread",
+      selectedThreadFallbackTitle: "Stale selection",
+    });
+
+    const tabs = container.querySelectorAll('button[role="tab"]');
+    expect(tabs.length).toBe(0);
+    expect(container.textContent).not.toContain("Stale selection");
+    expect(container.textContent).not.toContain("Loading thread");
+  });
+
+  it("highlights the editor active tab when orderedTabs and editorActiveTabId are provided", () => {
+    renderHeader({
+      orderedTabs: [
+        { type: "chat", id: "thread-1" },
+        { type: "chat", id: "thread-2" },
+      ],
+      editorActiveTabId: "thread-2",
+      selectedThreadId: "thread-1",
+    });
+
+    const selectedTab = container.querySelector<HTMLButtonElement>('button[role="tab"][aria-selected="true"]');
+    expect(selectedTab?.title).toBe("Secondary Thread");
   });
 
   it("renames selected thread via double-click then Enter", async () => {

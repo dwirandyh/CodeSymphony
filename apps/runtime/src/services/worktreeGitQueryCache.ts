@@ -92,3 +92,10 @@ export async function getCachedWorktreeGitBranchDiffSummary(
   inFlightBranchDiffByWorktreeKey.set(cacheKey, requestPromise);
   return requestPromise;
 }
+
+export function clearAllWorktreeGitQueryCaches(): void {
+  cachedGitStatusByWorktreeId.clear();
+  inFlightGitStatusByWorktreeId.clear();
+  cachedBranchDiffByWorktreeKey.clear();
+  inFlightBranchDiffByWorktreeKey.clear();
+}

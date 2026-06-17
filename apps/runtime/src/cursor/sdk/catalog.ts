@@ -14,10 +14,39 @@ function modelParamSuffix(params: Array<{ id: string; value: string }> | undefin
   return `[${params.map((param) => `${param.id}=${param.value}`).join(",")}]`;
 }
 
-function modelVariantName(model: SDKModel, variantDisplayName: string): string {
-  const modelName = model.displayName.trim() || model.id;
+function normalizeComparableDisplayName(value: string): string {
+  return value.replace(/\[[^\]]*]/g, "").trim().toLowerCase();
+}
+
+export function resolveCursorCatalogDisplayName(
+  modelDisplayName: string,
+  modelId: string,
+  variantDisplayName: string,
+): string {
+  const baseName = modelDisplayName.trim() || modelId.trim();
   const variantName = variantDisplayName.trim();
-  return variantName ? `${modelName} ${variantName}` : modelName;
+  if (!variantName) {
+    return baseName;
+  }
+
+  const baseComparable = normalizeComparableDisplayName(baseName);
+  const variantComparable = normalizeComparableDisplayName(variantName);
+  if (variantComparable === baseComparable) {
+    return variantName;
+  }
+
+  if (
+    variantComparable.startsWith(`${baseComparable} `)
+    || variantComparable.startsWith(`${baseComparable}-`)
+  ) {
+    return variantName;
+  }
+
+  return `${baseName} ${variantName}`;
+}
+
+function modelVariantName(model: SDKModel, variantDisplayName: string): string {
+  return resolveCursorCatalogDisplayName(model.displayName, model.id, variantDisplayName);
 }
 
 function expandSdkModel(model: SDKModel): Array<{ id: string; name: string }> {

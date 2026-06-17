@@ -413,6 +413,65 @@ describe("Composer", () => {
     });
 
     expect(onFocusPane).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it("focuses the editor on mobile before notifying the pane on editor tap", async () => {
+    setMobileViewport(true);
+    const callOrder: string[] = [];
+    const onFocusPane = vi.fn(() => {
+      callOrder.push("onFocusPane");
+    });
+    renderComposer({ onFocusPane });
+    const editor = getEditor();
+    editor.blur();
+
+    const focusSpy = vi.spyOn(editor, "focus").mockImplementation(function (this: HTMLDivElement, ...args) {
+      callOrder.push("focus");
+      return HTMLElement.prototype.focus.apply(this, args);
+    });
+
+    if (typeof globalThis.PointerEvent === "undefined") {
+      globalThis.PointerEvent = class extends MouseEvent {
+        constructor(type: string, init?: PointerEventInit) {
+          super(type, init);
+        }
+      } as typeof PointerEvent;
+    }
+
+    await act(async () => {
+      editor.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, cancelable: true }),
+      );
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
+
+    expect(callOrder).toEqual(["focus", "onFocusPane"]);
+    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+    expect(document.activeElement).toBe(editor);
+    focusSpy.mockRestore();
+  });
+
+  it("lifts the composer above the mobile keyboard offset", () => {
+    setMobileViewport(true);
+    renderComposer({ mobileBottomOffset: 1 });
+    const section = container.querySelector("section");
+    expect(section?.getAttribute("data-composer-mobile-keyboard-offset")).toBe("true");
+    expect(section?.style.marginBottom).toBe("var(--cs-mobile-keyboard-offset, 0px)");
+    expect(section?.className).not.toContain("safe-bottom");
+  });
+
+  it("applies focusSignal with preventScroll", () => {
+    renderComposer();
+    const editor = getEditor();
+    editor.blur();
+    const focusSpy = vi.spyOn(editor, "focus");
+
+    renderComposer({ focusSignal: 1 });
+
+    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
+    expect(document.activeElement).toBe(editor);
+    focusSpy.mockRestore();
   });
 
   it("renders the focus shortcut hint with the focus-within hiding rule", () => {

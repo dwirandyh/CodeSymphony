@@ -1152,6 +1152,9 @@ export const api = {
   listCodexModels: () => request<CodexModelCatalog>("/codex/models"),
   listOpencodeModels: () => request<OpencodeModelCatalog>("/opencode/models"),
   listCursorModels: () => request<CursorModelCatalog>("/cursor/models"),
+  clearRuntimeCache: () => request<{ cleared: true; clearedPaths: string[] }>("/system/cache/clear", {
+    method: "POST",
+  }),
   listModelProviders: () => request<ModelProvider[]>("/model-providers"),
   createModelProvider: (input: CreateModelProviderInput) =>
     request<ModelProvider>("/model-providers", {

@@ -13,6 +13,7 @@ import {
   Pencil,
   Play,
   Plus,
+  RotateCcw,
   ScrollText,
   Search,
   SlidersHorizontal,
@@ -620,6 +621,8 @@ export function SettingsDialog({
   const [openingDesktopNotificationSettings, setOpeningDesktopNotificationSettings] = useState(false);
   const [testingCompletionSound, setTestingCompletionSound] = useState(false);
   const [shortcutSearchQuery, setShortcutSearchQuery] = useState("");
+  const [clearingRuntimeCache, setClearingRuntimeCache] = useState(false);
+  const [runtimeCacheMessage, setRuntimeCacheMessage] = useState<string | null>(null);
 
   // ── Workspace tab state ──
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
@@ -1224,6 +1227,21 @@ export function SettingsDialog({
     });
   }, []);
 
+  const handleClearRuntimeCache = useCallback(async () => {
+    setClearingRuntimeCache(true);
+    setRuntimeCacheMessage(null);
+    try {
+      await api.clearRuntimeCache();
+      await queryClient.invalidateQueries();
+      setRuntimeCacheMessage("Runtime cache cleared (model lists, slash commands, git snapshots, app icons). Data reloads on next use.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to clear runtime cache";
+      setRuntimeCacheMessage(message);
+    } finally {
+      setClearingRuntimeCache(false);
+    }
+  }, [queryClient]);
+
   const handleDesktopNotificationsToggle = useCallback(async (checked: boolean) => {
     if (!checked) {
       setDesktopNotificationsMessage(null);
@@ -1636,6 +1654,38 @@ export function SettingsDialog({
                       />
                     )}
                   />
+
+                  <SettingsSection
+                    title="Runtime cache"
+                    description="Clears on-disk and in-memory runtime caches: model catalogs, slash-command catalogs, short-lived git snapshots, and generated app icons."
+                    descriptionId="general-runtime-cache-description"
+                    actionClassName="w-auto md:max-w-none"
+                    action={(
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 px-3 text-[13px]"
+                        disabled={clearingRuntimeCache}
+                        onClick={() => {
+                          void handleClearRuntimeCache();
+                        }}
+                      >
+                        {clearingRuntimeCache ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        )}
+                        Clear cache
+                      </Button>
+                    )}
+                  >
+                    {runtimeCacheMessage ? (
+                      <p className="text-[11px] leading-5 text-muted-foreground" role="status">
+                        {runtimeCacheMessage}
+                      </p>
+                    ) : null}
+                  </SettingsSection>
 
                   <SettingsSection
                     title="Diagnostics"

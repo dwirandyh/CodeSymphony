@@ -1,5 +1,10 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
+import { registerModelRoutes } from "../src/routes/models";
 import { registerSystemRoutes } from "../src/routes/system";
 
 describe("system routes", () => {
@@ -10,10 +15,22 @@ describe("system routes", () => {
   const getInstalledApps = vi.fn();
   const openInApp = vi.fn();
 
+  const mockModelProviderService = {
+    listProviders: vi.fn().mockResolvedValue([]),
+    createProvider: vi.fn(),
+    updateProvider: vi.fn(),
+    deleteProvider: vi.fn(),
+    createModel: vi.fn(),
+    deleteModel: vi.fn(),
+    resolveProviderSelection: vi.fn(),
+  };
+
   beforeEach(async () => {
     vi.resetAllMocks();
     app = Fastify({ logger: false });
     app.decorate("systemService", { pickDirectory, readClipboard, writeClipboard, getInstalledApps, openInApp } as never);
+    app.decorate("modelProviderService", mockModelProviderService as never);
+    await app.register(registerModelRoutes, { prefix: "/api" });
     await app.register(registerSystemRoutes, { prefix: "/api" });
     await app.ready();
   });
@@ -53,6 +70,42 @@ describe("system routes", () => {
     const res = await app.inject({ method: "GET", url: "/api/system/clipboard" });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.text).toBe("hello from host");
+  });
+
+  it("POST /api/system/cache/clear forces model catalogs to reload", async () => {
+    await app.close();
+
+    const modelCatalogCacheDir = await mkdtemp(path.join(os.tmpdir(), "codesymphony-model-catalog-cache-"));
+    process.env.CODESYMPHONY_MODEL_CATALOG_CACHE_DIR = modelCatalogCacheDir;
+
+    app = Fastify({ logger: false });
+    app.decorate("systemService", { pickDirectory, readClipboard, writeClipboard, getInstalledApps, openInApp } as never);
+    app.decorate("modelProviderService", mockModelProviderService as never);
+    await app.register(registerModelRoutes, { prefix: "/api" });
+    await app.register(registerSystemRoutes, { prefix: "/api" });
+    await app.ready();
+
+    const listCursorModels = vi.spyOn(cursorSessionRunner, "listCursorModels")
+      .mockResolvedValue([{ id: "composer-2.5", name: "Composer 2.5 Fast" }]);
+
+    const first = await app.inject({ method: "GET", url: "/api/cursor/models" });
+    expect(first.statusCode).toBe(200);
+    expect(listCursorModels).toHaveBeenCalledTimes(1);
+
+    const clear = await app.inject({ method: "POST", url: "/api/system/cache/clear" });
+    expect(clear.statusCode).toBe(200);
+    expect(clear.json().data.cleared).toBe(true);
+    expect(clear.json().data.clearedPaths.length).toBeGreaterThan(0);
+
+    listCursorModels.mockResolvedValue([{ id: "composer-2.5", name: "Composer 2.5" }]);
+
+    const second = await app.inject({ method: "GET", url: "/api/cursor/models" });
+    expect(second.statusCode).toBe(200);
+    expect(listCursorModels).toHaveBeenCalledTimes(2);
+    expect(second.json().data.models[0]?.name).toBe("Composer 2.5");
+
+    delete process.env.CODESYMPHONY_MODEL_CATALOG_CACHE_DIR;
+    await rm(modelCatalogCacheDir, { recursive: true, force: true });
   });
 
   it("PUT /api/system/clipboard writes host clipboard text", async () => {

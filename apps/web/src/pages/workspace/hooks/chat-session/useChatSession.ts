@@ -103,6 +103,7 @@ import {
 } from "../../../../lib/workspaceUiDiagnose";
 import { resolveAgentDefaultModel } from "../../../../lib/agentModelDefaults";
 import { isOptimisticThreadId } from "../../../../lib/threadIds";
+import { resolveRequestedThreadIdForChatSession } from "../../resolveActiveChatThreadId";
 
 const DEFAULT_THREAD_TITLE = "New Thread";
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -984,9 +985,11 @@ export function useChatSession(
     options?.desiredWorktreeId != null
     && options.desiredWorktreeId !== selectedWorktreeId;
   const desiredThreadId = options?.desiredThreadId ?? null;
-  const rawRequestedThreadId = requestedThreadSelectionDeferred
-    ? null
-    : desiredThreadId;
+  const rawRequestedThreadId = resolveRequestedThreadIdForChatSession({
+    desiredThreadId,
+    userIntentThreadId: options?.userIntentThreadId,
+    selectionDeferred: requestedThreadSelectionDeferred,
+  });
 
   const [trackedThreads, setThreads] = useState<ChatThread[]>([]);
   const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(null);
@@ -1550,7 +1553,10 @@ export function useChatSession(
       requestedThreadId != null
       && trackedThreads.some((thread) => thread.id === requestedThreadId && (thread.tabOpen ?? true));
     const selectedThreadStillExists =
-      selectedThreadId != null && trackedThreads.some((thread) => thread.id === selectedThreadId);
+      selectedThreadId != null
+      && trackedThreads.some(
+        (thread) => thread.id === selectedThreadId && (thread.tabOpen ?? true),
+      );
     const selectedThreadPendingHydration =
       selectedThreadId != null
       && pendingSelectedThreadRef.current?.threadId === selectedThreadId
@@ -1577,6 +1583,16 @@ export function useChatSession(
     }
 
     if (selectedThreadStillExists) {
+      if (
+        options?.userIntentThreadId !== undefined
+        && selectedThreadId !== options.userIntentThreadId
+        && (options.userIntentThreadId == null
+          || trackedThreads.some(
+            (thread) => thread.id === options.userIntentThreadId && (thread.tabOpen ?? true),
+          ))
+      ) {
+        setSelectedThreadId(options.userIntentThreadId);
+      }
       return;
     }
 
@@ -1608,6 +1624,7 @@ export function useChatSession(
     selectedWorktreeId,
     selectedWorktreeProvisioning,
     shouldUseProvisioningPlaceholder,
+    options?.userIntentThreadId,
   ]);
 
   useEffect(() => {

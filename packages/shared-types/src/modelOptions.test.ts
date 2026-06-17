@@ -3,6 +3,7 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   buildThreadModelOptionsKey,
   formatModelOptionsDisplaySummary,
+  formatModelOptionsSummaryForSelector,
   formatReasoningEffortDisplayLabel,
   getProviderOptionBooleanSelectionValue,
   getProviderOptionDescriptors,
@@ -208,6 +209,20 @@ describe("model option helpers", () => {
     expect(formatReasoningEffortDisplayLabel(capabilities, [])).toBe("Medium");
     expect(isFastModeEnabled(capabilities, [])).toBe(true);
     expect(formatModelOptionsDisplaySummary(capabilities, [])).toBe("Medium · Fast");
+  });
+
+  it("omits selector summary when cursor catalog label already encodes variant options", () => {
+    const capabilities = getCursorModelCapabilities(
+      "claude-sonnet-4-6[thinking=true,context=200k,effort=medium,fast=true]",
+    );
+    const catalogLabel = "Claude Sonnet 4.6 [effort=medium][fast]";
+
+    expect(
+      formatModelOptionsSummaryForSelector("cursor", catalogLabel, capabilities, []),
+    ).toBe("");
+    expect(
+      formatModelOptionsSummaryForSelector("claude", catalogLabel, capabilities, []),
+    ).toBe("Medium · Fast");
   });
 
   it("formats effort labels from effort metadata aliases", () => {
