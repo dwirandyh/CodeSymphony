@@ -1162,7 +1162,7 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Codex CLI default");
+    expect(container.textContent).toContain("CLI default");
     expect(container.textContent).toContain("GPT-5.4");
     expect(container.textContent).toContain("GPT-5.4-Mini");
     expect(container.textContent).toContain("GPT-5.5");
@@ -1293,7 +1293,10 @@ describe("Composer", () => {
     });
 
     const cursorModelButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
-      .find((button) => button.textContent?.includes("GPT-5.4") && button.textContent?.includes("Built-in"));
+      .find((button) => {
+        const label = button.querySelector(".font-medium")?.textContent ?? button.textContent ?? "";
+        return label.includes("GPT-5.4") && !label.includes("Cursor");
+      });
     if (!cursorModelButton) {
       throw new Error("Cursor model button not found");
     }

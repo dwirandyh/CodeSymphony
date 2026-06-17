@@ -742,7 +742,7 @@ describe("SettingsDialog", () => {
 
     await setRadixSelectValue("Agent for new chats CLI Agent", "Codex");
     const codexOptions = await getRadixSelectOptions("Agent for new chats model");
-    expect(codexOptions).toContain("GPT-5.5 · Built-in");
+    expect(codexOptions).toContain("GPT-5.5");
     await setRadixSelectValue("Agent for new chats model", "GPT-5.3 Codex");
 
     expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"agent\":\"codex\"");
@@ -794,13 +794,13 @@ describe("SettingsDialog", () => {
     expect(trigger.querySelector(".text-muted-foreground")).toBeNull();
 
     const options = await openRadixSelect("Agent for new chats model");
-    const sonnetOption = options.find((option) => normalizeText(option.textContent) === "Sonnet 4.6 · Built-in");
+    const sonnetOption = options.find((option) => normalizeText(option.textContent) === "Sonnet 4.6");
     if (!(sonnetOption instanceof HTMLElement)) {
       throw new Error("Sonnet option not found");
     }
 
-    expect(sonnetOption.querySelector(".font-medium")?.textContent).toBe("Sonnet 4.6");
-    expect(sonnetOption.querySelector(".text-muted-foreground")?.textContent).toBe("Built-in");
+    expect(normalizeText(sonnetOption.textContent)).toBe("Sonnet 4.6");
+    expect(sonnetOption.querySelector(".text-muted-foreground")).toBeNull();
   });
 
   it("separates custom provider models from built-in models in the settings picker", async () => {

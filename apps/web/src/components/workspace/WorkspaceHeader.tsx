@@ -16,6 +16,11 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import { debugLog } from "../../lib/debugLog";
+import {
+  logWorkspaceUiIssueReportSignal,
+  probeSingleHeaderTabAlignment,
+  scheduleWorkspaceUiGeometryProbe,
+} from "../../lib/workspaceUiDiagnose";
 import { formatRelativeTime } from "../../lib/formatRelativeTime";
 import { AgentIcon } from "./composer/AgentModelSelector";
 import { OpenInAppButton } from "./OpenInAppButton";
@@ -85,6 +90,8 @@ type WorkspaceHeaderProps = {
   mergeWithContent?: boolean;
   resourceMonitor?: ReactNode;
   onToggleSplit?: () => void;
+  /** When provided (split mode), replaces the single default strip with caller-supplied per-pane strips while keeping the add + history controls in the same row. */
+  splitTabStrips?: ReactNode;
   /** When provided, drives the visible tab order (e.g. from the active editor group) instead of the legacy section order. */
   orderedTabs?: TabItem[];
   /** Reorder a tab within the header row; enables in-row drag reordering when provided. */
@@ -158,9 +165,11 @@ export function WorkspaceHeader({
   onToggleLeftPanel,
   resourceMonitor,
   onToggleSplit,
+  splitTabStrips,
   orderedTabs,
   onReorderTab,
   onSplitTab,
+  mergeWithContent = false,
 }: WorkspaceHeaderProps) {
   const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -183,7 +192,10 @@ export function WorkspaceHeader({
   const filteredTargetBranchOptions = normalizedTargetBranchFilter
     ? targetBranchOptions.filter((branchOption) => branchOption.toLowerCase().includes(normalizedTargetBranchFilter))
     : targetBranchOptions;
-  const selectedThreadMissingFromTabs = !!selectedThreadId && !threads.some((thread) => thread.id === selectedThreadId);
+  const selectedThreadMissingFromTabs =
+    splitTabStrips == null
+    && !!selectedThreadId
+    && !threads.some((thread) => thread.id === selectedThreadId);
   const pendingThread = selectedThreadMissingFromTabs && selectedThreadId
     ? { id: selectedThreadId, title: selectedThreadFallbackTitle || "Loading thread..." }
     : null;
@@ -207,7 +219,7 @@ export function WorkspaceHeader({
     ...(showReviewTab ? [{ type: "review", id: "review" } as TabItem] : []),
     ...fileTabs.map((tab): TabItem => ({ type: "file", id: tab.path })),
   ];
-  const stripTabs = orderedTabs ?? fallbackTabs;
+  const stripTabs = orderedTabs != null && orderedTabs.length > 0 ? orderedTabs : fallbackTabs;
   const renderedThreadIds = stripTabs.filter((tab) => tab.type === "chat").map((tab) => tab.id);
 
   useEffect(() => {
@@ -226,6 +238,19 @@ export function WorkspaceHeader({
       return;
     }
     lastLoggedTabStateRef.current = signature;
+
+    logWorkspaceUiIssueReportSignal(
+      "header.tabs",
+      {
+        orderedTabsProvided: orderedTabs != null,
+        orderedTabsLength: orderedTabs?.length ?? null,
+        stripTabsLength: stripTabs.length,
+        renderedThreadCount: renderedThreadIds.length,
+        splitTabStripsActive: splitTabStrips != null,
+        selectedThreadMissingFromTabs,
+      },
+      { threadId: selectedThreadId },
+    );
 
     debugLog("workspace.header.tabs", "tabs.state.changed", {
       ...tabState,
@@ -256,8 +281,25 @@ export function WorkspaceHeader({
     targetBranch,
     terminalTabActive,
     terminalTabs,
+    orderedTabs,
     renderedThreadIds,
+    splitTabStrips,
+    stripTabs.length,
     threads,
+  ]);
+
+  useEffect(() => {
+    if (splitTabStrips) {
+      return;
+    }
+    scheduleWorkspaceUiGeometryProbe(() => {
+      probeSingleHeaderTabAlignment(mergeWithContent);
+    });
+  }, [
+    activeTabId,
+    mergeWithContent,
+    splitTabStrips,
+    stripTabs.length,
   ]);
 
   useEffect(() => {
@@ -487,60 +529,89 @@ export function WorkspaceHeader({
         </div>
       </div>
 
-      <div className="flex items-center gap-1">
-        <WorkspaceTabStrip
-          groupId="left"
-          tabs={stripTabs}
-          activeTabId={activeTabId}
-          threads={threads}
-          pendingThread={pendingThread}
-          terminalTabs={terminalTabs}
-          fileTabs={fileTabs}
-          disabled={disabled}
-          closingThreadId={closingThreadId}
-          protectedThreadId={protectedThreadId}
-          desktopApp={desktopApp}
-          enableScrollIntoView
-          onSelectTab={(tab) => {
-            if (tab.type === "chat") {
-              onSelectThread(tab.id);
-            } else if (tab.type === "terminal") {
-              onSelectTerminalTab?.(tab.id);
-            } else if (tab.type === "review") {
-              onSelectReviewTab?.();
-            } else {
-              onSelectFileTab(tab.id);
-            }
-          }}
-          onCloseTab={(tab) => {
-            if (tab.type === "chat") {
-              onCloseThread(tab.id);
-            } else if (tab.type === "terminal") {
-              onCloseTerminalTab?.(tab.id);
-            } else if (tab.type === "review") {
-              onCloseReviewTab?.();
-            } else {
-              onCloseFileTab(tab.id);
-            }
-          }}
-          onSplitTab={onSplitTab}
-          onReorderTab={onReorderTab}
-          onPinFileTab={onPinFileTab}
-          onRenameThread={onRenameThread}
-          onRenameTerminalTab={onRenameTerminalTab}
-          onPrefetchThread={onPrefetchThread}
-        />
+      <div className={cn("flex items-center gap-1", splitTabStrips && "relative min-w-0 w-full")}>
+        {splitTabStrips ? (
+          <>
+            <div
+              className="flex min-w-0 w-full items-center overflow-hidden"
+              data-testid="split-tab-strips-host"
+            >
+              {splitTabStrips}
+            </div>
+            <div
+              className="pointer-events-none absolute inset-y-0 right-0 z-10 flex items-center gap-1 bg-gradient-to-l from-background via-background to-transparent pl-6"
+              data-testid="split-tab-strips-trailing-controls"
+            >
+              <div className="pointer-events-auto flex items-center gap-1">
+                <CreateSessionButton
+                  preferenceScopeKey={worktreePath}
+                  threadDisabled={createThreadDisabled ?? disabled}
+                  terminalDisabled={createTerminalDisabled ?? disabled}
+                  onCreateThread={onCreateThread}
+                  onCreateTerminal={onCreateTerminal ?? onCreateThread}
+                  className="shrink-0"
+                />
+                {historyPopover}
+              </div>
+            </div>
+          </>
+        ) : (
+          <WorkspaceTabStrip
+            groupId="left"
+            tabs={stripTabs}
+            activeTabId={activeTabId}
+            threads={threads}
+            pendingThread={pendingThread}
+            terminalTabs={terminalTabs}
+            fileTabs={fileTabs}
+            disabled={disabled}
+            closingThreadId={closingThreadId}
+            protectedThreadId={protectedThreadId}
+            desktopApp={desktopApp}
+            enableScrollIntoView
+            onSelectTab={(tab) => {
+              if (tab.type === "chat") {
+                onSelectThread(tab.id);
+              } else if (tab.type === "terminal") {
+                onSelectTerminalTab?.(tab.id);
+              } else if (tab.type === "review") {
+                onSelectReviewTab?.();
+              } else {
+                onSelectFileTab(tab.id);
+              }
+            }}
+            onCloseTab={(tab) => {
+              if (tab.type === "chat") {
+                onCloseThread(tab.id);
+              } else if (tab.type === "terminal") {
+                onCloseTerminalTab?.(tab.id);
+              } else if (tab.type === "review") {
+                onCloseReviewTab?.();
+              } else {
+                onCloseFileTab(tab.id);
+              }
+            }}
+            onSplitTab={onSplitTab}
+            onReorderTab={onReorderTab}
+            onPinFileTab={onPinFileTab}
+            onRenameThread={onRenameThread}
+            onRenameTerminalTab={onRenameTerminalTab}
+            onPrefetchThread={onPrefetchThread}
+          />
+        )}
 
-        <CreateSessionButton
-          preferenceScopeKey={worktreePath}
-          threadDisabled={createThreadDisabled ?? disabled}
-          terminalDisabled={createTerminalDisabled ?? disabled}
-          onCreateThread={onCreateThread}
-          onCreateTerminal={onCreateTerminal ?? onCreateThread}
-          className="shrink-0"
-        />
+        {!splitTabStrips ? (
+          <CreateSessionButton
+            preferenceScopeKey={worktreePath}
+            threadDisabled={createThreadDisabled ?? disabled}
+            terminalDisabled={createTerminalDisabled ?? disabled}
+            onCreateThread={onCreateThread}
+            onCreateTerminal={onCreateTerminal ?? onCreateThread}
+            className="shrink-0"
+          />
+        ) : null}
 
-        <div className="ml-auto shrink-0">{historyPopover}</div>
+        {!splitTabStrips ? <div className="ml-auto shrink-0">{historyPopover}</div> : null}
       </div>
     </section>
   );

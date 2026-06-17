@@ -160,6 +160,10 @@ function isIssueReportPriorityDebugEntry(entry: DebugLogEntry): boolean {
     return true;
   }
 
+  if (entry.source.startsWith("workspace.ui.")) {
+    return true;
+  }
+
   return entry.source === "runtime.chats"
     || entry.source === "runtime.chat.run"
     || entry.source === "thread.bootstrap"
@@ -169,6 +173,35 @@ function isIssueReportPriorityDebugEntry(entry: DebugLogEntry): boolean {
     || entry.source === "workspace.selection.navigation"
     || entry.source === "workspace.selection.repository"
     || entry.source === "workspace.tabShell";
+}
+
+function normalizeClientDebugEntriesForMerge(
+  clientEntries: DebugLogEntry[] | undefined,
+  serverEntries: DebugLogEntry[],
+): DebugLogEntry[] {
+  if (!clientEntries || clientEntries.length === 0) {
+    return [];
+  }
+
+  const serverSeqs = new Set(serverEntries.map((entry) => entry.seq));
+  const maxServerSeq = serverEntries.reduce((max, entry) => Math.max(max, entry.seq), 0);
+  let nextSeq = maxServerSeq + 1;
+
+  return clientEntries.map((entry) => {
+    let seq = entry.seq;
+    if (seq == null || serverSeqs.has(seq)) {
+      seq = nextSeq;
+      nextSeq += 1;
+    }
+    serverSeqs.add(seq);
+    return {
+      seq,
+      ts: entry.ts,
+      source: entry.source,
+      message: entry.message,
+      data: entry.data ?? null,
+    };
+  });
 }
 
 function selectIssueReportDebugEntries(entries: DebugLogEntry[]): DebugLogEntry[] {
@@ -391,7 +424,21 @@ export function createIssueReportService({ prisma }: CreateIssueReportServiceOpt
         : Promise.resolve(null),
     ]);
 
-    const debugEntries = redactDebugEntries(getRuntimeDebugEntries(), { repositoryId, worktreeId, threadId });
+    const serverDebugEntries = getRuntimeDebugEntries();
+    const mergedDebugEntries = [
+      ...serverDebugEntries,
+      ...normalizeClientDebugEntriesForMerge(
+        input.clientDebugEntries?.map((entry) => ({
+          seq: entry.seq ?? -1,
+          ts: entry.ts,
+          source: entry.source,
+          message: entry.message,
+          data: entry.data ?? null,
+        })),
+        serverDebugEntries,
+      ),
+    ];
+    const debugEntries = redactDebugEntries(mergedDebugEntries, { repositoryId, worktreeId, threadId });
     const diagnostics = redactDiagnosticValue({
       id: reportId,
       createdAt: createdAtIso,
@@ -417,7 +464,8 @@ export function createIssueReportService({ prisma }: CreateIssueReportServiceOpt
       modelOptions: resolveIssueReportModelOptions(thread),
       debug: {
         capturedEntries: debugEntries.length,
-        totalBufferedEntries: getRuntimeDebugEntries().length,
+        totalBufferedEntries: mergedDebugEntries.length,
+        clientAttachedEntries: input.clientDebugEntries?.length ?? 0,
         sources: Array.from(new Set(debugEntries.map((entry) => entry.source))).sort(),
       },
     });

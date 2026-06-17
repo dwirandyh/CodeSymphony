@@ -43,6 +43,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../ui/
 import type { PendingAttachment } from "../../../lib/attachments";
 import type { RuntimeInfo } from "../../../lib/api";
 import { debugLog } from "../../../lib/debugLog";
+import { logWorkspaceEmptyStateResolution } from "../../../lib/workspaceUiDiagnose";
 import {
   generateAttachmentId,
   generateClipboardFilename,
@@ -759,7 +760,14 @@ function ComposerContent({
 
     editor.focus();
     moveComposerCaretToEnd(editor);
-  }, [disabled, focusSignal]);
+    logWorkspaceEmptyStateResolution("Composer", {
+      resolved: null,
+      threadId,
+      focusSignal,
+      composerDisabled: disabled,
+      extra: { event: "focusSignal.applied" },
+    });
+  }, [disabled, focusSignal, threadId]);
 
   const handleInput = useCallback(() => {
     if (suppressInputRef.current) return;

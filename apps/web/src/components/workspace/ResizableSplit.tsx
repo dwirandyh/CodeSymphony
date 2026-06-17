@@ -65,14 +65,17 @@ export function ResizableSplit({
         isDragging ? "cursor-col-resize select-none" : ""
       }`}
     >
-      <div className="h-full min-h-0 min-w-0 overflow-hidden" style={{ width: `${dividerPosition}%` }}>
+      <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden" style={{ width: `${dividerPosition}%` }}>
         {left}
       </div>
       <div
         onMouseDown={handleMouseDown}
         className="w-1 bg-border/40 hover:bg-primary/50 cursor-col-resize transition-colors flex-shrink-0 relative z-30 h-full"
       />
-      <div className="h-full min-h-0 min-w-0 overflow-hidden" style={{ width: `${100 - dividerPosition}%` }}>
+      <div
+        className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+        style={{ width: `calc(${100 - dividerPosition}% - 0.25rem)` }}
+      >
         {right}
       </div>
     </div>

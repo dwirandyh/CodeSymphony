@@ -2,6 +2,10 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { History, Loader2, MessageSquarePlus, MessagesSquare } from "lucide-react";
 import { isRenderDebugEnabled, copyRenderDebugLog } from "../../../lib/renderDebug";
 import { debugLog } from "../../../lib/debugLog";
+import {
+  logWorkspaceEmptyStateResolution,
+  logWorkspaceUiIssueReportSignal,
+} from "../../../lib/workspaceUiDiagnose";
 import { VList, type CacheSnapshot, type VListHandle } from "virtua";
 import type {
   ChatMessageListEmptyState,
@@ -609,6 +613,37 @@ export const ChatMessageList = memo(function ChatMessageList({
     }
     return result;
   }, [items, shouldRenderFooter, showThinkingPlaceholder]);
+
+  const emptyRenderDiagnoseSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (displayItems.length > 0) {
+      return;
+    }
+    const signature = `${threadId ?? "none"}:${emptyState ?? "null"}`;
+    if (emptyRenderDiagnoseSignatureRef.current === signature) {
+      return;
+    }
+    emptyRenderDiagnoseSignatureRef.current = signature;
+    logWorkspaceEmptyStateResolution("ChatMessageList", {
+      resolved: emptyState ?? null,
+      threadId,
+      timelineItemCount: items.length,
+      extra: {
+        event: "emptyState.rendered",
+        showsSkeleton: emptyState === "loading-thread",
+      },
+    });
+    logWorkspaceUiIssueReportSignal(
+      "messageList.emptyRender",
+      {
+        surface: "ChatMessageList",
+        emptyState: emptyState ?? null,
+        showsSkeleton: emptyState === "loading-thread",
+        timelineItemCount: items.length,
+      },
+      { threadId },
+    );
+  }, [displayItems.length, emptyState, items.length, threadId]);
 
   const getAutoFollowTargetIndex = useCallback((mode: "preserve-user-anchor" | "bottom" = "preserve-user-anchor") => {
     if (displayItems.length === 0) {

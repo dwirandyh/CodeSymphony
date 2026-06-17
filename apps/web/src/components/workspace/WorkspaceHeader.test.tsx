@@ -14,6 +14,12 @@ vi.mock("../../lib/debugLog", () => ({
   debugLog: (...args: unknown[]) => debugLogMock(...args),
 }));
 
+vi.mock("../../lib/workspaceUiDiagnose", () => ({
+  logWorkspaceUiIssueReportSignal: vi.fn(),
+  probeSingleHeaderTabAlignment: vi.fn(),
+  scheduleWorkspaceUiGeometryProbe: vi.fn(),
+}));
+
 function act(callback: () => void): void;
 function act(callback: () => Promise<void>): Promise<void>;
 function act(callback: () => void | Promise<void>): void | Promise<void> {
@@ -110,6 +116,15 @@ describe("WorkspaceHeader", () => {
       root.render(<WorkspaceHeader {...props} {...overrides} />);
     });
   }
+
+  it("falls back to legacy thread tabs when orderedTabs is an empty array", () => {
+    renderHeader({ orderedTabs: [] });
+
+    const tabs = container.querySelectorAll('button[role="tab"]');
+    expect(tabs.length).toBeGreaterThanOrEqual(2);
+    expect(container.textContent).toContain("New Thread");
+    expect(container.textContent).toContain("Secondary Thread");
+  });
 
   it("renames selected thread via double-click then Enter", async () => {
     const onRenameThread = vi.fn();
@@ -604,6 +619,28 @@ describe("WorkspaceHeader", () => {
     expect(onPrefetchThread).toHaveBeenNthCalledWith(2, "thread-2");
   });
 
+  it("renders split tab strips full-width with add + history pinned on the tab row", () => {
+    renderHeader({
+      splitTabStrips: <div data-testid="split-strips-marker">split strips</div>,
+    });
+
+    const marker = container.querySelector('[data-testid="split-strips-marker"]');
+    if (!marker) {
+      throw new Error("Split strips slot not rendered");
+    }
+
+    expect(container.querySelector('[data-testid="session-tabs-scroll"]')).toBeNull();
+    expect(container.querySelector('[data-testid="split-tab-strips-host"]')).not.toBeNull();
+
+    const trailing = container.querySelector('[data-testid="split-tab-strips-trailing-controls"]');
+    const addSessionButton = container.querySelector<HTMLButtonElement>('button[aria-label="Add session"]');
+    const historyButton = container.querySelector<HTMLButtonElement>('button[aria-label="Closed session history"]');
+    expect(addSessionButton).not.toBeNull();
+    expect(historyButton).not.toBeNull();
+    expect(trailing?.contains(addSessionButton)).toBe(true);
+    expect(trailing?.contains(historyButton)).toBe(true);
+  });
+
   it("does not render runtime or worktree metadata rows", () => {
     renderHeader({ worktreePath: "/tmp/repo" });
 
@@ -800,7 +837,7 @@ describe("WorkspaceHeader", () => {
       title: "Archived Chat",
       agent: "codex",
       tabOpen: false,
-      updatedAt: "2026-05-13T00:00:00.000Z",
+      updatedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
     };
 
     renderHeader({ closedThreads: [closedThread], onReopenThread });

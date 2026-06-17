@@ -558,6 +558,29 @@ describe("useChatSession", () => {
     expect(hookResult.composerPermissionMode).toBe("full_access");
   });
 
+  it("updates permission mode for an explicit target thread (split-pane)", async () => {
+    // A non-focused pane must update its OWN thread's permission mode, not the
+    // globally active thread. With thread-a selected, targeting thread-b must
+    // call updateThreadPermissionMode for thread-b.
+    threadsState.data = [makeThread("thread-a", false), makeThread("thread-b", false)];
+    vi.mocked(api.updateThreadPermissionMode).mockResolvedValue({
+      ...makeThread("thread-b"),
+      permissionMode: "full_access",
+    });
+
+    renderHook("thread-a");
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+
+    await act(async () => {
+      await hookResult.setThreadPermissionMode("thread-b", "full_access");
+    });
+
+    expect(api.updateThreadPermissionMode).toHaveBeenCalledWith("thread-b", {
+      permissionMode: "full_access",
+    });
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+  });
+
   it("does not hit a render loop when the selected thread has no snapshot yet", async () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -747,6 +770,39 @@ describe("useChatSession", () => {
     await act(async () => {
       await sendDeferred.promise;
     });
+  });
+
+  it("submits to an explicit target thread even when another thread is active/selected", async () => {
+    // Split-pane keystone: a non-focused pane must send to its OWN thread, not
+    // the globally active thread (activeThreadIdRef). With thread-a selected,
+    // submitting with targetThreadId "thread-b" must call api.sendMessage for
+    // thread-b.
+    threadsState.data = [makeThread("thread-a", false), makeThread("thread-b", false)];
+    statusSnapshotState.data = { status: "idle", newestIdx: null };
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "user-b1",
+      threadId: "thread-b",
+      seq: 1,
+      role: "user",
+      content: "Hello B",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:01Z",
+    });
+
+    renderHook("thread-a");
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+
+    await act(async () => {
+      const submitted = await hookResult.submitMessage("Hello B", "default", [], "thread-b");
+      expect(submitted).toBe(true);
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith(
+      "thread-b",
+      expect.objectContaining({ content: "Hello B", expectedWorktreeId: "wt-1" }),
+    );
+    // The globally selected thread must not change as a side effect.
+    expect(hookResult.selectedThreadId).toBe("thread-a");
   });
 
   it("reconciles stale running state when stop reports no active assistant run", async () => {
@@ -1331,7 +1387,7 @@ describe("useChatSession", () => {
 
     expect(api.createThread).not.toHaveBeenCalled();
     expect(hookResult.selectedThreadId).toBe("thread-a");
-    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+    expect(hookResult.messageListEmptyState).toBe("existing-thread-empty");
     expect(onError).toHaveBeenLastCalledWith("Cannot delete thread");
   });
 
@@ -1413,7 +1469,7 @@ describe("useChatSession", () => {
     });
 
     expect(hookResult.selectedThreadId).toBe("thread-b");
-    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+    expect(hookResult.messageListEmptyState).toBe("existing-thread-empty");
   });
 
   it("selects the backend-preferred existing thread when all threads are idle", () => {
@@ -1427,7 +1483,7 @@ describe("useChatSession", () => {
     });
 
     expect(hookResult.selectedThreadId).toBe("thread-a");
-    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+    expect(hookResult.messageListEmptyState).toBe("existing-thread-empty");
   });
 
   it("does not create a placeholder thread while the worktree is still provisioning when auto-create is disabled", async () => {
@@ -2078,7 +2134,7 @@ describe("useChatSession", () => {
       "thread-new",
       expect.any(Object),
     );
-    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+    expect(hookResult.messageListEmptyState).toBe("existing-thread-empty");
   });
 
   it("preserves a newer manual thread selection when optimistic thread creation resolves", async () => {
@@ -2345,11 +2401,11 @@ describe("useChatSession", () => {
     expect(hookResult.messageListEmptyState).toBe("loading-thread");
   });
 
-  it("marks an existing selected thread as loading while snapshot bootstrap is unresolved", () => {
+  it("marks an existing selected thread as empty when snapshot bootstrap is idle without cached data", () => {
     renderHook("thread-a");
 
     expect(hookResult.selectedThreadId).toBe("thread-a");
-    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+    expect(hookResult.messageListEmptyState).toBe("existing-thread-empty");
   });
 
   it("marks an empty fetched thread as empty instead of loading", () => {
@@ -4191,6 +4247,6 @@ describe("useChatSession", () => {
       "thread-new",
       expect.any(Object),
     );
-    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+    expect(hookResult.messageListEmptyState).toBe("existing-thread-empty");
   });
 });
