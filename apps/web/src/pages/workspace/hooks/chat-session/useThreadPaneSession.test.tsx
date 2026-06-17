@@ -193,7 +193,7 @@ describe("useThreadPaneSession", () => {
       data: { timelineItems: [], summary: {} },
       isLoading: false,
       isFetching: false,
-    });
+    } as unknown as ReturnType<typeof useThreadSnapshotMock>);
     useThreadStatusSnapshotMock.mockReturnValue({
       data: null,
       isLoading: true,

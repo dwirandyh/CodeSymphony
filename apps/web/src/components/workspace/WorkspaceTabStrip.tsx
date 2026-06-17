@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { ChatThread } from "@codesymphony/shared-types";
 import type { TabItem } from "../../pages/workspace/editorGroups";
+import type { EditorQuadrantId } from "../../pages/workspace/editorGroupTypes";
 import type { WorkspaceFileTab, WorkspaceTerminalTab } from "./WorkspaceHeader";
 import { cn } from "../../lib/utils";
 import {
@@ -25,7 +26,7 @@ export interface WorkspaceTabStripPendingThread {
 }
 
 export interface WorkspaceTabStripProps {
-  groupId: "left" | "right";
+  groupId: EditorQuadrantId;
   tabs: TabItem[];
   activeTabId: string | null;
   threads: ChatThread[];
@@ -50,12 +51,14 @@ export interface WorkspaceTabStripProps {
   /** Reorder within this group. Omit to disable in-row reordering. */
   onReorderTab?: (tabId: string, toIndex: number) => void;
   /** Accept a tab dragged from the other group, inserting at toIndex. */
-  onDropTabFromOtherGroup?: (tab: TabItem, sourceGroupId: "left" | "right", toIndex: number) => void;
+  onDropTabFromOtherGroup?: (tab: TabItem, sourceGroupId: EditorQuadrantId, toIndex: number) => void;
   onPinFileTab?: (path: string) => void;
   onRenameThread?: (threadId: string, title: string) => void | Promise<void>;
   onRenameTerminalTab?: (terminalTabId: string, title: string) => void | Promise<void>;
   onPrefetchThread?: (threadId: string) => void;
   onFocusGroup?: () => void;
+  onTabDragStart?: () => void;
+  onTabDragEnd?: () => void;
 }
 
 function fileTabLabel(filePath: string): string {
@@ -100,6 +103,8 @@ export function WorkspaceTabStrip({
   onRenameTerminalTab,
   onPrefetchThread,
   onFocusGroup,
+  onTabDragStart,
+  onTabDragEnd,
 }: WorkspaceTabStripProps) {
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -334,6 +339,7 @@ export function WorkspaceTabStrip({
       onDragOver={handleRowDragOver}
       onDragLeave={handleRowDragLeave}
       onDrop={handleRowDrop}
+      onDragEnd={() => onTabDragEnd?.()}
       className={cn(
         "min-w-0 overflow-x-auto overscroll-x-contain scroll-px-16 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
         fillWidth ? "flex-1" : (desktopApp ? "max-w-full" : "flex-1"),
@@ -367,6 +373,7 @@ export function WorkspaceTabStrip({
                   sourceIndex: index,
                   tab,
                 });
+                onTabDragStart?.();
               }}
               className={cn(
                 "group flex shrink-0 items-center border-b-2 border-b-transparent text-muted-foreground",

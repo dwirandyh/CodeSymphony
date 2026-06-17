@@ -1,4 +1,4 @@
-import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Bug, Menu, Settings, X } from "lucide-react";
 import {
   type ClaudeModelCatalogEntry,
@@ -17,16 +17,33 @@ import { disposeTerminalRuntime } from "../components/workspace/terminalRuntimeR
 import {
   type TabItem,
   type EditorGroupsState,
+  createEmptyEditorGroupsState,
+  getEditorGroup,
   reconcileEditorGroups,
   moveTab,
+  moveTabToQuadrant,
   moveTabToGroup,
   reorderTabInGroup,
   splitActiveTab,
-  closeTabInGroup
+  closeTabInGroup,
+  layoutAfterPaneSplitEdge,
 } from "./workspace/editorGroups";
+import type { EditorQuadrantId } from "./workspace/editorGroupTypes";
+import { EDITOR_QUADRANT_IDS } from "./workspace/editorGroupTypes";
+import {
+  logEditorGridFocusAttempt,
+  logEditorGridStateChange,
+  scheduleEditorGridDomProbe,
+  snapshotEditorGridState,
+} from "../lib/workspaceEditorGridDiagnose";
 import { ResizableSplit } from "../components/workspace/ResizableSplit";
-import { WorkspaceTabStrip } from "../components/workspace/WorkspaceTabStrip";
 import { SplitEditorTabStrips } from "../components/workspace/SplitEditorTabStrips";
+import { EditorSurfaceFrame } from "../components/workspace/EditorSurfaceFrame";
+import { WorkspaceTabStrip } from "../components/workspace/WorkspaceTabStrip";
+import {
+  applyEditorTabPaneDrop,
+  type PaneSplitDropTarget,
+} from "./workspace/editorPaneSplitDrop";
 const MobileRepositoryPanel = lazy(() =>
   import("../components/workspace/RepositoryPanel").then(m => ({ default: m.RepositoryPanel }))
 );
@@ -2557,8 +2574,15 @@ export function WorkspacePage() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [issueReportOpen, setIssueReportOpen] = useState(false);
-  const [focusComposerSignalByGroup, setFocusComposerSignalByGroup] = useState<{ left: number; right: number }>({ left: 0, right: 0 });
-  const focusComposerTargetGroupRef = useRef<"left" | "right">("left");
+  const [focusComposerSignalByGroup, setFocusComposerSignalByGroup] = useState<
+    Record<EditorQuadrantId, number>
+  >({
+    topLeft: 0,
+    topRight: 0,
+    bottomLeft: 0,
+    bottomRight: 0,
+  });
+  const focusComposerTargetGroupRef = useRef<EditorQuadrantId>("topLeft");
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
   const openSettingsDialog = useCallback(() => {
@@ -2887,14 +2911,18 @@ export function WorkspacePage() {
       });
     }
 
-    setFocusComposerSignalByGroup((current) => {
-      const groupId = focusComposerTargetGroupRef.current;
-      return {
-        ...current,
-        [groupId]: current[groupId] + 1,
-      };
-    });
-  }, [activeView, confirmSwitchAwayFromActiveFile, updateSearch]);
+    const groupId = focusComposerTargetGroupRef.current;
+    logEditorGridFocusAttempt(
+      "composerShortcut",
+      { groupId, activeView },
+      repos.selectedWorktreeId,
+    );
+
+    setFocusComposerSignalByGroup((current) => ({
+      ...current,
+      [groupId]: current[groupId] + 1,
+    }));
+  }, [activeView, confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, updateSearch]);
 
 
 
@@ -4299,17 +4327,37 @@ export function WorkspacePage() {
   };
 
   // Split Panel State
-  const [editorGroups, setEditorGroups] = useState<EditorGroupsState>({
-    splitMode: false,
-    activeGroupId: "left",
-    left: { tabs: [], activeTabId: null },
-    right: { tabs: [], activeTabId: null },
-  });
-  const [dividerPosition, setDividerPosition] = useState(50);
+  const [editorGroups, setEditorGroups] = useState<EditorGroupsState>(createEmptyEditorGroupsState);
+  const [horizontalSplit, setHorizontalSplit] = useState(50);
+  const [isEditorTabDragging, setIsEditorTabDragging] = useState(false);
 
   useEffect(() => {
     focusComposerTargetGroupRef.current = editorGroups.activeGroupId;
   }, [editorGroups.activeGroupId]);
+
+  useEffect(() => {
+    if (!editorGroups.splitMode) {
+      return;
+    }
+    const snapshot = snapshotEditorGridState({
+      editorGroups,
+      horizontalSplit,
+      verticalSplit: 50,
+      focusComposerSignals: focusComposerSignalByGroup,
+      globalActiveView: activeView,
+    });
+    logEditorGridStateChange("split-layout-changed", snapshot, repos.selectedWorktreeId);
+    scheduleEditorGridDomProbe(repos.selectedWorktreeId, 150);
+  }, [
+    editorGroups.layout,
+    editorGroups.splitMode,
+    editorGroups.activeGroupId,
+    editorGroups.groups,
+    horizontalSplit,
+    focusComposerSignalByGroup,
+    activeView,
+    repos.selectedWorktreeId,
+  ]);
 
   // Reconcile open tabs from hooks into editor groups state
   const sourceTabs = useMemo<TabItem[]>(() => {
@@ -4355,19 +4403,23 @@ export function WorkspacePage() {
       return;
     }
     setEditorGroups((current) => {
-      if (current.splitMode) {
+      if (current.layout !== "single") {
         return current;
       }
-      if (current.left.activeTabId === currentSelectionTabId) {
+      const topLeft = current.groups.topLeft;
+      if (topLeft.activeTabId === currentSelectionTabId) {
         return current;
       }
-      if (!current.left.tabs.some((t) => t.id === currentSelectionTabId)) {
+      if (!topLeft.tabs.some((t) => t.id === currentSelectionTabId)) {
         return current;
       }
       return {
         ...current,
-        activeGroupId: "left",
-        left: { ...current.left, activeTabId: currentSelectionTabId },
+        activeGroupId: "topLeft",
+        groups: {
+          ...current.groups,
+          topLeft: { ...topLeft, activeTabId: currentSelectionTabId },
+        },
       };
     });
   }, [currentSelectionTabId]);
@@ -4396,43 +4448,68 @@ export function WorkspacePage() {
     }
   }, [updateSearch, handleSelectTerminalTab]);
 
-  const handleFocusGroup = useCallback((groupId: "left" | "right") => {
+  const handleFocusGroup = useCallback((groupId: EditorQuadrantId) => {
+    logEditorGridFocusAttempt("focusGroup", { groupId, refTarget: focusComposerTargetGroupRef.current }, repos.selectedWorktreeId);
+    const group = editorGroups.groups[groupId];
+    const activeTab = group.tabs.find((t) => t.id === group.activeTabId);
+    if (activeTab?.type === "chat") {
+      setFocusComposerSignalByGroup((signals) => ({
+        ...signals,
+        [groupId]: signals[groupId] + 1,
+      }));
+    } else if (activeTab?.type === "terminal") {
+      window.setTimeout(() => {
+        const pane = document.querySelector(`[data-editor-quadrant="${groupId}"]`);
+        const textarea = pane?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+        textarea?.focus();
+      }, 0);
+    }
     setEditorGroups((current) => {
-      if (current.activeGroupId === groupId) return current;
-      return { ...current, activeGroupId: groupId };
-    });
-
-    // Sync URL to the active tab of the target group
-    const group = editorGroups[groupId];
-    const activeTabId = group.activeTabId;
-    if (activeTabId) {
-      const tab = group.tabs.find((t) => t.id === activeTabId);
+      if (current.activeGroupId === groupId) {
+        return current;
+      }
+      const tab = current.groups[groupId].tabs.find((t) => t.id === current.groups[groupId].activeTabId);
       if (tab) {
         syncTabToUrl(tab);
       }
-    }
-  }, [editorGroups, syncTabToUrl]);
+      return { ...current, activeGroupId: groupId };
+    });
+  }, [editorGroups.groups, repos.selectedWorktreeId, syncTabToUrl]);
 
-  const handleSelectGroupTab = useCallback((groupId: "left" | "right", tab: TabItem) => {
+  const handleSelectGroupTab = useCallback((groupId: EditorQuadrantId, tab: TabItem) => {
     setEditorGroups((current) => {
-      const group = current[groupId];
+      const group = current.groups[groupId];
       return {
         ...current,
         activeGroupId: groupId,
-        [groupId]: { ...group, activeTabId: tab.id },
+        groups: {
+          ...current.groups,
+          [groupId]: { ...group, activeTabId: tab.id },
+        },
       };
     });
     syncTabToUrl(tab);
+    logEditorGridFocusAttempt(
+      "selectGroupTab",
+      { groupId, tabType: tab.type, tabId: tab.id, splitMode: editorGroups.splitMode },
+      repos.selectedWorktreeId,
+    );
     if (tab.type === "chat") {
       void prefetchDisplayThreadSnapshot(tab.id);
       setFocusComposerSignalByGroup((current) => ({
         ...current,
         [groupId]: current[groupId] + 1,
       }));
+    } else if (tab.type === "terminal") {
+      window.setTimeout(() => {
+        const pane = document.querySelector(`[data-editor-quadrant="${groupId}"]`);
+        const textarea = pane?.querySelector(".xterm-helper-textarea") as HTMLTextAreaElement | null;
+        textarea?.focus();
+      }, 0);
     }
-  }, [prefetchDisplayThreadSnapshot, syncTabToUrl]);
+  }, [editorGroups.splitMode, prefetchDisplayThreadSnapshot, repos.selectedWorktreeId, syncTabToUrl]);
 
-  const handleCloseGroupTab = useCallback((groupId: "left" | "right", tab: TabItem) => {
+  const handleCloseGroupTab = useCallback((groupId: EditorQuadrantId, tab: TabItem) => {
     setEditorGroups((current) => {
       const { nextState } = closeTabInGroup(current, tab.id, groupId);
       return nextState;
@@ -4451,7 +4528,7 @@ export function WorkspacePage() {
   }, [handleCloseFileTab, handleRequestCloseThread, handleCloseTerminalTab, handleCloseReview]);
 
   const handleDropGroupTab = useCallback(
-    (targetGroupId: "left" | "right", tab: TabItem, sourceGroupId: "left" | "right", toIndex?: number) => {
+    (targetGroupId: EditorQuadrantId, tab: TabItem, sourceGroupId: EditorQuadrantId, toIndex?: number) => {
       if (sourceGroupId === targetGroupId) return;
       setEditorGroups((current) => {
         const moved = moveTabToGroup(current, tab.id, targetGroupId);
@@ -4466,15 +4543,56 @@ export function WorkspacePage() {
   );
 
   const handleReorderGroupTab = useCallback(
-    (groupId: "left" | "right", tabId: string, toIndex: number) => {
+    (groupId: EditorQuadrantId, tabId: string, toIndex: number) => {
       setEditorGroups((current) => reorderTabInGroup(current, groupId, tabId, toIndex));
     },
     [],
   );
 
-  const renderPaneContent = (groupId: "left" | "right") => {
-    const group = editorGroups[groupId];
-    if (!group.activeTabId) return null;
+  const handlePaneDropTab = useCallback(
+    (tab: TabItem, target: PaneSplitDropTarget, sourcePane: EditorQuadrantId) => {
+      setEditorGroups((current) => applyEditorTabPaneDrop(current, tab.id, target, sourcePane));
+      syncTabToUrl(tab);
+    },
+    [syncTabToUrl],
+  );
+
+  const handleEditorTabDragStart = useCallback(() => {
+    setIsEditorTabDragging(true);
+  }, []);
+
+  const handleEditorTabDragEnd = useCallback(() => {
+    setIsEditorTabDragging(false);
+  }, []);
+
+  const wrapUnsplitEditorSurface = useCallback(
+    (content: ReactNode) => (
+      <EditorSurfaceFrame
+        paneGroupId="topLeft"
+        layout={editorGroups.layout}
+        paneDropEnabled
+        tabDragActive={isEditorTabDragging}
+        onPaneDrop={(tab, target) => handlePaneDropTab(tab, target, "topLeft")}
+        onFocusPane={() => handleFocusGroup("topLeft")}
+      >
+        {content}
+      </EditorSurfaceFrame>
+    ),
+    [editorGroups.layout, handleFocusGroup, handlePaneDropTab, isEditorTabDragging],
+  );
+
+  const renderPaneContent = (groupId: EditorQuadrantId) => {
+    const group = editorGroups.groups[groupId];
+    if (!group.activeTabId) {
+      if (editorGroups.splitMode && group.tabs.length === 0) {
+        logEditorGridFocusAttempt(
+          "paneClick",
+          { groupId, reason: "empty-quadrant-no-active-tab", layout: editorGroups.layout },
+          repos.selectedWorktreeId,
+        );
+      }
+      return null;
+    }
 
     const activeTab = group.tabs.find((t) => t.id === group.activeTabId);
     if (!activeTab) return null;
@@ -4594,8 +4712,8 @@ export function WorkspacePage() {
     return null;
   };
 
-  const renderGroupStrip = (groupId: "left" | "right") => {
-    const group = editorGroups[groupId];
+  const renderGroupStrip = (groupId: EditorQuadrantId) => {
+    const group = editorGroups.groups[groupId];
     return (
       <WorkspaceTabStrip
         groupId={groupId}
@@ -4613,6 +4731,27 @@ export function WorkspacePage() {
         onCloseTab={(tab) => handleCloseGroupTab(groupId, tab)}
         onReorderTab={(tabId, toIndex) => handleReorderGroupTab(groupId, tabId, toIndex)}
         onDropTabFromOtherGroup={(tab, sourceGroupId, toIndex) => handleDropGroupTab(groupId, tab, sourceGroupId, toIndex)}
+        onSplitTab={(tab) => {
+          const dest = groupId === "topLeft" ? "topRight" : "topLeft";
+          const layout = layoutAfterPaneSplitEdge(editorGroups.layout, groupId === "topLeft" ? "right" : "left");
+          setEditorGroups((current) =>
+            moveTabToQuadrant(
+              {
+                ...current,
+                activeGroupId: groupId,
+                groups: {
+                  ...current.groups,
+                  [groupId]: { ...current.groups[groupId], activeTabId: tab.id },
+                },
+              },
+              tab.id,
+              dest,
+              layout,
+            ),
+          );
+        }}
+        onTabDragStart={handleEditorTabDragStart}
+        onTabDragEnd={handleEditorTabDragEnd}
         onPinFileTab={handlePinFileTab}
         onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
         onRenameTerminalTab={handleRenameTerminalTab}
@@ -4624,24 +4763,30 @@ export function WorkspacePage() {
     );
   };
 
-  // Split mode: per-pane tab strips in the header row, aligned with the editor split.
   const splitTabStrips = editorGroups.splitMode ? (
     <SplitEditorTabStrips
-      dividerPosition={dividerPosition}
-      left={renderGroupStrip("left")}
-      right={renderGroupStrip("right")}
+      dividerPosition={horizontalSplit}
+      left={renderGroupStrip("topLeft")}
+      right={renderGroupStrip("topRight")}
     />
   ) : null;
 
-  const renderPane = (groupId: "left" | "right") => {
+  const renderPane = (groupId: EditorQuadrantId) => {
     return (
-      <div className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-background">
-        <div
-          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-          onMouseDown={() => handleFocusGroup(groupId)}
+      <div
+        className="flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden bg-background"
+        data-editor-quadrant={groupId}
+      >
+        <EditorSurfaceFrame
+          paneGroupId={groupId}
+          layout={editorGroups.layout}
+          paneDropEnabled
+        tabDragActive={isEditorTabDragging}
+          onPaneDrop={(tab, target) => handlePaneDropTab(tab, target, groupId)}
+          onFocusPane={() => handleFocusGroup(groupId)}
         >
           {renderPaneContent(groupId)}
-        </div>
+        </EditorSurfaceFrame>
       </div>
     );
   };
@@ -4665,7 +4810,7 @@ export function WorkspacePage() {
       if ((event.metaKey || event.ctrlKey) && event.key === "1") {
         event.preventDefault();
         event.stopPropagation();
-        handleFocusGroup("left");
+        handleFocusGroup("topLeft");
         return;
       }
 
@@ -4673,7 +4818,7 @@ export function WorkspacePage() {
         if (editorGroups.splitMode) {
           event.preventDefault();
           event.stopPropagation();
-          handleFocusGroup("right");
+          handleFocusGroup("topRight");
         }
         return;
       }
@@ -4834,6 +4979,7 @@ export function WorkspacePage() {
                 className={cn(
                   getWorkspaceHeaderContainerClassName({
                     activeView,
+                    editorSplitActive: editorGroups.splitMode,
                   }),
                   mobileInlinePanel && !desktopApp && "hidden lg:block",
                 )}
@@ -4923,15 +5069,27 @@ export function WorkspacePage() {
                     resourceMonitor={!showMacDesktopTitleBar ? workspaceHeaderControls : null}
                     onToggleSplit={() => setEditorGroups((current) => splitActiveTab(current))}
                     splitTabStrips={splitTabStrips}
-                    orderedTabs={editorGroups.splitMode ? undefined : editorGroups.left.tabs}
-                    onReorderTab={(tabId, toIndex) => handleReorderGroupTab("left", tabId, toIndex)}
+                    orderedTabs={editorGroups.splitMode ? undefined : editorGroups.groups.topLeft.tabs}
+                    onReorderTab={(tabId, toIndex) => handleReorderGroupTab("topLeft", tabId, toIndex)}
                     onSplitTab={(tab) => {
-                      setEditorGroups((current) => moveTab(
-                        { ...current, activeGroupId: "left", left: { ...current.left, activeTabId: tab.id } },
-                        tab.id,
-                        "right",
-                      ));
+                      setEditorGroups((current) =>
+                        moveTabToQuadrant(
+                          {
+                            ...current,
+                            activeGroupId: "topLeft",
+                            groups: {
+                              ...current.groups,
+                              topLeft: { ...current.groups.topLeft, activeTabId: tab.id },
+                            },
+                          },
+                          tab.id,
+                          "topRight",
+                          layoutAfterPaneSplitEdge(current.layout, "right"),
+                        ),
+                      );
                     }}
+                    onTabDragStart={handleEditorTabDragStart}
+                    onTabDragEnd={handleEditorTabDragEnd}
                   />
                 </Suspense>
 
@@ -5081,63 +5239,69 @@ export function WorkspacePage() {
             ) : editorGroups.splitMode ? (
               <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
                 <ResizableSplit
-                  splitMode={true}
-                  dividerPosition={dividerPosition}
-                  onDividerPositionChange={setDividerPosition}
-                  left={renderPane("left")}
-                  right={renderPane("right")}
+                  splitMode
+                  dividerPosition={horizontalSplit}
+                  onDividerPositionChange={setHorizontalSplit}
+                  left={renderPane("topLeft")}
+                  right={renderPane("topRight")}
                 />
               </section>
             ) : terminalViewActive && activeTerminalTab && repos.selectedWorktreeId && selectedWorktreeOperational ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="flex min-h-0 flex-1 overflow-hidden bg-[#0f1218]">
-                  <Suspense fallback={<div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
-                    <WorkspaceTerminalSurface
-                      key={activeTerminalTab.id}
-                      sessionId={activeTerminalTab.sessionId}
-                      cwd={repos.selectedWorktree?.path ?? null}
-                      mobileBottomOffset={mobileKeyboardOffset}
-                      onOpenFile={(path) => void openReadFile(path)}
-                      showMobileKeyboardToolbar={!desktopLayout}
-                    />
-                  </Suspense>
-                </div>
+                {wrapUnsplitEditorSurface(
+                  <div className="flex min-h-0 flex-1 overflow-hidden bg-[#0f1218]">
+                    <Suspense fallback={<div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+                      <WorkspaceTerminalSurface
+                        key={activeTerminalTab.id}
+                        sessionId={activeTerminalTab.sessionId}
+                        cwd={repos.selectedWorktree?.path ?? null}
+                        mobileBottomOffset={mobileKeyboardOffset}
+                        onOpenFile={(path) => void openReadFile(path)}
+                        showMobileKeyboardToolbar={!desktopLayout}
+                      />
+                    </Suspense>
+                  </div>,
+                )}
               </section>
             ) : activeView === "review" && reviewTabOpen && repos.selectedWorktreeId && selectedWorktreeOperational ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading review...</div>}>
-                  <DiffReviewPanel worktreeId={repos.selectedWorktreeId} selectedFilePath={selectedDiffFilePath} />
-                </Suspense>
+                {wrapUnsplitEditorSurface(
+                  <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading review...</div>}>
+                    <DiffReviewPanel worktreeId={repos.selectedWorktreeId} selectedFilePath={selectedDiffFilePath} />
+                  </Suspense>,
+                )}
               </section>
             ) : activeView === "file" && activeFilePath ? (
               <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading editor...</div>}>
-                  <CodeEditorPanel
-                    key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
-                    filePath={activeFilePath}
-                    externalFile={activeFileExternal}
-                    targetLine={activeFileLine ?? undefined}
-                    targetColumn={activeFileColumn ?? undefined}
-                    fileEntries={fileIndex.entries}
-                    content={activeEditorFileState?.draftContent ?? ""}
-                    mimeType={activeEditorFileState?.mimeType ?? "text/plain"}
-                    gitHeadContent={activeEditorGitBaselineState?.headContent ?? null}
-                    gitBaselineReady={activeEditorGitBaselineState?.loaded ?? false}
-                    gitBaselineLoading={activeEditorGitBaselineState?.loading ?? false}
-                    gitBranch={gitChanges.branch}
-                    gitStatus={activeGitChangeEntry?.status ?? null}
-                    loading={activeEditorFileState?.loading ?? false}
-                    saving={activeEditorFileState?.saving ?? false}
-                    dirty={activeFileDirty}
-                    error={activeEditorFileState?.error ?? null}
-                    desktopApp={desktopApp}
-                    mobileBottomOffset={mobileKeyboardOffset}
-                    onChange={(content) => handleEditorDraftChange(activeFilePath, content)}
-                    onSave={() => void handleSaveActiveFile()}
-                    onRetry={handleRetryActiveFileLoad}
-                    onOpenFile={(path) => void openReadFile(path)}
-                  />
-                </Suspense>
+                {wrapUnsplitEditorSurface(
+                  <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading editor...</div>}>
+                    <CodeEditorPanel
+                      key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
+                      filePath={activeFilePath}
+                      externalFile={activeFileExternal}
+                      targetLine={activeFileLine ?? undefined}
+                      targetColumn={activeFileColumn ?? undefined}
+                      fileEntries={fileIndex.entries}
+                      content={activeEditorFileState?.draftContent ?? ""}
+                      mimeType={activeEditorFileState?.mimeType ?? "text/plain"}
+                      gitHeadContent={activeEditorGitBaselineState?.headContent ?? null}
+                      gitBaselineReady={activeEditorGitBaselineState?.loaded ?? false}
+                      gitBaselineLoading={activeEditorGitBaselineState?.loading ?? false}
+                      gitBranch={gitChanges.branch}
+                      gitStatus={activeGitChangeEntry?.status ?? null}
+                      loading={activeEditorFileState?.loading ?? false}
+                      saving={activeEditorFileState?.saving ?? false}
+                      dirty={activeFileDirty}
+                      error={activeEditorFileState?.error ?? null}
+                      desktopApp={desktopApp}
+                      mobileBottomOffset={mobileKeyboardOffset}
+                      onChange={(content) => handleEditorDraftChange(activeFilePath, content)}
+                      onSave={() => void handleSaveActiveFile()}
+                      onRetry={handleRetryActiveFileLoad}
+                      onOpenFile={(path) => void openReadFile(path)}
+                    />
+                  </Suspense>,
+                )}
               </section>
             ) : activeView === "automations" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -5213,9 +5377,10 @@ export function WorkspacePage() {
             ) : (
               <>
                 <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  <div className="min-h-0 min-w-0 flex-1">
-                    <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
-                      <ChatMessageList
+                  {wrapUnsplitEditorSurface(
+                    <div className="min-h-0 min-w-0 flex-1">
+                      <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
+                        <ChatMessageList
                         threadId={chat.selectedThreadId}
                         items={chat.timelineItems}
                         emptyState={chat.messageListEmptyState}
@@ -5248,9 +5413,10 @@ export function WorkspacePage() {
                             />
                           </Suspense>
                         ) : null}
-                      />
-                    </Suspense>
-                  </div>
+                        />
+                      </Suspense>
+                    </div>,
+                  )}
                 </section>
                 {showPermissionGate ? (
                   <section className="mx-auto w-full max-w-3xl px-3" data-testid="permission-prompts-container">
@@ -5344,7 +5510,7 @@ export function WorkspacePage() {
                     <Composer
                       attachedTop={false}
                       disabled={chat.composerDisabled || gates.planActionBusy}
-                      focusSignal={focusComposerSignalByGroup.left > 0 ? focusComposerSignalByGroup.left : undefined}
+                      focusSignal={focusComposerSignalByGroup.topLeft > 0 ? focusComposerSignalByGroup.topLeft : undefined}
                       sending={chat.sendingMessage}
                       showStop={chat.showStopAction}
                       stopping={chat.stoppingRun}

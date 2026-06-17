@@ -1,9 +1,11 @@
 import type { TabItem, TabType } from "../../pages/workspace/editorGroups";
+import type { EditorQuadrantId } from "../../pages/workspace/editorGroupTypes";
+import { isEditorQuadrantId, migrateLegacyGroupId } from "../../pages/workspace/editorGroupTypes";
 
 export const EDITOR_TAB_DRAG_MIME = "application/x-codesymphony-editor-tab";
 
 export type EditorTabDragPayload = {
-  sourceGroupId: "left" | "right";
+  sourceGroupId: EditorQuadrantId;
   sourceIndex?: number;
   tab: TabItem;
 };
@@ -19,8 +21,14 @@ function isTabType(value: unknown): value is TabType {
   return typeof value === "string" && VALID_TAB_TYPES.has(value as TabType);
 }
 
-function isGroupId(value: unknown): value is "left" | "right" {
-  return value === "left" || value === "right";
+function parseGroupId(value: unknown): EditorQuadrantId | null {
+  if (isEditorQuadrantId(value)) {
+    return value;
+  }
+  if (value === "left" || value === "right") {
+    return migrateLegacyGroupId(value);
+  }
+  return null;
 }
 
 export function writeEditorTabDragData(
@@ -49,7 +57,8 @@ export function readEditorTabDragData(
       tab?: { type?: unknown; id?: unknown };
     };
 
-    if (!isGroupId(raw.sourceGroupId)) return null;
+    const sourceGroupId = parseGroupId(raw.sourceGroupId);
+    if (!sourceGroupId) return null;
     if (!raw.tab || !isTabType(raw.tab.type) || typeof raw.tab.id !== "string" || raw.tab.id.length === 0) {
       return null;
     }
@@ -59,7 +68,7 @@ export function readEditorTabDragData(
       : undefined;
 
     return {
-      sourceGroupId: raw.sourceGroupId,
+      sourceGroupId,
       ...(sourceIndex !== undefined ? { sourceIndex } : {}),
       tab: { type: raw.tab.type, id: raw.tab.id },
     };

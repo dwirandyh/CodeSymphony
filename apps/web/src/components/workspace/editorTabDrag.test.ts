@@ -30,13 +30,13 @@ describe("editorTabDrag", () => {
     const dataTransfer = createDataTransferStub();
 
     writeEditorTabDragData(dataTransfer, {
-      sourceGroupId: "left",
+      sourceGroupId: "topLeft",
       tab: { type: "file", id: "src/index.ts" },
     });
 
     expect(dataTransfer.effectAllowed).toBe("move");
     expect(JSON.parse(dataTransfer.getData(EDITOR_TAB_DRAG_MIME))).toEqual({
-      sourceGroupId: "left",
+      sourceGroupId: "topLeft",
       tab: { type: "file", id: "src/index.ts" },
     });
   });
@@ -46,7 +46,7 @@ describe("editorTabDrag", () => {
     expect(hasEditorTabDragData(dataTransfer)).toBe(false);
 
     writeEditorTabDragData(dataTransfer, {
-      sourceGroupId: "right",
+      sourceGroupId: "topRight",
       tab: { type: "chat", id: "thread-1" },
     });
 
@@ -56,13 +56,26 @@ describe("editorTabDrag", () => {
   it("reads back a valid payload", () => {
     const dataTransfer = createDataTransferStub();
     writeEditorTabDragData(dataTransfer, {
-      sourceGroupId: "right",
+      sourceGroupId: "topRight",
       tab: { type: "terminal", id: "term-9" },
     });
 
     expect(readEditorTabDragData(dataTransfer)).toEqual({
-      sourceGroupId: "right",
+      sourceGroupId: "topRight",
       tab: { type: "terminal", id: "term-9" },
+    });
+  });
+
+  it("migrates legacy left/right source group ids when reading", () => {
+    const dataTransfer = createDataTransferStub();
+    dataTransfer.setData(
+      EDITOR_TAB_DRAG_MIME,
+      JSON.stringify({ sourceGroupId: "right", tab: { type: "file", id: "x.ts" } }),
+    );
+
+    expect(readEditorTabDragData(dataTransfer)).toEqual({
+      sourceGroupId: "topRight",
+      tab: { type: "file", id: "x.ts" },
     });
   });
 
@@ -94,13 +107,13 @@ describe("editorTabDrag", () => {
   it("round-trips an optional sourceIndex used for in-row reorder", () => {
     const dataTransfer = createDataTransferStub();
     writeEditorTabDragData(dataTransfer, {
-      sourceGroupId: "left",
+      sourceGroupId: "topLeft",
       sourceIndex: 3,
       tab: { type: "file", id: "src/a.ts" },
     });
 
     expect(readEditorTabDragData(dataTransfer)).toEqual({
-      sourceGroupId: "left",
+      sourceGroupId: "topLeft",
       sourceIndex: 3,
       tab: { type: "file", id: "src/a.ts" },
     });
@@ -109,7 +122,7 @@ describe("editorTabDrag", () => {
   it("omits sourceIndex when not provided", () => {
     const dataTransfer = createDataTransferStub();
     writeEditorTabDragData(dataTransfer, {
-      sourceGroupId: "left",
+      sourceGroupId: "topLeft",
       tab: { type: "file", id: "src/a.ts" },
     });
 

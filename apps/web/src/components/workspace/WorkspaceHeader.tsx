@@ -98,6 +98,8 @@ type WorkspaceHeaderProps = {
   onReorderTab?: (tabId: string, toIndex: number) => void;
   /** Optional per-tab quick-split action shown as a Columns2 button. */
   onSplitTab?: (tab: TabItem) => void;
+  onTabDragStart?: () => void;
+  onTabDragEnd?: () => void;
 };
 
 function FilledPlayIcon({ className }: { className?: string }) {
@@ -169,6 +171,8 @@ export function WorkspaceHeader({
   orderedTabs,
   onReorderTab,
   onSplitTab,
+  onTabDragStart,
+  onTabDragEnd,
   mergeWithContent = false,
 }: WorkspaceHeaderProps) {
   const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
@@ -529,11 +533,16 @@ export function WorkspaceHeader({
         </div>
       </div>
 
-      <div className={cn("flex items-center gap-1", splitTabStrips && "relative min-w-0 w-full")}>
+      <div
+        className={cn(
+          "flex gap-1",
+          splitTabStrips ? "relative w-full min-w-0 shrink-0 items-stretch" : "items-center",
+        )}
+      >
         {splitTabStrips ? (
           <>
             <div
-              className="flex min-w-0 w-full items-center overflow-hidden"
+              className="flex min-h-0 min-w-0 flex-1 items-stretch overflow-hidden"
               data-testid="split-tab-strips-host"
             >
               {splitTabStrips}
@@ -557,7 +566,7 @@ export function WorkspaceHeader({
           </>
         ) : (
           <WorkspaceTabStrip
-            groupId="left"
+            groupId="topLeft"
             tabs={stripTabs}
             activeTabId={activeTabId}
             threads={threads}
@@ -597,6 +606,8 @@ export function WorkspaceHeader({
             onRenameThread={onRenameThread}
             onRenameTerminalTab={onRenameTerminalTab}
             onPrefetchThread={onPrefetchThread}
+            onTabDragStart={onTabDragStart}
+            onTabDragEnd={onTabDragEnd}
           />
         )}
 
