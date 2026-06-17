@@ -13,6 +13,10 @@ import {
   HORIZONTAL_EDITOR_COLUMN_IDS,
   visibleEditorColumnIds,
 } from "./editorColumns";
+import {
+  layoutAfterPlacingNewFileTab,
+  targetGroupForNewExplorerFileTab,
+} from "./explorerFileTabPlacement";
 
 export type TabType = "chat" | "terminal" | "review" | "file";
 
@@ -77,9 +81,15 @@ function collapseEmptyColumns(state: EditorGroupsState): EditorGroupsState {
   return withSplitModeFlag(compactEditorColumns(state));
 }
 
+export type ReconcileEditorGroupsOptions = {
+  /** File tab ids newly opened from explorer; routed to right / unfocused pane. */
+  newFileTabIds?: readonly string[];
+};
+
 export function reconcileEditorGroups(
   state: EditorGroupsState,
   sourceTabs: TabItem[],
+  options?: ReconcileEditorGroupsOptions,
 ): EditorGroupsState {
   const sourceMap = new Map(sourceTabs.map((t) => [t.id, t]));
   const nextRecord = { ...state.groups };
@@ -103,7 +113,40 @@ export function reconcileEditorGroups(
     nextRecord[id].tabs.forEach((t) => existingIds.add(t.id));
   }
   const newTabs = sourceTabs.filter((t) => !existingIds.has(t.id));
-  if (newTabs.length > 0) {
+  if (newTabs.length === 0) {
+    return collapseEmptyColumns({
+      ...state,
+      groups: nextRecord,
+    });
+  }
+
+  const explorerFileIdSet = new Set(options?.newFileTabIds ?? []);
+  const explorerFileTabs = newTabs.filter((t) => t.type === "file" && explorerFileIdSet.has(t.id));
+  const otherNewTabs = newTabs.filter((t) => !(t.type === "file" && explorerFileIdSet.has(t.id)));
+
+  let nextLayout = state.layout;
+  let nextActiveGroupId = state.activeGroupId;
+
+  if (explorerFileTabs.length > 0) {
+    const targetGroupId = targetGroupForNewExplorerFileTab(state);
+    nextLayout = layoutAfterPlacingNewFileTab(state, targetGroupId);
+    const targetGroup = nextRecord[targetGroupId];
+    const lastExplorerId = explorerFileTabs[explorerFileTabs.length - 1]?.id ?? null;
+    nextRecord[targetGroupId] = {
+      tabs: [...targetGroup.tabs, ...explorerFileTabs],
+      activeTabId: lastExplorerId,
+    };
+    nextActiveGroupId = targetGroupId;
+  }
+
+  if (otherNewTabs.length > 0) {
+    const active = nextActiveGroupId;
+    const g = nextRecord[active];
+    nextRecord[active] = {
+      tabs: [...g.tabs, ...otherNewTabs],
+      activeTabId: g.activeTabId ?? otherNewTabs[0]?.id ?? null,
+    };
+  } else if (explorerFileTabs.length === 0) {
     const active = state.activeGroupId;
     const g = nextRecord[active];
     nextRecord[active] = {
@@ -114,6 +157,8 @@ export function reconcileEditorGroups(
 
   return collapseEmptyColumns({
     ...state,
+    layout: nextLayout,
+    activeGroupId: nextActiveGroupId,
     groups: nextRecord,
   });
 }

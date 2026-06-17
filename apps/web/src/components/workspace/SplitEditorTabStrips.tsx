@@ -28,7 +28,7 @@ export function SplitEditorTabStrips({
 
   return (
     <div
-      className="flex h-full min-w-0 w-full items-stretch border-b border-border/40"
+      className="flex min-w-0 w-full items-center border-b border-border/40"
       data-testid="split-tab-strips"
     >
       <div

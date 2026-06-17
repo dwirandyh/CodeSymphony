@@ -41,13 +41,13 @@ export function EditorMultiTabStrips({ columnWidths, strips }: EditorMultiTabStr
 
   return (
     <div
-      className="flex h-full min-w-0 w-full items-stretch border-b border-border/40"
+      className="flex min-w-0 w-full items-center border-b border-border/40"
       data-testid="split-tab-strips"
     >
       {strips.map((strip, index) => (
         <React.Fragment key={index}>
           <div
-            className="flex min-h-8 min-w-0 flex-1 items-stretch overflow-hidden"
+            className="flex min-w-0 flex-1 items-center overflow-hidden"
             style={{ flex: `${widths[index]} 1 0` }}
             data-testid={`split-tab-strips-column-${index}`}
           >

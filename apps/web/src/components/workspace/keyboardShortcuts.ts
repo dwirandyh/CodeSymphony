@@ -18,7 +18,10 @@ export type WorkspaceShortcutId =
   | "navigate_back"
   | "navigate_forward"
   | "save_active_file"
-  | "find_terminal";
+  | "find_terminal"
+  | "split_active_tab"
+  | "focus_editor_group_left"
+  | "focus_editor_group_right";
 
 export type WorkspaceShortcutSectionId = "workspace" | "sessions" | "worktrees" | "navigation" | "editor" | "terminal";
 
@@ -236,6 +239,39 @@ export const WORKSPACE_SHORTCUTS: Record<WorkspaceShortcutId, WorkspaceShortcutD
       linux: "Ctrl+F",
     },
   },
+  split_active_tab: {
+    id: "split_active_tab",
+    label: "Split active tab",
+    description: "Move the active session tab into the next editor column (split editor).",
+    scope: "Editor layout",
+    bindings: {
+      mac: "Cmd+\\",
+      windows: "Ctrl+\\",
+      linux: "Ctrl+\\",
+    },
+  },
+  focus_editor_group_left: {
+    id: "focus_editor_group_left",
+    label: "Focus left editor group",
+    description: "Focus the left editor column and its active tab.",
+    scope: "Editor layout",
+    bindings: {
+      mac: "Cmd+1",
+      windows: "Ctrl+1",
+      linux: "Ctrl+1",
+    },
+  },
+  focus_editor_group_right: {
+    id: "focus_editor_group_right",
+    label: "Focus right editor group",
+    description: "Focus the right editor column when split is active.",
+    scope: "Editor layout",
+    bindings: {
+      mac: "Cmd+2",
+      windows: "Ctrl+2",
+      linux: "Ctrl+2",
+    },
+  },
 };
 
 export const WORKSPACE_SHORTCUT_SECTIONS: WorkspaceShortcutSection[] = [
@@ -287,7 +323,12 @@ export const WORKSPACE_SHORTCUT_SECTIONS: WorkspaceShortcutSection[] = [
     id: "editor",
     label: "Editor",
     description: "File editing shortcuts that are already supported in the current editor surface.",
-    shortcutIds: ["save_active_file"],
+    shortcutIds: [
+      "save_active_file",
+      "split_active_tab",
+      "focus_editor_group_left",
+      "focus_editor_group_right",
+    ],
   },
   {
     id: "terminal",

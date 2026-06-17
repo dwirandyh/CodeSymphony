@@ -30,6 +30,33 @@ describe("editorGroups state management", () => {
       expect(reconciled.groups.topLeft.activeTabId).toBe("file1.ts");
     });
 
+    it("places explorer file tabs on topRight and enables horizontal split on first open", () => {
+      const state: EditorGroupsState = {
+        ...emptyState(),
+        groups: {
+          ...emptyState().groups,
+          topLeft: {
+            tabs: [{ type: "chat", id: "thread-1" }],
+            activeTabId: "thread-1",
+          },
+        },
+      };
+      const sourceTabs: TabItem[] = [
+        { type: "chat", id: "thread-1" },
+        { type: "file", id: "src/a.ts" },
+      ];
+
+      const reconciled = reconcileEditorGroups(state, sourceTabs, {
+        newFileTabIds: ["src/a.ts"],
+      });
+
+      expect(reconciled.layout).toBe("horizontal");
+      expect(reconciled.activeGroupId).toBe("topRight");
+      expect(reconciled.groups.topLeft.tabs.map((t) => t.id)).toEqual(["thread-1"]);
+      expect(reconciled.groups.topRight.tabs.map((t) => t.id)).toEqual(["src/a.ts"]);
+      expect(reconciled.groups.topRight.activeTabId).toBe("src/a.ts");
+    });
+
     it("collapses horizontal split when right quadrant is empty", () => {
       const state: EditorGroupsState = {
         ...createEmptyEditorGroupsState(),

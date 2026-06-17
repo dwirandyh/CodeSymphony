@@ -2703,6 +2703,11 @@ export function WorkspacePage() {
     });
   }, [activeView, enableNonCriticalWorkspaceData, repos.selectedWorktreeId]);
 
+  const pendingExplorerFileTabIdsRef = useRef<Set<string>>(new Set());
+  const handleExplorerFileTabOpened = useCallback((filePath: string) => {
+    pendingExplorerFileTabIdsRef.current.add(filePath);
+  }, []);
+
   const {
     activeEditorFileState,
     activeEditorGitBaselineState,
@@ -2736,6 +2741,7 @@ export function WorkspacePage() {
     activeView,
     fileEntries: fileIndex.entries,
     onError: setError,
+    onExplorerFileTabOpened: handleExplorerFileTabOpened,
     onOpenQuickFilePicker: () => {
       markWorkspaceFileIndexRequested(repos.selectedWorktreeId);
       setMobilePanelOpen(null);
@@ -4403,7 +4409,18 @@ export function WorkspacePage() {
   }, [workspaceFileTabs, selectedTerminalTabsState.tabs, reviewTabOpen, openThreads]);
 
   useEffect(() => {
-    setEditorGroups((current) => reconcileEditorGroups(current, sourceTabs));
+    setEditorGroups((current) => {
+      const pending = pendingExplorerFileTabIdsRef.current;
+      const newFileTabIds = [...pending].filter((id) =>
+        sourceTabs.some((t) => t.type === "file" && t.id === id),
+      );
+      for (const id of newFileTabIds) {
+        pending.delete(id);
+      }
+      return reconcileEditorGroups(current, sourceTabs, {
+        newFileTabIds: newFileTabIds.length > 0 ? newFileTabIds : undefined,
+      });
+    });
   }, [sourceTabs]);
 
   // The tab id currently selected via external navigation (sidebar, shortcuts, URL).
@@ -5225,7 +5242,7 @@ export function WorkspacePage() {
                 </Suspense>
               </section>
             ) : editorGroups.splitMode ? (
-              <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden px-1.5 sm:px-2.5 lg:px-3">
                 <ResizableColumns
                   columnWidths={columnWidths}
                   onColumnWidthsChange={setColumnWidths}

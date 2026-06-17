@@ -26,9 +26,7 @@ export function getWorkspaceHeaderContainerClassName({
   activeView,
   editorSplitActive = false,
 }: WorkspaceHeaderContainerClassNameOptions): string {
-  if (editorSplitActive) {
-    return "px-1.5 pt-1.5 sm:px-2.5 sm:pt-2.5 lg:px-0 lg:pt-0";
-  }
+  void editorSplitActive;
 
   if (activeView === "chat") {
     return "px-1.5 pt-1.5 sm:px-2.5 sm:pt-2.5 lg:px-3 lg:pt-0";
