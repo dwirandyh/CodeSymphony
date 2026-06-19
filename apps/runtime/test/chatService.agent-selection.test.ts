@@ -740,7 +740,7 @@ describe("chatService agent selection", () => {
     {
       agent: "cursor" as const,
       initialModel: "default[]",
-      nextModel: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+      nextModel: "gpt-5.4",
       sessionField: "cursorSessionId" as const,
       sessionId: "cursor-session-1",
     },

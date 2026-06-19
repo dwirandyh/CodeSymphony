@@ -34,6 +34,24 @@ function supportsParam(
   )) ?? false;
 }
 
+const CURSOR_REASONING_SDK_PARAM_IDS = ["thinking", "reasoning", "effort"] as const;
+
+function resolveReasoningSdkParamId(
+  catalogModel: CursorSdkModelCatalogItem | undefined,
+): (typeof CURSOR_REASONING_SDK_PARAM_IDS)[number] | null {
+  if (!catalogModel?.parameters?.length) {
+    return null;
+  }
+
+  for (const paramId of CURSOR_REASONING_SDK_PARAM_IDS) {
+    if (catalogModel.parameters.some((parameter) => parameter.id === paramId)) {
+      return paramId;
+    }
+  }
+
+  return null;
+}
+
 function pushParam(
   params: CursorSdkModelParameterValue[],
   catalogModel: CursorSdkModelCatalogItem | undefined,
@@ -51,6 +69,23 @@ function pushParam(
   }
 
   params.push({ id: paramId, value });
+}
+
+function pushReasoningEffortParam(
+  params: CursorSdkModelParameterValue[],
+  catalogModel: CursorSdkModelCatalogItem | undefined,
+  value: string | null,
+): void {
+  if (!value) {
+    return;
+  }
+
+  const paramId = resolveReasoningSdkParamId(catalogModel);
+  if (!paramId) {
+    return;
+  }
+
+  pushParam(params, catalogModel, paramId, value);
 }
 
 function resolveComposerFastValue(params: {
@@ -91,9 +126,35 @@ export function resolveCursorSdkModelSelection(params: {
       model: params.model,
       modelOptions: params.modelOptions,
     }));
+  } else {
+    const fastMode = params.modelOptions?.find((candidate) => candidate.id === "fastMode");
+    if (fastMode?.value === true) {
+      pushParam(sdkParams, catalogModel, "fast", "true");
+    } else if (fastMode?.value === false) {
+      pushParam(sdkParams, catalogModel, "fast", "false");
+    } else {
+      const metadataFast = metadata.get("fast");
+      if (metadataFast === "true" || metadataFast === "false") {
+        pushParam(sdkParams, catalogModel, "fast", metadataFast);
+      }
+    }
   }
 
-  pushParam(sdkParams, catalogModel, "thinking", metadata.get("reasoning") ?? metadata.get("effort") ?? null);
+  const reasoningOption = params.modelOptions?.find((candidate) => candidate.id === "reasoningEffort");
+  const reasoningExplicitlyNone = reasoningOption?.value === "none";
+  if (reasoningExplicitlyNone) {
+    pushReasoningEffortParam(sdkParams, catalogModel, "none");
+  } else {
+    const reasoningFromOptions = typeof reasoningOption?.value === "string"
+      ? reasoningOption.value
+      : null;
+    const reasoningFromMetadata = metadata.get("reasoning") ?? metadata.get("effort") ?? null;
+    pushReasoningEffortParam(
+      sdkParams,
+      catalogModel,
+      reasoningFromOptions ?? reasoningFromMetadata,
+    );
+  }
 
   if (sdkParams.length === 0) {
     return { id };

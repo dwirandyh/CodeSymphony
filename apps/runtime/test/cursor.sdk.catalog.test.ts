@@ -18,7 +18,46 @@ describe("Cursor SDK catalog", () => {
     vi.unstubAllEnvs();
   });
 
-  it("lists SDK models and expands variants to normalized bracket ids", async () => {
+  it("collapses composer fast variants into one catalog row", async () => {
+    vi.doMock("@cursor/sdk", () => FakeCursorSdkModule);
+    configureFakeCursorSdk({
+      models: [
+        {
+          id: "composer-2.5",
+          displayName: "Composer 2.5",
+          variants: [
+            {
+              displayName: "Composer 2.5",
+              params: [{ id: "fast", value: "true" }],
+              isDefault: true,
+            },
+            {
+              displayName: "Composer 2.5",
+              params: [{ id: "fast", value: "false" }],
+            },
+          ],
+        },
+        {
+          id: "gpt-5.5",
+          displayName: "GPT-5.5",
+        },
+      ],
+    });
+
+    const { listCursorSdkModels } = await import("../src/cursor/sdk/catalog");
+
+    await expect(listCursorSdkModels({ apiKey: "cursor-key" })).resolves.toEqual([
+      {
+        id: "composer-2.5",
+        name: "Composer 2.5",
+        defaultVariantParams: { fast: "true" },
+      },
+      { id: "gpt-5.5", name: "GPT-5.5" },
+    ]);
+    expect(fakeCursorSdkModelListRequests).toEqual([{ apiKey: "cursor-key" }]);
+  });
+
+  it("still collapses composer when variant labels differ only by fast param", async () => {
     vi.doMock("@cursor/sdk", () => FakeCursorSdkModule);
     configureFakeCursorSdk({
       models: [
@@ -36,9 +75,51 @@ describe("Cursor SDK catalog", () => {
             },
           ],
         },
+      ],
+    });
+
+    const { listCursorSdkModels } = await import("../src/cursor/sdk/catalog");
+
+    await expect(listCursorSdkModels({ apiKey: "cursor-key" })).resolves.toEqual([
+      {
+        id: "composer-2.5",
+        name: "Composer 2.5",
+        defaultVariantParams: { fast: "true" },
+      },
+    ]);
+  });
+
+  it("collapses reasoning and fast variants into one catalog row per model", async () => {
+    vi.doMock("@cursor/sdk", () => FakeCursorSdkModule);
+    configureFakeCursorSdk({
+      models: [
         {
-          id: "gpt-5.5",
-          displayName: "GPT-5.5",
+          id: "claude-opus-4-8",
+          displayName: "Opus 4.8",
+          variants: [
+            {
+              displayName: "Opus 4.8",
+              params: [
+                { id: "reasoning", value: "low" },
+                { id: "fast", value: "false" },
+              ],
+            },
+            {
+              displayName: "Opus 4.8",
+              params: [
+                { id: "reasoning", value: "medium" },
+                { id: "fast", value: "true" },
+              ],
+              isDefault: true,
+            },
+            {
+              displayName: "Opus 4.8",
+              params: [
+                { id: "reasoning", value: "high" },
+                { id: "fast", value: "true" },
+              ],
+            },
+          ],
         },
       ],
     });
@@ -46,14 +127,15 @@ describe("Cursor SDK catalog", () => {
     const { listCursorSdkModels } = await import("../src/cursor/sdk/catalog");
 
     await expect(listCursorSdkModels({ apiKey: "cursor-key" })).resolves.toEqual([
-      { id: "composer-2.5", name: "Composer 2.5 Fast" },
-      { id: "composer-2.5[fast=false]", name: "Composer 2.5 Thinking" },
-      { id: "gpt-5.5", name: "GPT-5.5" },
+      {
+        id: "claude-opus-4-8",
+        name: "Opus 4.8",
+        defaultVariantParams: { reasoning: "medium", fast: "true" },
+      },
     ]);
-    expect(fakeCursorSdkModelListRequests).toEqual([{ apiKey: "cursor-key" }]);
   });
 
-  it("does not duplicate the base model name when a variant displayName already includes it", async () => {
+  it("uses the default variant display name when it differs from the base model name", async () => {
     vi.doMock("@cursor/sdk", () => FakeCursorSdkModule);
     configureFakeCursorSdk({
       models: [
@@ -68,6 +150,14 @@ describe("Cursor SDK catalog", () => {
                 { id: "effort", value: "medium" },
                 { id: "fast", value: "true" },
               ],
+              isDefault: true,
+            },
+            {
+              displayName: "Claude Sonnet 4.6",
+              params: [
+                { id: "effort", value: "low" },
+                { id: "fast", value: "false" },
+              ],
             },
           ],
         },
@@ -78,10 +168,39 @@ describe("Cursor SDK catalog", () => {
 
     await expect(listCursorSdkModels({ apiKey: "cursor-key" })).resolves.toEqual([
       {
-        id: "claude-sonnet-4-6[thinking=true,effort=medium,fast=true]",
+        id: "claude-sonnet-4-6",
         name: "Claude Sonnet 4.6 [effort=medium][fast]",
+        defaultVariantParams: {
+          thinking: "true",
+          effort: "medium",
+          fast: "true",
+        },
       },
     ]);
+  });
+
+  it("resolves default variant params from SDK model variants", async () => {
+    const { resolveSdkModelDefaultVariantParams } = await import("../src/cursor/sdk/catalog");
+
+    expect(resolveSdkModelDefaultVariantParams({
+      id: "composer-2.5",
+      displayName: "Composer 2.5",
+      variants: [
+        {
+          displayName: "Thinking",
+          params: [{ id: "fast", value: "false" }],
+        },
+        {
+          displayName: "Fast",
+          params: [{ id: "fast", value: "true" }],
+          isDefault: true,
+        },
+      ],
+    })).toEqual({ fast: "true" });
+    expect(resolveSdkModelDefaultVariantParams({
+      id: "gpt-5.5",
+      displayName: "GPT-5.5",
+    })).toBeUndefined();
   });
 
   it("lists slash commands by scanning Cursor skills", async () => {

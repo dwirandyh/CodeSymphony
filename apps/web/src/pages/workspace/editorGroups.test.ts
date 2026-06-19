@@ -30,6 +30,55 @@ describe("editorGroups state management", () => {
       expect(reconciled.groups.topLeft.activeTabId).toBe("file1.ts");
     });
 
+    it("activates a newly added chat tab when requested so the unsplit pane follows it", () => {
+      const state: EditorGroupsState = {
+        ...emptyState(),
+        groups: {
+          ...emptyState().groups,
+          topLeft: {
+            tabs: [{ type: "chat", id: "thread-old" }],
+            activeTabId: "thread-old",
+          },
+        },
+      };
+      const sourceTabs: TabItem[] = [
+        { type: "chat", id: "thread-old" },
+        { type: "chat", id: "thread-new" },
+      ];
+
+      const reconciled = reconcileEditorGroups(state, sourceTabs, {
+        activateChatTabId: "thread-new",
+      });
+
+      expect(reconciled.groups.topLeft.activeTabId).toBe("thread-new");
+    });
+
+    it("does not move the active tab when the requested chat tab is not newly added", () => {
+      const state: EditorGroupsState = {
+        ...emptyState(),
+        groups: {
+          ...emptyState().groups,
+          topLeft: {
+            tabs: [
+              { type: "chat", id: "thread-old" },
+              { type: "chat", id: "thread-new" },
+            ],
+            activeTabId: "thread-old",
+          },
+        },
+      };
+      const sourceTabs: TabItem[] = [
+        { type: "chat", id: "thread-old" },
+        { type: "chat", id: "thread-new" },
+      ];
+
+      const reconciled = reconcileEditorGroups(state, sourceTabs, {
+        activateChatTabId: "thread-new",
+      });
+
+      expect(reconciled.groups.topLeft.activeTabId).toBe("thread-old");
+    });
+
     it("places explorer file tabs on topRight and enables horizontal split on first open", () => {
       const state: EditorGroupsState = {
         ...emptyState(),

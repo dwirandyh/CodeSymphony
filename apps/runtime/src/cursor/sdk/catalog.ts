@@ -2,17 +2,15 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Cursor, type SDKModel } from "@cursor/sdk";
-import { normalizeCursorCatalogModelId, type SlashCommand } from "@codesymphony/shared-types";
+import {
+  dedupeCursorCatalogEntries,
+  isCursorComposerModel,
+  normalizeCursorCatalogModelId,
+  type CursorModelCatalogEntry,
+  type SlashCommand,
+} from "@codesymphony/shared-types";
 
 const SKILL_SCAN_MAX_DEPTH = 6;
-
-function modelParamSuffix(params: Array<{ id: string; value: string }> | undefined): string {
-  if (!params || params.length === 0) {
-    return "";
-  }
-
-  return `[${params.map((param) => `${param.id}=${param.value}`).join(",")}]`;
-}
 
 function normalizeComparableDisplayName(value: string): string {
   return value.replace(/\[[^\]]*]/g, "").trim().toLowerCase();
@@ -49,25 +47,72 @@ function modelVariantName(model: SDKModel, variantDisplayName: string): string {
   return resolveCursorCatalogDisplayName(model.displayName, model.id, variantDisplayName);
 }
 
-function expandSdkModel(model: SDKModel): Array<{ id: string; name: string }> {
+function pickDefaultVariant(model: SDKModel) {
   if (!model.variants || model.variants.length === 0) {
+    return null;
+  }
+
+  return model.variants.find((variant) => variant.isDefault) ?? model.variants[0]!;
+}
+
+function mapSdkParameters(model: SDKModel): CursorModelCatalogEntry["parameters"] {
+  if (!model.parameters?.length) {
+    return undefined;
+  }
+
+  return model.parameters.map((parameter) => ({
+    id: parameter.id,
+    values: parameter.values.map((value) => value.value),
+  }));
+}
+
+function variantParamsRecord(
+  params: Array<{ id: string; value: string }> | undefined,
+): Record<string, string> | undefined {
+  if (!params?.length) {
+    return undefined;
+  }
+
+  return Object.fromEntries(params.map((param) => [param.id, param.value]));
+}
+
+export function resolveSdkModelDefaultVariantParams(
+  model: SDKModel,
+): Record<string, string> | undefined {
+  return variantParamsRecord(pickDefaultVariant(model)?.params);
+}
+
+function expandSdkModel(model: SDKModel): CursorModelCatalogEntry[] {
+  const baseName = model.displayName.trim() || model.id;
+  const defaultVariant = pickDefaultVariant(model);
+  const parameters = mapSdkParameters(model);
+
+  if (!defaultVariant) {
     return [{
       id: normalizeCursorCatalogModelId(model.id),
-      name: model.displayName.trim() || model.id,
+      name: baseName,
+      ...(parameters ? { parameters } : {}),
     }];
   }
 
-  return model.variants.map((variant) => ({
-    id: normalizeCursorCatalogModelId(`${model.id}${modelParamSuffix(variant.params)}`),
-    name: modelVariantName(model, variant.displayName),
-  }));
+  const name = isCursorComposerModel(model.id)
+    ? baseName
+    : modelVariantName(model, defaultVariant.displayName);
+  const defaultVariantParams = variantParamsRecord(defaultVariant.params);
+
+  return [{
+    id: normalizeCursorCatalogModelId(model.id),
+    name,
+    ...(defaultVariantParams ? { defaultVariantParams } : {}),
+    ...(parameters ? { parameters } : {}),
+  }];
 }
 
 export async function listCursorSdkModels(params: {
   apiKey?: string;
-} = {}): Promise<Array<{ id: string; name: string }>> {
+} = {}): Promise<CursorModelCatalogEntry[]> {
   const models = await listCursorSdkModelCatalog(params);
-  return models.flatMap(expandSdkModel);
+  return dedupeCursorCatalogEntries(models.flatMap(expandSdkModel));
 }
 
 export async function listCursorSdkModelCatalog(params: {

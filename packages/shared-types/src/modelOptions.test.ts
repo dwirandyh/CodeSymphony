@@ -11,7 +11,7 @@ import {
   isFastModeEnabled,
   resolveThreadModelOptions,
 } from "./modelOptions.js";
-import { getCursorModelCapabilities } from "./modelCapabilities.js";
+import { getCursorModelCapabilities, resolveModelCapabilities } from "./modelCapabilities.js";
 import { ModelCapabilitiesSchema, ProviderOptionSelectionSchema } from "./workflow.js";
 
 describe("model option helpers", () => {
@@ -262,5 +262,67 @@ describe("model option helpers", () => {
     });
 
     expect(resolved).toEqual([{ id: "fastMode", value: true }]);
+  });
+
+  it("resolves bare cursor model effort from per-model overrides when catalog hints exist", () => {
+    const modelKey = buildThreadModelOptionsKey({
+      agent: "cursor",
+      model: "gpt-5.5",
+      modelProviderId: null,
+    });
+    const hints = {
+      defaultVariantParams: { thinking: "medium" },
+      parameters: [
+        { id: "thinking", values: ["low", "medium", "high"] },
+      ],
+    };
+
+    const resolved = resolveThreadModelOptions({
+      agent: "cursor",
+      model: "gpt-5.5",
+      modelProviderId: null,
+      modelOptions: [],
+      modelOptionsPerModel: {
+        [modelKey]: [{ id: "reasoningEffort", value: "low" }],
+      },
+      cursorCatalogHints: hints,
+    });
+
+    expect(resolved).toEqual([{ id: "reasoningEffort", value: "low" }]);
+  });
+
+  it("returns undefined for bare cursor ids without catalog hints even when overrides exist", () => {
+    const modelKey = buildThreadModelOptionsKey({
+      agent: "cursor",
+      model: "gpt-5.5",
+      modelProviderId: null,
+    });
+
+    const resolved = resolveThreadModelOptions({
+      agent: "cursor",
+      model: "gpt-5.5",
+      modelProviderId: null,
+      modelOptions: [],
+      modelOptionsPerModel: {
+        [modelKey]: [{ id: "reasoningEffort", value: "low" }],
+      },
+    });
+
+    expect(resolved).toBeUndefined();
+  });
+
+  it("formats selector summary for bare cursor ids using catalog default variant params", () => {
+    const hints = {
+      defaultVariantParams: { thinking: "medium" },
+      parameters: [
+        { id: "thinking", values: ["low", "medium", "high"] },
+        { id: "fast", values: ["true", "false"] },
+      ],
+    };
+    const capabilities = resolveModelCapabilities("cursor", "claude-opus-4-8", hints);
+
+    expect(
+      formatModelOptionsSummaryForSelector("cursor", "Opus 4.8", capabilities, []),
+    ).toBe("Medium");
   });
 });

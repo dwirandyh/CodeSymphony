@@ -14,6 +14,10 @@ import {
   formatModelOptionsSummaryForSelector,
   resolveModelCapabilities,
   buildProviderOptionSelectionsFromDescriptors,
+  cursorCatalogCapabilityHintsFromEntry,
+  cursorCatalogModelIdsEquivalent,
+  normalizeCursorCatalogModelId,
+  dedupeCursorCatalogEntries,
 } from "@codesymphony/shared-types";
 import { cn } from "../../../lib/utils";
 import { ModelOptionsEditor } from "./ModelOptionsEditor";
@@ -68,11 +72,72 @@ function buildAgentModelSelectionKey(selection: AgentModelSelection): string {
   return `${selection.agent}::${selection.model}::${selection.modelProviderId ?? ""}`;
 }
 
+function agentModelSelectionsMatch(
+  left: AgentModelSelection,
+  right: AgentModelSelection,
+): boolean {
+  if (left.agent !== right.agent || left.modelProviderId !== right.modelProviderId) {
+    return false;
+  }
+
+  if (left.agent === "cursor") {
+    return cursorCatalogModelIdsEquivalent(left.model, right.model);
+  }
+
+  return left.model === right.model;
+}
+
+function dedupeAgentSelectionOptions(options: AgentSelectionOption[]): AgentSelectionOption[] {
+  const result: AgentSelectionOption[] = [];
+
+  for (const option of options) {
+    if (option.agent === "cursor" && option.source === "builtin") {
+      const normalizedId = normalizeCursorCatalogModelId(option.model);
+      const duplicate = result.some((existing) => (
+        existing.agent === "cursor"
+        && existing.source === "builtin"
+        && normalizeCursorCatalogModelId(existing.model) === normalizedId
+      ));
+      if (duplicate) {
+        continue;
+      }
+
+      result.push({
+        ...option,
+        model: normalizedId,
+        id: `cursor:${normalizedId}:builtin`,
+      });
+      continue;
+    }
+
+    if (!result.some((existing) => existing.id === option.id)) {
+      result.push(option);
+    }
+  }
+
+  return result;
+}
+
+function findCursorCatalogEntry(
+  cursorModels: readonly CursorModelCatalogEntry[] | undefined,
+  modelId: string,
+): CursorModelCatalogEntry | undefined {
+  if (!cursorModels?.length) {
+    return undefined;
+  }
+
+  const normalizedId = normalizeCursorCatalogModelId(modelId);
+  return cursorModels.find((entry) => (
+    normalizeCursorCatalogModelId(entry.id) === normalizedId
+  ));
+}
+
 function buildModelOptionsSummary(
   option: AgentSelectionOption,
   currentModelKey: string,
   modelOptions: ProviderOptionSelection[],
   modelOptionsPerModel: Record<string, ProviderOptionSelection[]>,
+  cursorModels?: readonly CursorModelCatalogEntry[],
 ): string {
   if (option.source !== "builtin") {
     return "";
@@ -88,7 +153,10 @@ function buildModelOptionsSummary(
     ? modelOptions
     : (modelOptionsPerModel[optionKey] ?? []);
 
-  const capabilities = resolveModelCapabilities(option.agent, option.model);
+  const catalogHints = option.agent === "cursor"
+    ? cursorCatalogCapabilityHintsFromEntry(findCursorCatalogEntry(cursorModels, option.model))
+    : undefined;
+  const capabilities = resolveModelCapabilities(option.agent, option.model, catalogHints);
   const resolved = buildProviderOptionSelectionsFromDescriptors(capabilities, selections);
   return formatModelOptionsSummaryForSelector(
     option.agent,
@@ -327,15 +395,17 @@ export function buildAgentSelectionOptions(params: {
       })),
       ...buildCustomAgentOptions("codex", params.providers),
     ],
-    cursor: cursorModels.map((entry) => ({
-      id: `cursor:${entry.id}:builtin`,
-      agent: "cursor" as const,
-      model: entry.id,
-      modelProviderId: null,
-      label: entry.name,
-      detail: "",
-      source: "builtin" as const,
-    })),
+    cursor: dedupeAgentSelectionOptions(
+      dedupeCursorCatalogEntries(cursorModels).map((entry) => ({
+        id: `cursor:${entry.id}:builtin`,
+        agent: "cursor" as const,
+        model: entry.id,
+        modelProviderId: null,
+        label: entry.name,
+        detail: "",
+        source: "builtin" as const,
+      })),
+    ),
     opencode: [
       ...params.opencodeModels.map((entry) => ({
         id: `opencode:${entry.id}:builtin`,
@@ -360,8 +430,14 @@ export function findAgentSelectionOption(
   selection: AgentModelSelection,
 ): AgentSelectionOption | null {
   return agentOptions[selection.agent].find((option) => (
-    option.model === selection.model
-    && option.modelProviderId === selection.modelProviderId
+    agentModelSelectionsMatch(
+      {
+        agent: option.agent,
+        model: option.model,
+        modelProviderId: option.modelProviderId,
+      },
+      selection,
+    )
   )) ?? null;
 }
 
@@ -381,9 +457,13 @@ export function ensureAgentSelectionOptionVisible(
   options: AgentSelectionOption[],
   selection: AgentModelSelection,
 ): AgentSelectionOption[] {
-  if (options.some((option) => (
-    option.model === selection.model
-    && option.modelProviderId === selection.modelProviderId
+  if (options.some((option) => agentModelSelectionsMatch(
+    {
+      agent: option.agent,
+      model: option.model,
+      modelProviderId: option.modelProviderId,
+    },
+    selection,
   ))) {
     return options;
   }
@@ -664,13 +744,19 @@ export function AgentModelSelector({
       return map;
     }
     for (const option of modelPreviewOptions) {
-      const summary = buildModelOptionsSummary(option, currentModelKey, modelOptions, modelOptionsPerModel);
+      const summary = buildModelOptionsSummary(
+        option,
+        currentModelKey,
+        modelOptions,
+        modelOptionsPerModel,
+        cursorModels,
+      );
       if (summary) {
         map[option.id] = summary;
       }
     }
     return map;
-  }, [onModelOptionsChange, modelPreviewOptions, currentModelKey, modelOptions, modelOptionsPerModel]);
+  }, [onModelOptionsChange, modelPreviewOptions, currentModelKey, modelOptions, modelOptionsPerModel, cursorModels]);
   useEffect(() => {
     if (!editingOption) {
       setCapabilities(null);
@@ -847,9 +933,14 @@ export function AgentModelSelector({
         </div>
       ) : null}
       {!modelPreviewLoading ? modelPreviewOptions.map((option, index) => {
-        const selected = option.agent === selection.agent
-          && option.model === selection.model
-          && option.modelProviderId === selection.modelProviderId;
+        const selected = agentModelSelectionsMatch(
+          {
+            agent: option.agent,
+            model: option.model,
+            modelProviderId: option.modelProviderId,
+          },
+          selection,
+        );
         const showCustomSeparator = isFirstCustomModelOption(modelPreviewOptions, index);
 
         return (
@@ -990,6 +1081,9 @@ export function AgentModelSelector({
       data-agent-model-panel="editor"
       className="rounded-xl border border-border/60 bg-popover p-2 shadow-lg"
       style={{ width: `${MODEL_LIST_PANEL_WIDTH}px` }}
+      onMouseDown={(event) => {
+        event.stopPropagation();
+      }}
     >
       <div className="mb-2 text-[11px] font-medium text-muted-foreground">Model Options</div>
       <ModelOptionsEditor

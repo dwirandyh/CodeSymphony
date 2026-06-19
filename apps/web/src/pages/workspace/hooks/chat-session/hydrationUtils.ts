@@ -2,6 +2,25 @@ import type { ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import type { SnapshotSeedDecision } from "./useChatSession.types";
 import { buildSnapshotKey as buildSnapshotStateKey } from "../timelineStateFingerprint";
 
+export function snapshotBelongsToThread(
+  snapshot: ChatTimelineSnapshot,
+  threadId: string,
+): boolean {
+  for (const message of snapshot.messages) {
+    if (message.threadId !== threadId) {
+      return false;
+    }
+  }
+
+  for (const event of snapshot.events) {
+    if (event.threadId !== threadId) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function shouldInvalidateSnapshotImmediatelyAfterSubmit(): boolean {
   return false;
 }
@@ -39,6 +58,9 @@ export function resolveSnapshotSeedDecision(params: {
   }
 
   const snapshotKey = buildSnapshotKey(queriedThreadSnapshot);
+  if (!snapshotBelongsToThread(queriedThreadSnapshot, selectedThreadId)) {
+    return { shouldApply: false, reason: "snapshot-thread-mismatch", snapshotKey };
+  }
   const snapshotNewestIdx = queriedThreadSnapshot.newestIdx ?? null;
   if (
     localLatestEventIdx != null

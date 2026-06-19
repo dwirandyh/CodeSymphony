@@ -216,7 +216,7 @@ describe("model provider routes", () => {
           name: "Auto",
         },
         {
-          id: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+          id: "gpt-5.4",
           name: "GPT-5.4",
         },
       ]);
@@ -228,7 +228,7 @@ describe("model provider routes", () => {
         name: "Auto",
       },
       {
-        id: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+        id: "gpt-5.4",
         name: "GPT-5.4",
       },
     ]);
@@ -261,6 +261,36 @@ describe("model provider routes", () => {
       id: "fastMode",
       currentValue: true,
     });
+  });
+
+  it("GET /api/model-capabilities exposes effort for bare cursor ids using catalog SDK hints", async () => {
+    vi.spyOn(cursorSessionRunner, "listCursorModels")
+      .mockResolvedValue([
+        {
+          id: "claude-opus-4-8",
+          name: "Opus 4.8",
+          defaultVariantParams: { thinking: "medium" },
+          parameters: [
+            { id: "thinking", values: ["low", "medium", "high"] },
+            { id: "fast", values: ["true", "false"] },
+          ],
+        },
+      ]);
+
+    await app.inject({ method: "GET", url: "/api/cursor/models" });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/model-capabilities?agent=cursor&model=claude-opus-4-8",
+    });
+
+    expect(res.statusCode).toBe(200);
+    const descriptors = res.json().data.optionDescriptors;
+    expect(descriptors.find((descriptor: { id: string }) => descriptor.id === "reasoningEffort")).toMatchObject({
+      id: "reasoningEffort",
+      currentValue: "medium",
+    });
+    expect(descriptors.find((descriptor: { id: string }) => descriptor.id === "fastMode")).toBeDefined();
   });
 
   it("POST /api/model-providers creates provider", async () => {

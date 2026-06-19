@@ -15,6 +15,7 @@ import {
 } from "./threadStreamState";
 import { mergeEventsWithCurrent } from "../pages/workspace/hooks/chat-session/messageEventMerge";
 import { areMessagesEqual, mergeThreadMessages } from "../pages/workspace/hooks/messageMerge";
+import { snapshotBelongsToThread } from "../pages/workspace/hooks/chat-session/hydrationUtils";
 
 export type ThreadSnapshotHydrationMode = "replace" | "merge" | "prepend";
 
@@ -273,6 +274,27 @@ export function hydrateThreadFromSnapshot(params: {
   const startedAtMs = getPerfNow();
   const { threadId, snapshot, mode = "merge" } = params;
   const { eventsCollection, messagesCollection } = getThreadCollections(threadId);
+  if (!snapshotBelongsToThread(snapshot, threadId)) {
+    const currentEvents = cloneSortedIfNeeded(eventsCollection.toArray as ChatEvent[], (left, right) => left.idx - right.idx);
+    const currentMessages = cloneSortedIfNeeded(messagesCollection.toArray as ChatMessage[], (left, right) => left.seq - right.seq);
+    const completedAtMs = getPerfNow();
+    return {
+      events: currentEvents,
+      messages: currentMessages,
+      allowEventReplace: false,
+      allowMessageReplace: false,
+      insertedEventCount: 0,
+      insertedMessageCount: 0,
+      timing: {
+        totalDurationMs: roundPerfMs(completedAtMs - startedAtMs),
+        readCollectionsMs: roundPerfMs(completedAtMs - startedAtMs),
+        sortSnapshotMs: 0,
+        mergeRowsMs: 0,
+        writeCollectionsMs: 0,
+        streamStateMs: 0,
+      } satisfies HydrationTiming,
+    };
+  }
   const currentEvents = cloneSortedIfNeeded(eventsCollection.toArray as ChatEvent[], (left, right) => left.idx - right.idx);
   const currentMessages = cloneSortedIfNeeded(messagesCollection.toArray as ChatMessage[], (left, right) => left.seq - right.seq);
   const readCollectionsCompletedAtMs = getPerfNow();

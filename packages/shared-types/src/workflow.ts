@@ -1473,9 +1473,17 @@ export const OpencodeModelCatalogSchema = z.object({
 });
 export type OpencodeModelCatalog = z.infer<typeof OpencodeModelCatalogSchema>;
 
+export const CursorModelParameterDefinitionSchema = z.object({
+  id: z.string().trim().min(1),
+  values: z.array(z.string().trim().min(1)),
+});
+export type CursorModelParameterDefinition = z.infer<typeof CursorModelParameterDefinitionSchema>;
+
 export const CursorModelCatalogEntrySchema = z.object({
   id: z.string().trim().min(1),
   name: z.string().trim().min(1),
+  defaultVariantParams: z.record(z.string(), z.string()).optional(),
+  parameters: z.array(CursorModelParameterDefinitionSchema).optional(),
 });
 export type CursorModelCatalogEntry = z.infer<typeof CursorModelCatalogEntrySchema>;
 

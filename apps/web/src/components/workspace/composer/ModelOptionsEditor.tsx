@@ -42,6 +42,10 @@ function SelectOptionEditor({
                   ? "bg-white/[0.06]"
                   : "hover:bg-white/[0.04]",
               )}
+              onMouseDown={(event) => {
+                event.stopPropagation();
+                event.preventDefault();
+              }}
               onClick={() => onChange(option.value)}
             >
               <span className="min-w-0 flex-1 truncate">{option.label}</span>
@@ -76,6 +80,10 @@ function ToggleOptionEditor({
           "relative inline-flex h-4 w-7 shrink-0 cursor-pointer items-center rounded-full transition-colors",
           value ? "bg-accent" : "bg-secondary",
         )}
+        onMouseDown={(event) => {
+          event.stopPropagation();
+          event.preventDefault();
+        }}
         onClick={() => onChange(!value)}
       >
         <span
@@ -112,7 +120,12 @@ export function ModelOptionsEditor({
   }
 
   return (
-    <div className={cn("space-y-3", className)}>
+    <div
+      className={cn("space-y-3", className)}
+      onMouseDown={(event) => {
+        event.stopPropagation();
+      }}
+    >
       {descriptors.map((descriptor) => {
         const selection = selections.find((s) => s.id === descriptor.id);
         if (descriptor.type === "select") {

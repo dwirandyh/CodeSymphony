@@ -39,23 +39,23 @@ describe("resolveRequestedThreadIdForChatSession", () => {
 });
 
 describe("resolveActiveChatThreadIdForUnsplitPane", () => {
-  it("prefers selectedThreadId when it is an open chat tab (post-split tab strip desync)", () => {
+  it("prefers session selection over stale editor active chat tab", () => {
     const editorGroups = createEmptyEditorGroupsState();
     editorGroups.groups.topLeft = {
       tabs: [
         { type: "chat", id: "thread-a" },
         { type: "chat", id: "thread-b" },
       ],
-      activeTabId: "thread-b",
+      activeTabId: "thread-a",
     };
 
     expect(
       resolveActiveChatThreadIdForUnsplitPane({
         splitMode: false,
         editorGroups,
-        selectedThreadId: "thread-a",
+        selectedThreadId: "thread-b",
       }),
-    ).toBe("thread-a");
+    ).toBe("thread-b");
   });
 
   it("resolveUnsplitChatPaneThreadId matches unsplit pane helper", () => {
@@ -65,16 +65,16 @@ describe("resolveActiveChatThreadIdForUnsplitPane", () => {
         { type: "chat", id: "thread-a" },
         { type: "chat", id: "thread-b" },
       ],
-      activeTabId: "thread-b",
+      activeTabId: "thread-a",
     };
 
     expect(
       resolveUnsplitChatPaneThreadId({
         splitMode: false,
         editorGroups,
-        selectedThreadId: "thread-a",
+        selectedThreadId: "thread-b",
       }),
-    ).toBe("thread-a");
+    ).toBe("thread-b");
   });
 
   it("falls back to active chat tab when selected is not in the strip", () => {
@@ -93,7 +93,7 @@ describe("resolveActiveChatThreadIdForUnsplitPane", () => {
     ).toBe("thread-b");
   });
 
-  it("falls back to selectedThreadId when active tab is not chat", () => {
+  it("returns null when active tab is not chat and selected thread is not in the strip", () => {
     const editorGroups = createEmptyEditorGroupsState();
     editorGroups.groups.topLeft = {
       tabs: [{ type: "file", id: "src/a.ts" }],
@@ -106,6 +106,22 @@ describe("resolveActiveChatThreadIdForUnsplitPane", () => {
         editorGroups,
         selectedThreadId: "thread-a",
       }),
-    ).toBe("thread-a");
+    ).toBe(null);
+  });
+
+  it("returns null when all chat tabs are closed but session selection is stale", () => {
+    const editorGroups = createEmptyEditorGroupsState();
+    editorGroups.groups.topLeft = {
+      tabs: [],
+      activeTabId: null,
+    };
+
+    expect(
+      resolveActiveChatThreadIdForUnsplitPane({
+        splitMode: false,
+        editorGroups,
+        selectedThreadId: "thread-a",
+      }),
+    ).toBe(null);
   });
 });

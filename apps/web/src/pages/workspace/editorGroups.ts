@@ -84,6 +84,8 @@ function collapseEmptyColumns(state: EditorGroupsState): EditorGroupsState {
 export type ReconcileEditorGroupsOptions = {
   /** File tab ids newly opened from explorer; routed to right / unfocused pane. */
   newFileTabIds?: readonly string[];
+  /** Chat tab to activate when it is newly added, so the unsplit pane follows a freshly created/selected thread. */
+  activateChatTabId?: string | null;
 };
 
 export function reconcileEditorGroups(
@@ -139,19 +141,25 @@ export function reconcileEditorGroups(
     nextActiveGroupId = targetGroupId;
   }
 
+  const newTabIdSet = new Set(newTabs.map((t) => t.id));
+  const activateChatTabId =
+    options?.activateChatTabId && newTabIdSet.has(options.activateChatTabId)
+      ? options.activateChatTabId
+      : null;
+
   if (otherNewTabs.length > 0) {
     const active = nextActiveGroupId;
     const g = nextRecord[active];
     nextRecord[active] = {
       tabs: [...g.tabs, ...otherNewTabs],
-      activeTabId: g.activeTabId ?? otherNewTabs[0]?.id ?? null,
+      activeTabId: activateChatTabId ?? g.activeTabId ?? otherNewTabs[0]?.id ?? null,
     };
   } else if (explorerFileTabs.length === 0) {
     const active = state.activeGroupId;
     const g = nextRecord[active];
     nextRecord[active] = {
       tabs: [...g.tabs, ...newTabs],
-      activeTabId: g.activeTabId ?? newTabs[0]?.id ?? null,
+      activeTabId: activateChatTabId ?? g.activeTabId ?? newTabs[0]?.id ?? null,
     };
   }
 

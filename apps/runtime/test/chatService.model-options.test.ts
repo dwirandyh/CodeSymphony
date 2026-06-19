@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
+import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
 import { createChatService } from "../src/services/chat";
 import type { ClaudeRunner, ClaudeRunnerResult } from "../src/types";
 
@@ -103,6 +104,7 @@ let slashCommandCacheDir: string | null = null;
 describe("chatService model options", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
+    vi.spyOn(cursorSessionRunner, "listCursorModels").mockResolvedValue([]);
     originalCodexHome = process.env.CODEX_HOME;
     originalSlashCommandCacheDir = process.env.CODESYMPHONY_SLASH_COMMAND_CACHE_DIR;
     process.env.CODEX_HOME = mkdtempSync(join(tmpdir(), "codesymphony-test-codex-home-"));
@@ -233,6 +235,17 @@ describe("chatService model options", () => {
   });
 
   it("passes per-model composer fastMode overrides through to the runner when sending a message", async () => {
+    vi.spyOn(cursorSessionRunner, "listCursorModels").mockResolvedValue([
+      {
+        id: "composer-2.5",
+        name: "Composer 2.5",
+        defaultVariantParams: { fast: "true" },
+        parameters: [
+          { id: "fast", values: ["true", "false"] },
+        ],
+      },
+    ]);
+
     const cursorRunner = vi.fn(async ({ onText }) => {
       await onText("done");
       return stubRunnerResult;
@@ -246,11 +259,11 @@ describe("chatService model options", () => {
       modelProviderService: stubModelProviderService,
     });
     const { thread } = await seedThread();
-    const modelKey = "cursor::composer-2.5[fast=true]::";
+    const modelKey = "cursor::composer-2.5::";
 
     await chatService.updateThreadAgentSelection(thread.id, {
       agent: "cursor",
-      model: "composer-2.5[fast=true]",
+      model: "composer-2.5",
       modelProviderId: null,
       modelOptions: [],
       modelOptionsPerModel: {
@@ -269,5 +282,55 @@ describe("chatService model options", () => {
     expect(cursorRunner).toHaveBeenCalled();
     const runnerCall = (cursorRunner as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(runnerCall[0].modelOptions).toEqual([{ id: "fastMode", value: false }]);
+  });
+
+  it("passes bare gpt-5.5 reasoning effort overrides to cursor runner when catalog hints exist", async () => {
+    vi.spyOn(cursorSessionRunner, "listCursorModels").mockResolvedValue([
+      {
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        defaultVariantParams: { thinking: "medium" },
+        parameters: [
+          { id: "thinking", values: ["low", "medium", "high"] },
+        ],
+      },
+    ]);
+
+    const cursorRunner = vi.fn(async ({ onText }) => {
+      await onText("done");
+      return stubRunnerResult;
+    }) as unknown as ClaudeRunner;
+    const eventHub = createEventHub(prisma);
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner: createStubRunner(),
+      cursorRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread();
+    const modelKey = "cursor::gpt-5.5::";
+
+    await chatService.updateThreadAgentSelection(thread.id, {
+      agent: "cursor",
+      model: "gpt-5.5",
+      modelProviderId: null,
+      modelOptions: [{ id: "reasoningEffort", value: "low" }],
+      modelOptionsPerModel: {
+        [modelKey]: [{ id: "reasoningEffort", value: "low" }],
+      },
+    });
+
+    await chatService.sendMessage(thread.id, {
+      content: "hello",
+      mode: "default",
+      attachments: [],
+    });
+
+    await waitForCompletion(chatService, thread.id);
+
+    expect(cursorRunner).toHaveBeenCalled();
+    const runnerCall = (cursorRunner as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(runnerCall[0].modelOptions).toEqual([{ id: "reasoningEffort", value: "low" }]);
   });
 });

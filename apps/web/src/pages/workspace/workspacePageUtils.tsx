@@ -44,6 +44,10 @@ export function shouldShowWorkspaceEmptyState(params: {
   hasOpenContentTabs: boolean;
   terminalViewActive: boolean;
   messageListEmptyState: ChatMessageListEmptyState | null;
+  /** No chat tabs open in the tab strip (all closed). */
+  hasOpenChatTabs?: boolean;
+  /** Worktree is held on the landing surface after closing its last tab. */
+  landingHold?: boolean;
 }): boolean {
   if (params.activeView !== "chat" || params.terminalViewActive) {
     return false;
@@ -51,6 +55,10 @@ export function shouldShowWorkspaceEmptyState(params: {
 
   if (params.hasOpenContentTabs) {
     return false;
+  }
+
+  if (params.hasOpenChatTabs === false) {
+    return true;
   }
 
   return params.messageListEmptyState === "no-thread-selected" || params.messageListEmptyState === "creating-thread";

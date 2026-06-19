@@ -244,7 +244,12 @@ async function runCursorSdkTurnAttempt(
     appendRuntimeDebugLog({
       source: "cursor.sdk.send.start",
       message: "send.start",
-      data: { agentId: lease.agentId, promptLength: params.prompt.length },
+      data: {
+        agentId: lease.agentId,
+        promptLength: params.prompt.length,
+        sdkModel: params.model ?? null,
+        reusedPooledAgent: params.sessionId != null,
+      },
     });
     run = await lease.agent.send(applyCursorSdkQuestionSteering(params.prompt), {
       ...(params.model ? { model: params.model } : {}),

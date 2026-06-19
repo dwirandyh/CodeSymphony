@@ -26,7 +26,8 @@ export type SnapshotSeedDecision = {
     | "local-state-missing"
     | "local-message-ahead-while-sending"
     | "local-message-ahead-while-waiting"
-    | "pending-user-gate";
+    | "pending-user-gate"
+    | "snapshot-thread-mismatch";
   snapshotKey: string | null;
 };
 

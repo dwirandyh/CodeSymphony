@@ -36,18 +36,25 @@ import {
   formatReasoningEffortDisplayLabel,
   hasConfigurableModelOptions,
   isFastModeEnabled,
-  resolveModelCapabilities,
 } from "@codesymphony/shared-types";
 import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../ui/dialog";
 import type { PendingAttachment } from "../../../lib/attachments";
 import type { RuntimeInfo } from "../../../lib/api";
 import { debugLog } from "../../../lib/debugLog";
+import {
+  logModelSelectionDiagnose,
+  modelSelectionDiagnosePayload,
+} from "../../../lib/modelSelectionDiagnose";
 import { logWorkspaceEmptyStateResolution } from "../../../lib/workspaceUiDiagnose";
 import {
   generateAttachmentId,
   generateClipboardFilename,
 } from "../../../lib/attachments";
+import {
+  type ModelOptionsTarget,
+  resolveBuiltinModelCapabilities,
+} from "./composerModelCapabilities";
 import {
   AUTO_CONVERT_LONG_TEXT_THRESHOLD,
   DEFAULT_GENERAL_SETTINGS,
@@ -142,12 +149,6 @@ type ComposerProps = {
   onUpdateQueuedMessage?: (queueMessageId: string, content: string) => Promise<boolean>;
 };
 
-type ModelOptionsTarget = {
-  agent: CliAgent;
-  model: string;
-  modelProviderId: string | null;
-};
-
 function buildModelOptionsKey(target: ModelOptionsTarget): string {
   return `${target.agent}::${target.model}::${target.modelProviderId ?? ""}`;
 }
@@ -161,14 +162,6 @@ function areModelOptionSelectionsEqual(
 
 function buildModelCapabilitiesUrl(target: ModelOptionsTarget): string {
   return `/api/model-capabilities?agent=${encodeURIComponent(target.agent)}&model=${encodeURIComponent(target.model)}`;
-}
-
-function resolveBuiltinModelCapabilities(target: ModelOptionsTarget): ModelCapabilities {
-  if (target.modelProviderId !== null) {
-    return { optionDescriptors: [] };
-  }
-
-  return resolveModelCapabilities(target.agent, target.model);
 }
 
 type ModelSelectionBlockedReasonParams = {
@@ -457,7 +450,7 @@ function ComposerContent({
 
     let cancelled = false;
     const target = optionsEditingTarget ?? { agent, model, modelProviderId };
-    setMobileCapabilities(resolveBuiltinModelCapabilities(target));
+    setMobileCapabilities(resolveBuiltinModelCapabilities(target, cursorModels));
     fetch(buildModelCapabilitiesUrl(target))
       .then((res) => res.json())
       .then((data) => {
@@ -470,7 +463,7 @@ function ComposerContent({
       });
 
     return () => { cancelled = true; };
-  }, [agent, model, modelOptionsSheetOpen, modelProviderId, optionsEditingTarget]);
+  }, [agent, cursorModels, model, modelOptionsSheetOpen, modelProviderId, optionsEditingTarget]);
 
 
   useEffect(() => {
@@ -551,8 +544,8 @@ function ComposerContent({
   );
   const modelLabel = `${AGENT_LABELS[agent]} · ${currentSelection.label}`;
   const currentModelCapabilities = useMemo(
-    () => resolveBuiltinModelCapabilities({ agent, model, modelProviderId }),
-    [agent, model, modelProviderId],
+    () => resolveBuiltinModelCapabilities({ agent, model, modelProviderId }, cursorModels),
+    [agent, cursorModels, model, modelProviderId],
   );
   const currentModelOptionsSummary = useMemo(
     () => formatModelOptionsDisplaySummary(currentModelCapabilities, modelOptions ?? []),
@@ -1454,7 +1447,7 @@ function ComposerContent({
           model: option.model,
           modelProviderId: option.modelProviderId,
         };
-        const optionCapabilities = resolveBuiltinModelCapabilities(optionTarget);
+        const optionCapabilities = resolveBuiltinModelCapabilities(optionTarget, cursorModels);
         const optionSelections = resolveModelOptions(optionTarget);
         const effortLabel = formatReasoningEffortDisplayLabel(optionCapabilities, optionSelections);
         const showFastLabel = isFastModeEnabled(optionCapabilities, optionSelections);
@@ -1952,7 +1945,7 @@ function ComposerContent({
                         const targetKey = buildModelOptionsKey(target);
                         const isCurrentModel = targetKey === modelKey;
                         const targetCapabilities = mobileCapabilities
-                          ?? resolveBuiltinModelCapabilities(target);
+                          ?? resolveBuiltinModelCapabilities(target, cursorModels);
                         const normalizedOptions = buildProviderOptionSelectionsFromDescriptors(
                           targetCapabilities,
                           nextOptions,
@@ -1995,10 +1988,28 @@ function ComposerContent({
                   onModelOptionsChange={(nextOptions, target) => {
                     const targetKey = buildModelOptionsKey(target);
                     const isCurrentModel = targetKey === modelKey;
-                    const targetCapabilities = resolveBuiltinModelCapabilities(target);
+                    const targetCapabilities = resolveBuiltinModelCapabilities(target, cursorModels);
                     const normalizedOptions = buildProviderOptionSelectionsFromDescriptors(
                       targetCapabilities,
                       nextOptions,
+                    );
+                    logModelSelectionDiagnose(
+                      "composer.modelOptions.changed",
+                      {
+                        ...modelSelectionDiagnosePayload({
+                          agent: target.agent,
+                          model: target.model,
+                          modelProviderId: target.modelProviderId,
+                          modelOptions: isCurrentModel ? normalizedOptions : modelOptions,
+                          modelOptionsPerModel: {
+                            ...modelOptionsPerModel,
+                            [targetKey]: normalizedOptions,
+                          },
+                          source: "composer.desktop",
+                        }),
+                        normalizedOptions,
+                      },
+                      { threadId, worktreeId },
                     );
                     onAgentSelectionChange({
                       agent: isCurrentModel ? target.agent : agent,

@@ -1,6 +1,6 @@
 import type { EditorGroupsState } from "./editorGroups";
 
-/** Chat thread shown in the unsplit main pane — follows editor active tab, not stale session id. */
+/** Chat thread shown in the unsplit main pane — follows session selection, then editor active chat tab. */
 export function resolveActiveChatThreadIdForUnsplitPane(params: {
   splitMode: boolean;
   editorGroups: EditorGroupsState;
@@ -24,7 +24,7 @@ export function resolveActiveChatThreadIdForUnsplitPane(params: {
     return activeTab.id;
   }
 
-  return selectedId;
+  return null;
 }
 
 export function resolveRequestedThreadIdForChatSession(params: {

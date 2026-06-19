@@ -1,5 +1,8 @@
 import type { CliAgent, ModelCapabilities, ProviderOptionDescriptor, ProviderOptionSelection } from "./workflow.js";
-import { resolveModelCapabilities } from "./modelCapabilities.js";
+import {
+  type CursorModelCapabilityHints,
+  resolveModelCapabilities,
+} from "./modelCapabilities.js";
 
 export function getProviderOptionDescriptors(capabilities: ModelCapabilities): ProviderOptionDescriptor[] {
   return capabilities.optionDescriptors ?? [];
@@ -119,10 +122,15 @@ export function resolveThreadModelOptions(input: {
   modelProviderId?: string | null;
   modelOptions?: readonly ProviderOptionSelection[];
   modelOptionsPerModel?: Record<string, readonly ProviderOptionSelection[]>;
+  cursorCatalogHints?: CursorModelCapabilityHints;
 }): ProviderOptionSelection[] | undefined {
   const modelKey = buildThreadModelOptionsKey(input);
   const overrides = input.modelOptionsPerModel?.[modelKey] ?? input.modelOptions;
-  const capabilities = resolveModelCapabilities(input.agent, input.model);
+  const capabilities = resolveModelCapabilities(
+    input.agent,
+    input.model,
+    input.cursorCatalogHints,
+  );
 
   if (!hasConfigurableModelOptions(capabilities)) {
     return undefined;

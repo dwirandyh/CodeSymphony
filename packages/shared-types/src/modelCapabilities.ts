@@ -1,5 +1,10 @@
 import type { CliAgent } from "./workflow.js";
-import type { ModelCapabilities } from "./workflow.js";
+import type { CursorModelCatalogEntry, ModelCapabilities } from "./workflow.js";
+
+export type CursorModelCapabilityHints = Pick<
+  CursorModelCatalogEntry,
+  "defaultVariantParams" | "parameters"
+>;
 
 const CURSOR_REASONING_OPTIONS = [
   { value: "none", label: "None" },
@@ -80,6 +85,20 @@ export function parseCursorModelMetadata(model: string | undefined): Map<string,
 }
 
 export function getCursorBaseModelName(model: string): string {
+  const metadataMatch = model.match(/\[([^\]]*)]$/);
+  if (!metadataMatch) {
+    return model.trim();
+  }
+
+  const hasVariantParams = metadataMatch[1]!
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .some((part) => part.includes("="));
+  if (!hasVariantParams) {
+    return model.trim();
+  }
+
   return model.replace(/\[[^\]]*]$/, "").trim();
 }
 
@@ -93,17 +112,53 @@ function isComposerFastExplicitlyEnabled(
   return modelOptions?.find((option) => option.id === "fastMode")?.value === true;
 }
 
-/** Map composer catalog ids that only expose fast=true to the bare non-fast ACP id. */
+/** Bare catalog id for picker + thread storage; variant params live in Edit overlay. */
 export function normalizeCursorCatalogModelId(modelId: string): string {
-  if (!isCursorComposerModel(modelId)) {
-    return modelId;
+  return getCursorBaseModelName(modelId);
+}
+
+export function normalizeCursorCatalogListEntry(entry: {
+  id: string;
+  name: string;
+  defaultVariantParams?: Record<string, string>;
+  parameters?: CursorModelCatalogEntry["parameters"];
+}): {
+  id: string;
+  name: string;
+  defaultVariantParams?: Record<string, string>;
+  parameters?: CursorModelCatalogEntry["parameters"];
+} {
+  const id = normalizeCursorCatalogModelId(entry.id);
+  return {
+    id,
+    name: entry.name.trim() || getCursorBaseModelName(entry.id),
+    ...(entry.defaultVariantParams ? { defaultVariantParams: entry.defaultVariantParams } : {}),
+    ...(entry.parameters?.length ? { parameters: entry.parameters } : {}),
+  };
+}
+
+export function dedupeCursorCatalogEntries(
+  entries: readonly CursorModelCatalogEntry[],
+): CursorModelCatalogEntry[] {
+  const byId = new Map<string, CursorModelCatalogEntry>();
+
+  for (const entry of entries) {
+    const normalized = normalizeCursorCatalogListEntry(entry);
+    if (!byId.has(normalized.id)) {
+      byId.set(normalized.id, normalized);
+    }
   }
 
-  if (parseCursorModelMetadata(modelId).get("fast") === "true") {
-    return getCursorBaseModelName(modelId);
-  }
+  return Array.from(byId.values());
+}
 
-  return modelId;
+export function cursorCatalogModelIdsEquivalent(left: string, right: string): boolean {
+  return normalizeCursorCatalogModelId(left) === normalizeCursorCatalogModelId(right);
+}
+
+/** @deprecated Use cursorCatalogModelIdsEquivalent */
+export function cursorComposerCatalogIdsEquivalent(left: string, right: string): boolean {
+  return cursorCatalogModelIdsEquivalent(left, right);
 }
 
 /** Resolve the model id sent to Cursor ACP setSessionModel. */
@@ -146,28 +201,128 @@ function normalizeReasoningValue(value: string | undefined): string | null {
   return null;
 }
 
-export function getCursorModelCapabilities(model?: string): ModelCapabilities {
+const CURSOR_REASONING_PARAM_IDS = ["thinking", "reasoning", "effort"] as const;
+
+function findCursorCatalogParameter(
+  parameters: CursorModelCapabilityHints["parameters"],
+  ids: readonly string[],
+) {
+  return parameters?.find((parameter) => ids.includes(parameter.id));
+}
+
+function reasoningOptionsFromCatalog(
+  parameters: CursorModelCapabilityHints["parameters"],
+): typeof CURSOR_REASONING_OPTIONS {
+  const parameter = findCursorCatalogParameter(parameters, CURSOR_REASONING_PARAM_IDS);
+  if (!parameter || parameter.values.length === 0) {
+    return CURSOR_REASONING_OPTIONS;
+  }
+
+  const allowed = new Set(parameter.values);
+  const filtered = CURSOR_REASONING_OPTIONS.filter((option) => (
+    option.value === "none" || allowed.has(option.value)
+  ));
+  return filtered.length > 0 ? filtered : CURSOR_REASONING_OPTIONS;
+}
+
+function defaultReasoningFromHints(
+  metadata: Map<string, string>,
+  defaultVariantParams?: Record<string, string>,
+): string | null {
+  const fromMetadata = normalizeReasoningValue(metadata.get("reasoning") ?? metadata.get("effort"));
+  if (fromMetadata) {
+    return fromMetadata;
+  }
+
+  if (!defaultVariantParams) {
+    return null;
+  }
+
+  for (const paramId of CURSOR_REASONING_PARAM_IDS) {
+    const normalized = normalizeReasoningValue(defaultVariantParams[paramId]);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function catalogSupportsFastToggle(
+  parameters: CursorModelCapabilityHints["parameters"],
+): boolean {
+  return parameters?.some((parameter) => parameter.id === "fast" && parameter.values.length > 0) ?? false;
+}
+
+function defaultFastFromHints(
+  metadata: Map<string, string>,
+  isComposer: boolean,
+  defaultVariantParams?: Record<string, string>,
+): boolean | null {
+  const fastFromMetadata = metadata.get("fast");
+  if (fastFromMetadata === "false") {
+    return false;
+  }
+  if (fastFromMetadata === "true") {
+    return true;
+  }
+
+  const fastFromDefault = defaultVariantParams?.fast;
+  if (fastFromDefault === "false") {
+    return false;
+  }
+  if (fastFromDefault === "true") {
+    return true;
+  }
+
+  if (isComposer) {
+    return true;
+  }
+
+  return null;
+}
+
+export function getCursorModelCapabilities(
+  model?: string,
+  catalogHints?: CursorModelCapabilityHints,
+): ModelCapabilities {
   const metadata = parseCursorModelMetadata(model);
   const descriptors: ModelCapabilities["optionDescriptors"] = [];
-  const reasoningValue = normalizeReasoningValue(metadata.get("reasoning") ?? metadata.get("effort"));
+  const baseModel = getCursorBaseModelName(model ?? "");
+  const isComposer = baseModel.startsWith("composer-");
+  const reasoningParameter = findCursorCatalogParameter(
+    catalogHints?.parameters,
+    CURSOR_REASONING_PARAM_IDS,
+  );
+  const reasoningValue = defaultReasoningFromHints(metadata, catalogHints?.defaultVariantParams);
+  const reasoningFromMetadataOnly = normalizeReasoningValue(
+    metadata.get("reasoning") ?? metadata.get("effort"),
+  );
 
-  if (reasoningValue) {
+  if (reasoningFromMetadataOnly || reasoningParameter) {
+    const options = reasoningOptionsFromCatalog(catalogHints?.parameters);
+    const currentValue = reasoningValue ?? options.find((option) => option.value !== "none")?.value ?? "medium";
     descriptors.push({
       id: "reasoningEffort",
       label: "Effort",
       type: "select",
-      currentValue: reasoningValue,
-      options: CURSOR_REASONING_OPTIONS,
+      currentValue,
+      options,
     });
   }
 
-  const isComposer = getCursorBaseModelName(model ?? "").startsWith("composer-");
-  if (metadata.has("fast") || isComposer) {
+  const showFast = metadata.has("fast") || isComposer || catalogSupportsFastToggle(catalogHints?.parameters);
+  if (showFast) {
+    const fastDefault = defaultFastFromHints(
+      metadata,
+      isComposer,
+      catalogHints?.defaultVariantParams,
+    );
     descriptors.push({
       id: "fastMode",
       label: "Fast mode",
       type: "toggle",
-      currentValue: metadata.get("fast") === "true",
+      currentValue: fastDefault ?? false,
     });
   }
 
@@ -238,15 +393,29 @@ export function getOpencodeModelCapabilities(): ModelCapabilities {
   return OPENCODE_MODEL_CAPABILITIES;
 }
 
+export function cursorCatalogCapabilityHintsFromEntry(
+  entry: Pick<CursorModelCatalogEntry, "defaultVariantParams" | "parameters"> | undefined,
+): CursorModelCapabilityHints | undefined {
+  if (!entry?.parameters?.length && !entry?.defaultVariantParams) {
+    return undefined;
+  }
+
+  return {
+    defaultVariantParams: entry.defaultVariantParams,
+    parameters: entry.parameters,
+  };
+}
+
 export function resolveModelCapabilities(
   agent: CliAgent,
   model?: string,
+  catalogHints?: CursorModelCapabilityHints,
 ): ModelCapabilities {
   switch (agent) {
     case "codex":
       return getCodexModelCapabilities();
     case "cursor":
-      return getCursorModelCapabilities(model);
+      return getCursorModelCapabilities(model, catalogHints);
     case "opencode":
       return getOpencodeModelCapabilities();
     default:

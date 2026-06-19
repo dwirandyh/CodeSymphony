@@ -31,6 +31,10 @@ import type {
 } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
 import { debugLog } from "../../../../lib/debugLog";
+import {
+  logModelSelectionDiagnose,
+  modelSelectionDiagnosePayload,
+} from "../../../../lib/modelSelectionDiagnose";
 import { scheduleWindowIdleTask } from "../../../../lib/idleTask";
 import {
   disposeAllThreadCollections,
@@ -84,6 +88,7 @@ import {
   resolveSnapshotSeedDecision,
   buildSnapshotKey,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
+  snapshotBelongsToThread,
 } from "./hydrationUtils";
 import { areMessagesEqual } from "../messageMerge";
 import {
@@ -103,6 +108,7 @@ import {
 } from "../../../../lib/workspaceUiDiagnose";
 import { resolveAgentDefaultModel } from "../../../../lib/agentModelDefaults";
 import { isOptimisticThreadId } from "../../../../lib/threadIds";
+import { shouldSkipChatThreadNavigationNotify } from "../../chatNavigationNotify";
 import { resolveRequestedThreadIdForChatSession } from "../../resolveActiveChatThreadId";
 
 const DEFAULT_THREAD_TITLE = "New Thread";
@@ -1999,6 +2005,10 @@ export function useChatSession(
     enabled: shouldFetchCanonicalThreadSnapshot,
   });
   const queriedThreadSnapshot = canonicalThreadSnapshot ?? compactThreadSnapshot;
+  const snapshotMatchesSelectedThread =
+    queriedThreadSnapshot != null
+    && selectedThreadId != null
+    && snapshotBelongsToThread(queriedThreadSnapshot, selectedThreadId);
   const threadSnapshotLoading =
     queriedThreadSnapshot == null
     && (compactThreadSnapshotLoading || canonicalThreadSnapshotLoading);
@@ -2052,8 +2062,12 @@ export function useChatSession(
     });
   }, [canonicalThreadSnapshot, queryClient, snapshotBootstrapThreadId]);
 
-  const serverTimelineItems = (queriedThreadSnapshot?.timelineItems ?? []) as unknown as ChatTimelineItem[];
-  const serverTimelineSummary = queriedThreadSnapshot?.summary as ChatTimelineSummary | undefined;
+  const serverTimelineItems = (snapshotMatchesSelectedThread
+    ? queriedThreadSnapshot?.timelineItems ?? []
+    : []) as unknown as ChatTimelineItem[];
+  const serverTimelineSummary = snapshotMatchesSelectedThread
+    ? queriedThreadSnapshot?.summary as ChatTimelineSummary | undefined
+    : undefined;
   const serverSnapshotContainsCanonicalState = hasCanonicalThreadSnapshot(queriedThreadSnapshot);
   const serverSnapshotCoversLocalHead = useMemo(
     () => doesSnapshotCoverLocalHead({
@@ -3084,6 +3098,9 @@ export function useChatSession(
       ? prevThreadIdRef.current !== requestedThreadId
       : prevThreadIdRef.current !== nextThreadIdForNavigation;
     if (willNotify) {
+      const skipUrlNotify = shouldSkipChatThreadNavigationNotify({
+        userIntentThreadId: options?.userIntentThreadId,
+      });
       debugLog("thread.selection", "navigation.notify", {
         reason: shouldClearRequestedThreadFromNavigation ? "clear-requested-thread" : "selected-thread-changed",
         previousNavigationThreadId: prevThreadIdRef.current,
@@ -3095,6 +3112,8 @@ export function useChatSession(
         requestedThreadResolutionPending,
         requestedThreadStillResolvable,
         shouldClearRequestedThreadFromNavigation,
+        skipUrlNotify,
+        userIntentThreadId: options?.userIntentThreadId ?? null,
         queriedThreadIds: queriedThreadsForSelection.map((thread) => thread.id),
         renderedThreadIds: threadsRef.current.map((thread) => thread.id),
       }, {
@@ -3102,12 +3121,17 @@ export function useChatSession(
         worktreeId: selectedWorktreeId,
         force: true,
       });
-      prevThreadIdRef.current = nextThreadIdForNavigation;
-      options?.onThreadChange?.(nextThreadIdForNavigation);
+      prevThreadIdRef.current = shouldClearRequestedThreadFromNavigation
+        ? requestedThreadId
+        : nextThreadIdForNavigation;
+      if (!skipUrlNotify) {
+        options?.onThreadChange?.(nextThreadIdForNavigation);
+      }
     }
   }, [
     allowUnselectedThread,
     autoCreateInitialThread,
+    options?.userIntentThreadId,
     requestedThreadResolutionPending,
     requestedThreadId,
     queriedThreadsForSelection,
@@ -3694,6 +3718,19 @@ export function useChatSession(
           return;
         }
 
+        logModelSelectionDiagnose(
+          "thread.agentSelection.persist",
+          modelSelectionDiagnosePayload({
+            agent: selection.agent,
+            model: selection.model,
+            modelProviderId: selection.modelProviderId ?? null,
+            modelOptions: selection.modelOptions,
+            modelOptionsPerModel: selection.modelOptionsPerModel,
+            source: options?.source ?? "manual",
+          }),
+          { threadId, worktreeId: selectedWorktreeId ?? currentThread?.worktreeId ?? null },
+        );
+
         onError(null);
         const previousThreads = threadsRef.current;
         const cacheWorktreeId = selectedWorktreeId ?? (currentThread?.worktreeId ?? null);
@@ -3909,6 +3946,19 @@ export function useChatSession(
           (current) => current ? applyThreadModeUpdate(current, activeThread.id, mode) : current,
         );
       }
+      logModelSelectionDiagnose(
+        "submitMessage.beforeSend",
+        modelSelectionDiagnosePayload({
+          agent: activeThread.agent ?? composerAgent,
+          model: activeThread.model ?? composerModel,
+          modelProviderId: activeThread.modelProviderId ?? composerModelProviderId,
+          modelOptions: activeThread.modelOptions,
+          modelOptionsPerModel: activeThread.modelOptionsPerModel,
+          source: "submitMessage",
+        }),
+        { threadId: activeThread.id, worktreeId: activeThread.worktreeId },
+      );
+
       const sentMessage = await api.sendMessage(activeThread.id, {
         content,
         mode,
@@ -4174,6 +4224,7 @@ export function useChatSession(
     );
   const selectedThreadNeedsBootstrapFromServer =
     selectedThreadId != null
+    && snapshotMatchesSelectedThread
     && !selectedThreadHasLocalState
     && queriedThreadSnapshot != null
     && serverTimelineFreshEnough
@@ -4181,6 +4232,7 @@ export function useChatSession(
     && serverTimelineItems.length > 0;
   const selectedThreadNeedsRenderableTimelineGapFill =
     selectedThreadStableForAuthoritativeTimeline
+    && snapshotMatchesSelectedThread
     && queriedThreadSnapshot?.collectionsIncluded === false
     && serverTimelineFreshEnough
     && serverTimelineItems.length > 0
@@ -4203,6 +4255,7 @@ export function useChatSession(
     );
   const semanticHydrationInProgress =
     timelineEnabled
+    && snapshotMatchesSelectedThread
     && queriedThreadSnapshot != null
     && serverSnapshotContainsCanonicalState
     && !timelineSeedMatchesLiveState;

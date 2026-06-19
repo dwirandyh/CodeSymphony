@@ -51,10 +51,10 @@ function makeThread(title: string, id = "thread-1"): ChatThread {
   };
 }
 
-function makeMessage(id: string, seq: number): ChatMessage {
+function makeMessage(id: string, seq: number, threadId = "thread-1"): ChatMessage {
   return {
     id,
-    threadId: "thread-1",
+    threadId,
     seq,
     role: "assistant" as const,
     content: id,
@@ -66,7 +66,9 @@ function makeMessage(id: string, seq: number): ChatMessage {
 function makeSnapshot(overrides?: {
   newestSeq?: number | null;
   newestIdx?: number | null;
+  threadId?: string;
 }) {
+  const threadId = overrides?.threadId ?? "thread-1";
   return {
     timelineItems: [],
     summary: {
@@ -78,8 +80,11 @@ function makeSnapshot(overrides?: {
     },
     newestSeq: overrides?.newestSeq ?? 1,
     newestIdx: overrides?.newestIdx ?? 1,
-    messages: [makeMessage("m-1", 1)],
-    events: [makeEvent(1, "chat.completed", { messageId: "m-1" })],
+    messages: [makeMessage("m-1", 1, threadId)],
+    events: [{
+      ...makeEvent(1, "chat.completed", { messageId: "m-1" }),
+      threadId,
+    }],
   };
 }
 
@@ -746,7 +751,7 @@ describe("snapshot seed decision helpers", () => {
 
   it("applies on thread change even with same lengths", () => {
     const snapshotA = makeSnapshot({ newestSeq: 1, newestIdx: 100 });
-    const snapshotB = makeSnapshot({ newestSeq: 2, newestIdx: 110 });
+    const snapshotB = makeSnapshot({ newestSeq: 2, newestIdx: 110, threadId: "thread-2" });
 
     const decision = resolveSnapshotSeedDecision({
       selectedThreadId: "thread-2",
@@ -758,6 +763,23 @@ describe("snapshot seed decision helpers", () => {
     expect(decision.shouldApply).toBe(true);
     expect(decision.reason).toBe("thread-changed");
     expect(decision.snapshotKey).toBe(buildSnapshotKey(snapshotB));
+  });
+
+  it("rejects stale keepPreviousData snapshots that still belong to the previous thread", () => {
+    const staleSnapshot = makeSnapshot();
+
+    const decision = resolveSnapshotSeedDecision({
+      selectedThreadId: "thread-2",
+      queriedThreadSnapshot: staleSnapshot,
+      threadChanged: true,
+      lastAppliedSnapshotKey: null,
+    });
+
+    expect(decision).toEqual({
+      shouldApply: false,
+      reason: "snapshot-thread-mismatch",
+      snapshotKey: buildSnapshotKey(staleSnapshot),
+    });
   });
 
   it("submit_message_does_not_force_immediate_snapshot_invalidation", () => {

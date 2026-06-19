@@ -310,6 +310,12 @@ import {
   shouldReturnToWorkspaceLandingAfterClosingContent,
   shouldShowWorkspaceEmptyState,
 } from "./workspace/workspacePageUtils";
+import { logWorkspaceUiIssueReportSignal } from "../lib/workspaceUiDiagnose";
+import {
+  buildWorkspaceTabSurfaceDiagnostic,
+  detectWorkspaceTabSurfaceDesync,
+  workspaceTabSurfaceDiagnosticSignature,
+} from "./workspace/workspaceTabSurfaceDiagnostics";
 import {
   computeMobileKeyboardState,
   createMobileKeyboardBaseline,
@@ -1394,6 +1400,8 @@ export function WorkspacePage() {
       [repos.selectedRepositoryId, repos.selectedWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
     ),
   });
+  const chatSelectedThreadIdRef = useRef<string | null>(null);
+  chatSelectedThreadIdRef.current = chat.selectedThreadId;
   const selectionOscillationHistoryRef = useRef<Array<{
     atMs: number;
     scopeKey: string;
@@ -3213,10 +3221,13 @@ export function WorkspacePage() {
     setWorkspaceLandingHold,
     threadlessFallbackSurface.kind,
   ]);
+  const hasOpenChatTabs = chat.threads.some((thread) => thread.tabOpen ?? true);
   const showWorkspaceEmptyState = shouldShowWorkspaceEmptyState({
     activeView,
     hasOpenContentTabs,
+    hasOpenChatTabs,
     terminalViewActive,
+    landingHold: selectedWorktreeLandingHold,
     messageListEmptyState: chat.messageListEmptyState,
   });
   const selectedThreadIdForAttention = chat.selectedThreadIdForData ?? chat.selectedThreadId;
@@ -4393,11 +4404,12 @@ export function WorkspacePage() {
       }
       return reconcileEditorGroups(current, sourceTabs, {
         newFileTabIds: newFileTabIds.length > 0 ? newFileTabIds : undefined,
+        activateChatTabId: chatSelectedThreadIdRef.current,
       });
     });
   }, [sourceTabs]);
 
-  // The tab id currently selected via external navigation (sidebar, shortcuts, URL).
+  // Align editor strip with navigation; session selection is authoritative for chat threads.
   const currentSelectionTabId: string | null = reviewTabOpen
     ? "review"
     : activeFilePath
@@ -4443,10 +4455,12 @@ export function WorkspacePage() {
         fileColumn: undefined,
       });
     } else if (tab.type === "chat") {
+      setUserIntentThreadId(tab.id);
+      chat.setSelectedThreadId(tab.id);
       updateSearch({
-        view: "chat",
-        threadId: tab.id,
+        view: undefined,
         file: undefined,
+        threadId: tab.id,
       });
     } else if (tab.type === "terminal") {
       handleSelectTerminalTab(tab.id);
@@ -4456,7 +4470,7 @@ export function WorkspacePage() {
         file: undefined,
       });
     }
-  }, [updateSearch, handleSelectTerminalTab]);
+  }, [chat.setSelectedThreadId, handleSelectTerminalTab, updateSearch]);
 
   const handleFocusGroup = useCallback((groupId: EditorQuadrantId) => {
     logEditorGridFocusAttempt("focusGroup", { groupId, refTarget: focusComposerTargetGroupRef.current }, repos.selectedWorktreeId);
@@ -4524,22 +4538,47 @@ export function WorkspacePage() {
   }, [editorGroups.splitMode, handleSelectThread, prefetchDisplayThreadSnapshot, repos.selectedWorktreeId, syncTabToUrl]);
 
   const handleCloseGroupTab = useCallback((groupId: EditorQuadrantId, tab: TabItem) => {
-    setEditorGroups((current) => {
-      const { nextState } = closeTabInGroup(current, tab.id, groupId);
-      return nextState;
-    });
+    const { nextState } = closeTabInGroup(editorGroupsRef.current, tab.id, groupId);
+    const groupAfter = nextState.groups[groupId];
+    const nextActiveTabAfterClose: TabItem | null =
+      groupAfter.activeTabId != null
+        ? groupAfter.tabs.find((t) => t.id === groupAfter.activeTabId) ?? null
+        : null;
+    setEditorGroups(nextState);
 
     // Side effects: delegate actual close to the workspace hooks
     if (tab.type === "file") {
       handleCloseFileTab(tab.id);
     } else if (tab.type === "chat") {
+      const closingLastOpenChatTab =
+        openThreads.length === 1
+        && openThreads[0]?.id === tab.id;
+      if (closingLastOpenChatTab) {
+        setWorkspaceLandingHold(repos.selectedWorktreeId, true);
+        setUserIntentThreadId(null);
+        chat.setSelectedThreadId(null);
+        updateSearch({ view: undefined, file: undefined, threadId: undefined });
+      } else if (nextActiveTabAfterClose && nextActiveTabAfterClose.id !== tab.id) {
+        syncTabToUrl(nextActiveTabAfterClose);
+      }
       handleRequestCloseThread(tab.id);
     } else if (tab.type === "terminal") {
       handleCloseTerminalTab(tab.id);
     } else if (tab.type === "review") {
       handleCloseReview();
     }
-  }, [handleCloseFileTab, handleRequestCloseThread, handleCloseTerminalTab, handleCloseReview]);
+  }, [
+    chat.setSelectedThreadId,
+    handleCloseFileTab,
+    handleCloseReview,
+    handleCloseTerminalTab,
+    handleRequestCloseThread,
+    openThreads,
+    repos.selectedWorktreeId,
+    setWorkspaceLandingHold,
+    syncTabToUrl,
+    updateSearch,
+  ]);
 
   const handleDropGroupTab = useCallback(
     (targetGroupId: EditorQuadrantId, tab: TabItem, sourceGroupId: EditorQuadrantId, toIndex?: number) => {
@@ -4608,6 +4647,45 @@ export function WorkspacePage() {
     }),
     [editorGroups, chat.selectedThreadId],
   );
+
+  const tabSurfaceIssueReportSignatureRef = useRef<string | null>(null);
+  useEffect(() => {
+    const diagnostic = buildWorkspaceTabSurfaceDiagnostic({
+      routeThreadId: search.threadId ?? null,
+      routeView: search.view ?? null,
+      sessionSelectedThreadId: chat.selectedThreadId,
+      editorGroups,
+      openChatTabCount: openThreads.length,
+      showWorkspaceEmptyState,
+      messageListEmptyState: chat.messageListEmptyState,
+      landingHold: selectedWorktreeLandingHold,
+    });
+    const signature = workspaceTabSurfaceDiagnosticSignature(diagnostic);
+    if (tabSurfaceIssueReportSignatureRef.current === signature) {
+      return;
+    }
+    tabSurfaceIssueReportSignatureRef.current = signature;
+
+    const desync = detectWorkspaceTabSurfaceDesync(diagnostic);
+    logWorkspaceUiIssueReportSignal(
+      desync ? "tabSurface.desync" : "tabSurface.snapshot",
+      { ...diagnostic, desync },
+      {
+        threadId: diagnostic.unsplitChatPaneThreadId ?? diagnostic.sessionSelectedThreadId,
+        worktreeId: repos.selectedWorktreeId,
+      },
+    );
+  }, [
+    chat.messageListEmptyState,
+    chat.selectedThreadId,
+    editorGroups,
+    openThreads.length,
+    repos.selectedWorktreeId,
+    search.threadId,
+    search.view,
+    selectedWorktreeLandingHold,
+    showWorkspaceEmptyState,
+  ]);
 
   const renderChatPaneForThread = useCallback(
     (threadId: string, focusSignal?: number, onFocusPane?: () => void) => {
@@ -5409,13 +5487,35 @@ export function WorkspacePage() {
                 )}
               </section>
             ) : (
-              <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                {wrapUnsplitEditorSurface(
-                  <div className="flex h-full min-h-0 items-center justify-center text-xs text-muted-foreground">
-                    No conversation selected
-                  </div>,
-                )}
-              </section>
+              <Suspense fallback={<div className="flex min-h-0 flex-1 items-center justify-center text-xs text-muted-foreground">Loading workspace…</div>}>
+                <WorkspaceEmptyState
+                  repositoryName={resolvedStartupRepositoryName}
+                  worktreeBranch={resolvedStartupWorktreeBranch}
+                  worktreePath={resolvedStartupWorktreePath}
+                  enableInstalledAppsQuery={enableNonCriticalWorkspaceData}
+                  hasWorktree={!!(repos.selectedWorktreeId || (startupWorktreeFallbackActive && startupSnapshot?.worktreeId))}
+                  worktreeReady={selectedWorktreeOperational}
+                  preparingThread={chat.messageListEmptyState === "creating-thread"}
+                  gitChangeCount={gitChanges.entries.length}
+                  recentFilePaths={recentFilePaths}
+                  reviewKind={repositoryReviews.data?.kind ?? null}
+                  reviewRef={selectedReviewRef}
+                  canCreateThread={!!repos.selectedWorktreeId && selectedWorktreeOperational && !chat.sendingMessage}
+                  canOpenFiles={!!repos.selectedWorktreeId && selectedWorktreeOperational}
+                  canCreateTerminal={!!repos.selectedWorktreeId && selectedWorktreeOperational}
+                  canOpenCommitChanges={!!repos.selectedWorktreeId && selectedWorktreeOperational && gitChanges.entries.length > 0}
+                  showRevealRepositoriesAction={!leftSidebarVisible}
+                  onCreateThread={handleCreateThreadFromHeader}
+                  onOpenFilePicker={openQuickFilePicker}
+                  onCreateTerminal={handleCreateTerminalTab}
+                  onOpenCommitChanges={handleOpenCommitChanges}
+                  onOpenPullRequest={handlePrMrAction}
+                  onRevealRepositories={handleRevealRepositories}
+                  onOpenRecentFile={(path) => {
+                    void openReadFile(path);
+                  }}
+                />
+              </Suspense>
             )}
           </div>
 

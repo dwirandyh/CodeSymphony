@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyCursorModelOptions, getCursorModelCapabilities, normalizeCursorCatalogModelId, parseCursorModelMetadata, resolveCursorSessionModelId } from "./modelCapabilities.js";
+import { applyCursorModelOptions, dedupeCursorCatalogEntries, getCursorModelCapabilities, normalizeCursorCatalogModelId, parseCursorModelMetadata, resolveCursorSessionModelId } from "./modelCapabilities.js";
 
 describe("parseCursorModelMetadata", () => {
   it("parses fast=true from model string", () => {
@@ -52,18 +52,55 @@ describe("applyCursorModelOptions", () => {
     expect(fastDescriptor?.currentValue).toBe(true);
   });
 
-  it("exposes fast toggle for bare composer ids defaulting to non-fast", () => {
+  it("exposes fast toggle for bare composer ids defaulting to SDK fast default", () => {
     const capabilities = getCursorModelCapabilities("composer-2.5");
     const fastDescriptor = capabilities.optionDescriptors.find((descriptor) => descriptor.id === "fastMode");
     expect(fastDescriptor).toBeDefined();
-    expect(fastDescriptor?.currentValue).toBe(false);
+    expect(fastDescriptor?.currentValue).toBe(true);
   });
 
-  it("normalizes composer catalog ids to bare base names", () => {
+  it("exposes reasoning effort from catalog hints when model id has no variant metadata", () => {
+    const capabilities = getCursorModelCapabilities("claude-opus-4-8", {
+      defaultVariantParams: { thinking: "medium" },
+      parameters: [
+        { id: "thinking", values: ["low", "medium", "high"] },
+        { id: "fast", values: ["true", "false"] },
+      ],
+    });
+    const effort = capabilities.optionDescriptors.find((descriptor) => descriptor.id === "reasoningEffort");
+    expect(effort).toMatchObject({
+      id: "reasoningEffort",
+      type: "select",
+      currentValue: "medium",
+    });
+    expect(capabilities.optionDescriptors.some((descriptor) => descriptor.id === "fastMode")).toBe(true);
+  });
+
+  it("dedupes stale composer catalog rows that only differ by fast metadata", () => {
+    expect(dedupeCursorCatalogEntries([
+      { id: "composer-2.5", name: "Composer 2.5" },
+      { id: "composer-2.5[fast=false]", name: "Composer 2.5" },
+      { id: "composer-2.5[fast=true]", name: "Composer 2.5 Fast" },
+    ])).toEqual([{ id: "composer-2.5", name: "Composer 2.5" }]);
+  });
+
+  it("normalizes catalog ids to bare base model names", () => {
     expect(normalizeCursorCatalogModelId("composer-2.5[fast=true]")).toBe("composer-2.5");
+    expect(normalizeCursorCatalogModelId("default[]")).toBe("default[]");
     expect(normalizeCursorCatalogModelId("gpt-5.5[context=272k,reasoning=medium,fast=true]")).toBe(
-      "gpt-5.5[context=272k,reasoning=medium,fast=true]",
+      "gpt-5.5",
     );
+    expect(normalizeCursorCatalogModelId("claude-opus-4-8[reasoning=high,fast=true]")).toBe(
+      "claude-opus-4-8",
+    );
+  });
+
+  it("dedupes variant catalog rows that share the same base model id", () => {
+    expect(dedupeCursorCatalogEntries([
+      { id: "claude-opus-4-8", name: "Opus 4.8" },
+      { id: "claude-opus-4-8[reasoning=low,fast=false]", name: "Opus 4.8" },
+      { id: "claude-opus-4-8[reasoning=medium,fast=true]", name: "Opus 4.8" },
+    ])).toEqual([{ id: "claude-opus-4-8", name: "Opus 4.8" }]);
   });
 
   it("resolves composer session model to bare id by default", () => {

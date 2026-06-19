@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { isOptimisticThreadId } from "../../lib/threadIds";
@@ -19,6 +19,5 @@ export function useThreadSnapshot(
     queryFn: () => api.getTimelineSnapshot(threadId!, { mode }),
     enabled: !!threadId && !isOptimisticThreadId(threadId) && enabled,
     staleTime: THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS,
-    placeholderData: keepPreviousData,
   });
 }

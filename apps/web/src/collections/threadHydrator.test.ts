@@ -23,10 +23,15 @@ function makeEvent(idx: number, id = `event-${idx}`): ChatEvent {
   };
 }
 
-function makeMessage(seq: number, id = `message-${seq}`, content = `message-${seq}`): ChatMessage {
+function makeMessage(
+  seq: number,
+  id = `message-${seq}`,
+  content = `message-${seq}`,
+  threadId = "thread-1",
+): ChatMessage {
   return {
     id,
-    threadId: "thread-1",
+    threadId,
     seq,
     role: "assistant",
     content,
@@ -192,6 +197,22 @@ describe("threadHydrator", () => {
         "message-3",
         "message-4",
       ]);
+  });
+
+  it("skips hydration when keepPreviousData leaked another thread's snapshot rows", () => {
+    const { messagesCollection } = getThreadCollections("thread-2");
+
+    const hydrated = hydrateThreadFromSnapshot({
+      threadId: "thread-2",
+      snapshot: makeSnapshot({
+        messages: [makeMessage(0, "message-aa", "aa", "thread-1")],
+        events: [makeEvent(0, "event-aa")],
+      }),
+    });
+
+    expect(hydrated.messages).toEqual([]);
+    expect(hydrated.insertedMessageCount).toBe(0);
+    expect(messagesCollection.toArray).toHaveLength(0);
   });
 
   it("disposes thread collections and recreates them empty", () => {

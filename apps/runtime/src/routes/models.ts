@@ -11,7 +11,9 @@ import {
   OpencodeModelCatalogSchema,
   TestModelProviderInputSchema,
   UpdateModelProviderInputSchema,
+  type CursorModelCatalogEntry,
   type ModelProviderCompatibility,
+  dedupeCursorCatalogEntries,
   normalizeCursorCatalogModelId,
 } from "@codesymphony/shared-types";
 import * as claudeModelCatalog from "../claude/modelCatalog.js";
@@ -174,13 +176,15 @@ export async function registerModelRoutes(app: FastifyInstance) {
     load: async () => cursorSessionRunner.listCursorModels({
       cwd: process.cwd(),
     }),
-    validate: (candidate) => CursorModelCatalogSchema.parse({
-      models: (candidate as Array<{ id: string; name: string }>).map((entry) => ({
-        ...entry,
-        id: normalizeCursorCatalogModelId(entry.id),
-      })),
-      fetchedAt: "1970-01-01T00:00:00.000Z",
-    }).models,
+    validate: (candidate) => dedupeCursorCatalogEntries(
+      CursorModelCatalogSchema.parse({
+        models: (candidate as CursorModelCatalogEntry[]).map((entry) => ({
+          ...entry,
+          id: normalizeCursorCatalogModelId(entry.id),
+        })),
+        fetchedAt: "1970-01-01T00:00:00.000Z",
+      }).models,
+    ),
   });
   const opencodeModelCatalogCache = createPersistentExpiringCache({
     ttlMs: MODEL_CATALOG_CACHE_TTL_MS,
@@ -267,9 +271,33 @@ export async function registerModelRoutes(app: FastifyInstance) {
       case "codex":
         capabilities = getCodexModelCapabilities();
         break;
-      case "cursor":
-        capabilities = getCursorModelCapabilities(model);
+      case "cursor": {
+        let catalogHints: {
+          defaultVariantParams?: Record<string, string>;
+          parameters?: CursorModelCatalogEntry["parameters"];
+        } | undefined;
+
+        if (model) {
+          try {
+            const normalizedModel = normalizeCursorCatalogModelId(model);
+            const cursorCatalogSnapshot = await cursorModelCatalogCache.get();
+            const catalogEntry = cursorCatalogSnapshot.value.find((entry) => (
+              normalizeCursorCatalogModelId(entry.id) === normalizedModel
+            ));
+            if (catalogEntry) {
+              catalogHints = {
+                defaultVariantParams: catalogEntry.defaultVariantParams,
+                parameters: catalogEntry.parameters,
+              };
+            }
+          } catch {
+            catalogHints = undefined;
+          }
+        }
+
+        capabilities = getCursorModelCapabilities(model, catalogHints);
         break;
+      }
       case "opencode":
         capabilities = getOpencodeModelCapabilities();
         break;

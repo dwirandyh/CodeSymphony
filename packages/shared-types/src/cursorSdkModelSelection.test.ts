@@ -82,6 +82,14 @@ describe("resolveCursorSdkModelSelection", () => {
     });
   });
 
+  it("omits thinking param when reasoningEffort is none and catalog has no none value", () => {
+    expect(resolveCursorSdkModelSelection({
+      model: "gpt-5.5[reasoning=medium]",
+      modelOptions: [{ id: "reasoningEffort", value: "none" }],
+      catalog,
+    })).toEqual({ id: "gpt-5.5" });
+  });
+
   it("omits unsupported params", () => {
     expect(resolveCursorSdkModelSelection({
       model: "gpt-5.5[fast=true,reasoning=high]",
@@ -90,6 +98,93 @@ describe("resolveCursorSdkModelSelection", () => {
     })).toEqual({
       id: "gpt-5.5",
       params: [{ id: "thinking", value: "high" }],
+    });
+  });
+
+  it("maps reasoningEffort to SDK reasoning param when catalog uses reasoning id (gpt-5.5)", () => {
+    const gptCatalog = [
+      {
+        id: "gpt-5.5",
+        parameters: [
+          {
+            id: "reasoning",
+            values: [
+              { value: "none" },
+              { value: "low" },
+              { value: "medium" },
+              { value: "high" },
+            ],
+          },
+          {
+            id: "fast",
+            values: [{ value: "true" }, { value: "false" }],
+          },
+        ],
+      },
+    ];
+
+    expect(resolveCursorSdkModelSelection({
+      model: "gpt-5.5",
+      modelOptions: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "fastMode", value: false },
+      ],
+      catalog: gptCatalog,
+    })).toEqual({
+      id: "gpt-5.5",
+      params: [
+        { id: "fast", value: "false" },
+        { id: "reasoning", value: "low" },
+      ],
+    });
+  });
+
+  it("maps reasoningEffort none to SDK reasoning=none when catalog supports none", () => {
+    const gptCatalog = [
+      {
+        id: "gpt-5.5",
+        parameters: [
+          {
+            id: "reasoning",
+            values: [
+              { value: "none" },
+              { value: "low" },
+              { value: "medium" },
+              { value: "high" },
+            ],
+          },
+        ],
+      },
+    ];
+
+    expect(resolveCursorSdkModelSelection({
+      model: "gpt-5.5",
+      modelOptions: [{ id: "reasoningEffort", value: "none" }],
+      catalog: gptCatalog,
+    })).toEqual({
+      id: "gpt-5.5",
+      params: [{ id: "reasoning", value: "none" }],
+    });
+  });
+
+  it("maps fastMode toggle to SDK fast param for non-composer models when catalog supports it", () => {
+    const catalogWithFast = [
+      ...catalog,
+      {
+        id: "claude-opus-4-8",
+        parameters: [
+          { id: "fast", values: [{ value: "true" }, { value: "false" }] },
+        ],
+      },
+    ];
+
+    expect(resolveCursorSdkModelSelection({
+      model: "claude-opus-4-8",
+      modelOptions: [{ id: "fastMode", value: true }],
+      catalog: catalogWithFast,
+    })).toEqual({
+      id: "claude-opus-4-8",
+      params: [{ id: "fast", value: "true" }],
     });
   });
 });

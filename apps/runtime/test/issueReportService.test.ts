@@ -140,6 +140,32 @@ describe("issueReportService", () => {
     expect(debugLog).not.toContain("thread-2");
   });
 
+  it("keeps model.selection diagnostic entries in issue reports", async () => {
+    appendRuntimeDebugLog({
+      source: "model.selection",
+      message: "runAssistant.modelOptionsResolved",
+      data: {
+        threadId: "thread-1",
+        worktreeId: "worktree-1",
+        resolvedRunnerModelOptions: [{ id: "reasoningEffort", value: "low" }],
+        sdkModel: { id: "gpt-5.5", params: [{ id: "thinking", value: "low" }] },
+      },
+    });
+
+    const service = createIssueReportService({ prisma: createPrismaMock() });
+    const report = await service.createIssueReport({
+      description: "GPT-5.5 effort wrong on Cursor dashboard",
+      repositoryId: "repo-1",
+      worktreeId: "worktree-1",
+      threadId: "thread-1",
+    });
+
+    const debugLog = await readFile(report.debugLogPath, "utf-8");
+    expect(debugLog).toContain("model.selection");
+    expect(debugLog).toContain("runAssistant.modelOptionsResolved");
+    expect(debugLog).toContain("reasoningEffort");
+  });
+
   it("keeps cursor.sdk diagnostic entries even under noisy tail entries", async () => {
     appendRuntimeDebugLog({
       source: "cursor.sdk.modelResolved",

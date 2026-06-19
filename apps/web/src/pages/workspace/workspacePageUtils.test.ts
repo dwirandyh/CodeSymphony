@@ -207,6 +207,48 @@ describe("shouldShowWorkspaceEmptyState", () => {
     })).toBe(true);
   });
 
+  it("shows landing when all chat tabs are closed even if URL thread is still resolving", () => {
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      hasOpenContentTabs: false,
+      hasOpenChatTabs: false,
+      terminalViewActive: false,
+      messageListEmptyState: "loading-thread",
+    })).toBe(true);
+  });
+
+  it("shows landing when all chat tabs are closed and landing hold is active even if the prior thread is still cached", () => {
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      hasOpenContentTabs: false,
+      hasOpenChatTabs: false,
+      terminalViewActive: false,
+      landingHold: true,
+      messageListEmptyState: null,
+    })).toBe(true);
+  });
+
+  it("shows landing when all chat tabs are closed and session empty state has cleared", () => {
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      hasOpenContentTabs: false,
+      hasOpenChatTabs: false,
+      terminalViewActive: false,
+      messageListEmptyState: null,
+    })).toBe(true);
+  });
+
+  it("does not show landing on hold while content tabs still exist", () => {
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      hasOpenContentTabs: true,
+      hasOpenChatTabs: false,
+      terminalViewActive: false,
+      landingHold: true,
+      messageListEmptyState: null,
+    })).toBe(false);
+  });
+
   it("keeps the workspace landing hidden when other worktree tabs still exist", () => {
     expect(shouldShowWorkspaceEmptyState({
       activeView: "chat",

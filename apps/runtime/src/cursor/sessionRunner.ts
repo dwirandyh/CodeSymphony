@@ -1,5 +1,6 @@
 import {
   DEFAULT_CHAT_MODEL_BY_AGENT,
+  type CursorModelCatalogEntry,
   type SlashCommand,
   resolveCursorSdkModelSelection,
 } from "@codesymphony/shared-types";
@@ -10,6 +11,7 @@ import {
   listCursorSdkModelCatalog,
   listCursorSdkModels,
   listCursorSdkSlashCommands,
+  resolveSdkModelDefaultVariantParams,
 } from "./sdk/catalog.js";
 import { loadCursorSdkMcpServers } from "./sdk/mcpServers.js";
 import { runCursorSdkTurn } from "./sdk/runTurn.js";
@@ -22,7 +24,7 @@ export async function listCursorSlashCommands(params: {
 
 export async function listCursorModels(_params: {
   cwd: string;
-}): Promise<Array<{ id: string; name: string }>> {
+}): Promise<CursorModelCatalogEntry[]> {
   return listCursorSdkModels({ apiKey: resolveCursorApiKey() });
 }
 
@@ -60,6 +62,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     modelOptions,
     catalog,
   });
+  const catalogEntry = catalog.find((entry) => entry.id === sdkModel.id);
 
   appendRuntimeDebugLog({
     source: "cursor.sdk.modelResolved",
@@ -69,6 +72,13 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       modelOptions: modelOptions ?? null,
       sdkModel,
       catalogModelCount: catalog.length,
+      catalogEntryDefaultVariantParams: catalogEntry
+        ? resolveSdkModelDefaultVariantParams(catalogEntry) ?? null
+        : null,
+      catalogEntryParameterIds: catalogEntry?.parameters?.map((p) => p.id) ?? null,
+      catalogReasoningParamValues: catalogEntry?.parameters?.find((p) => (
+        p.id === "thinking" || p.id === "reasoning" || p.id === "effort"
+      ))?.values?.map((v) => v.value) ?? null,
     },
   });
 

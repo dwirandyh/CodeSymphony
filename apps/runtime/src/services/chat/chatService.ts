@@ -16,6 +16,7 @@ import {
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
   SlashCommandCatalogSchema,
+  buildThreadModelOptionsKey,
   hasSameThreadSelection,
   resolveThreadModelOptions,
   UpdateQueuedMessageInputSchema,
@@ -123,6 +124,7 @@ import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../cl
 import { buildCodexCliProviderHint } from "../../codex/config.js";
 import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
 import { listCursorSlashCommands } from "../../cursor/sessionRunner.js";
+import { resolveCursorCatalogHintsForModel } from "../../cursor/resolveCursorCatalogHints.js";
 import { appendRuntimeDebugLog } from "../../routes/debug.js";
 import { getUnavailableWorktreeErrorMessage, isOperationalWorktreeStatus } from "../worktreeService.js";
 
@@ -1794,6 +1796,47 @@ export function createChatService(deps: RuntimeDeps) {
         modelProviderId: selection.modelProviderId,
         providerName: selection.provider?.name ?? null,
       });
+      const parsedThreadModelOptions = thread.modelOptions
+        ? JSON.parse(thread.modelOptions) as ProviderOptionSelection[]
+        : undefined;
+      const parsedThreadModelOptionsPerModel = thread.modelOptionsPerModel
+        ? JSON.parse(thread.modelOptionsPerModel) as Record<string, ProviderOptionSelection[]>
+        : undefined;
+      const cursorCatalogHints = selection.agent === "cursor"
+        ? await resolveCursorCatalogHintsForModel(
+          selection.model ?? DEFAULT_CHAT_MODEL_BY_AGENT.cursor,
+        )
+        : undefined;
+      const resolvedRunnerModelOptions = resolveThreadModelOptions({
+        agent: selection.agent,
+        model: selection.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[selection.agent],
+        modelProviderId: thread.modelProviderId,
+        modelOptions: parsedThreadModelOptions,
+        modelOptionsPerModel: parsedThreadModelOptionsPerModel,
+        cursorCatalogHints,
+      });
+      const modelOptionsKey = buildThreadModelOptionsKey({
+        agent: selection.agent,
+        model: selection.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[selection.agent],
+        modelProviderId: thread.modelProviderId,
+      });
+      appendRuntimeDebugLog({
+        source: "model.selection",
+        message: "runAssistant.modelOptionsResolved",
+        data: {
+          threadId,
+          agent: selection.agent,
+          model: selection.model,
+          modelOptionsKey,
+          threadModelOptionsRaw: parsedThreadModelOptions ?? null,
+          threadModelOptionsPerModelKeys: parsedThreadModelOptionsPerModel
+            ? Object.keys(parsedThreadModelOptionsPerModel)
+            : null,
+          perModelEntryForKey: parsedThreadModelOptionsPerModel?.[modelOptionsKey] ?? null,
+          cursorCatalogHintsPresent: cursorCatalogHints != null,
+          resolvedRunnerModelOptions: resolvedRunnerModelOptions ?? null,
+        },
+      });
       const runner = getRunnerForAgent(deps, selection.agent);
       const currentSessionId = getThreadSessionId(thread, selection.agent);
       const trackedAgentSessionId = `thread:${threadId}:agent:${selection.agent}`;
@@ -2017,17 +2060,7 @@ export function createChatService(deps: RuntimeDeps) {
         permissionProfile: thread.permissionProfile,
         autoAcceptTools,
         model: selection.model,
-        modelOptions: resolveThreadModelOptions({
-          agent: selection.agent,
-          model: selection.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[selection.agent],
-          modelProviderId: thread.modelProviderId,
-          modelOptions: thread.modelOptions
-            ? JSON.parse(thread.modelOptions) as ProviderOptionSelection[]
-            : undefined,
-          modelOptionsPerModel: thread.modelOptionsPerModel
-            ? JSON.parse(thread.modelOptionsPerModel) as Record<string, ProviderOptionSelection[]>
-            : undefined,
-        }),
+        modelOptions: resolvedRunnerModelOptions,
         providerApiKey: toRunnerOptional(selection.provider?.apiKey),
         providerBaseUrl: toRunnerOptional(selection.provider?.baseUrl),
         onProcessSpawned: async (pid) => {

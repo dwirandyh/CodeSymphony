@@ -160,6 +160,10 @@ function isIssueReportPriorityDebugEntry(entry: DebugLogEntry): boolean {
     return true;
   }
 
+  if (entry.source === "model.selection") {
+    return true;
+  }
+
   if (entry.source.startsWith("workspace.ui.")) {
     return true;
   }
