@@ -405,6 +405,33 @@ describe("terminalService", () => {
       expect(pty.resize).toHaveBeenCalledWith(120, 40);
     });
 
+    it("ignores remote viewer resize while an authoritative viewer is connected", () => {
+      service.spawn("s1", "/tmp");
+      const pty = currentMockPty;
+      const unregisterDesktop = service.registerSessionViewer("s1", "authoritative");
+      const unregisterMobile = service.registerSessionViewer("s1", "remote");
+
+      service.resize("s1", 42, 18, { authoritative: false });
+      expect(pty.resize).not.toHaveBeenCalled();
+
+      unregisterMobile();
+      service.resize("s1", 42, 18, { authoritative: false });
+      expect(pty.resize).not.toHaveBeenCalled();
+
+      unregisterDesktop();
+      service.resize("s1", 42, 18, { authoritative: false });
+      expect(pty.resize).toHaveBeenCalledWith(42, 18);
+    });
+
+    it("always applies authoritative resize even when remote viewers are connected", () => {
+      service.spawn("s1", "/tmp");
+      const pty = currentMockPty;
+      service.registerSessionViewer("s1", "remote");
+
+      service.resize("s1", 120, 40, { authoritative: true });
+      expect(pty.resize).toHaveBeenCalledWith(120, 40);
+    });
+
     it("does nothing for non-existent session", () => {
       expect(() => service.resize("nonexistent", 80, 24)).not.toThrow();
     });

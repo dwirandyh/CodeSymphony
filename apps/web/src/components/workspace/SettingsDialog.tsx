@@ -22,6 +22,8 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { upsertRepositoryInCollection } from "../../collections/repositories";
+import { MOBILE_OVERLAY_Z_CLASS } from "../../lib/mobileStacking";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { AgentsSettingsPanel } from "./AgentsSettingsPanel";
 import { Badge } from "../ui/badge";
@@ -784,7 +786,7 @@ export function SettingsDialog({
     if (!repo) return;
 
     const repoChanged = hydratedRepoIdRef.current !== effectiveSelectedRepoId;
-    if (!repoChanged && dirty) {
+    if (!repoChanged && (dirty || hydratedRepoIdRef.current !== null)) {
       return;
     }
 
@@ -960,26 +962,17 @@ export function SettingsDialog({
           ...(branchChanged ? { defaultBranch: defaultBranchValue } : {}),
         });
 
-        queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, (current) => {
-          if (!current) return current;
-          return current.map((repository) =>
-            repository.id === selectedRepoId ? updatedRepository : repository,
-          );
-        });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.all });
+        upsertRepositoryInCollection(queryClient, updatedRepository);
 
         savedScriptsRef.current[selectedRepoId] = {
-          runScriptText: updatedRepository.runScript?.join("\n") ?? "",
-          setupText: updatedRepository.setupScript?.join("\n") ?? "",
-          teardownText: updatedRepository.teardownScript?.join("\n") ?? "",
-          defaultBranchValue: updatedRepository.defaultBranch,
-          saveAutomationEnabled: updatedRepository.saveAutomation?.enabled ?? false,
-          saveAutomationTemplate: inferSaveAutomationTemplate({
-            filePatternsText: updatedRepository.saveAutomation?.filePatterns.join("\n") ?? "",
-            payload: updatedRepository.saveAutomation?.payload ?? "",
-          }),
-          saveAutomationFilePatternsText: updatedRepository.saveAutomation?.filePatterns.join("\n") ?? "",
-          saveAutomationPayload: updatedRepository.saveAutomation?.payload ?? "",
+          runScriptText,
+          setupText,
+          teardownText,
+          defaultBranchValue,
+          saveAutomationEnabled,
+          saveAutomationTemplate,
+          saveAutomationFilePatternsText,
+          saveAutomationPayload,
         };
         hydratedRepoIdRef.current = selectedRepoId;
         setDirty(false);
@@ -1353,7 +1346,7 @@ export function SettingsDialog({
   return (
     <>
       {/* Full-page overlay */}
-      <div className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-background md:flex-row">
+      <div className={cn("fixed inset-0 flex flex-col overflow-hidden bg-background md:flex-row", MOBILE_OVERLAY_Z_CLASS)}>
         <aside
           className={cn(
             "hidden w-[232px] shrink-0 flex-col border-r border-border/30 bg-card/60 px-4 pb-4 md:flex",

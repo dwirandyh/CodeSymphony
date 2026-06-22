@@ -172,4 +172,120 @@ describe("useRepositoryReviews live updates", () => {
     expect(result.dataset.state).toBe("healthy");
     expect(result.dataset.branchCount).toBe("1");
   });
+
+  it("keeps cached review badges when a later live snapshot is unavailable", async () => {
+    queryClient.setQueryData(["repositories", "repo-1", "reviews"], {
+      provider: "github",
+      kind: "pr",
+      available: true,
+      reviewsByBranch: {
+        "feature-x": {
+          number: 12,
+          display: "#12",
+          url: "https://example.test/reviews/12",
+          state: "open",
+        },
+      },
+    } satisfies RepositoryReviewState);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <HookHarness />
+        </QueryClientProvider>,
+      );
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.open();
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.emitReviews({
+        provider: "github",
+        kind: "pr",
+        available: false,
+        unavailableReason: "gh is not installed",
+        reviewsByBranch: {},
+      });
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const result = container.querySelector<HTMLElement>('[data-testid="result"]');
+    if (!result) {
+      throw new Error("Result not found");
+    }
+
+    expect(result.dataset.available).toBe("false");
+    expect(result.dataset.branchCount).toBe("1");
+  });
+
+  it("keeps cached review badges when the REST query result is unavailable", async () => {
+    let resolveQuery: ((value: RepositoryReviewState) => void) | null = null;
+    getRepositoryReviewsMock.mockImplementation(
+      () =>
+        new Promise<RepositoryReviewState>((resolve) => {
+          resolveQuery = resolve;
+        }),
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <HookHarness />
+        </QueryClientProvider>,
+      );
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.open();
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.emitReviews({
+        provider: "github",
+        kind: "pr",
+        available: true,
+        reviewsByBranch: {
+          main: {
+            number: 123,
+            display: "#123",
+            url: "https://example.test/reviews/123",
+            state: "open",
+          },
+        },
+      });
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const result = container.querySelector<HTMLElement>('[data-testid="result"]');
+    if (!result) {
+      throw new Error("Result not found");
+    }
+    expect(result.dataset.branchCount).toBe("1");
+
+    // A REST fetch (initial load or refetch) comes back unavailable. This path
+    // bypasses the live-socket merge, so without protection it wipes the badge.
+    await act(async () => {
+      resolveQuery?.({
+        provider: "github",
+        kind: "pr",
+        available: false,
+        unavailableReason: "Review integration is unavailable",
+        reviewsByBranch: {},
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.dataset.branchCount).toBe("1");
+  });
 });

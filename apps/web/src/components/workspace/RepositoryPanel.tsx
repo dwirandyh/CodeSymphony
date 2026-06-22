@@ -9,7 +9,8 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
+import type { RepositoryReviewState } from "@codesymphony/shared-types";
 import {
   AlertTriangle,
   CalendarCog,
@@ -40,6 +41,7 @@ import { cn } from "../../lib/utils";
 import { isPendingWorktreeStatus, isRootWorktree, isSelectableWorktreeStatus } from "../../lib/worktree";
 import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBranchDiffSummary";
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
+import { queryKeys } from "../../lib/queryKeys";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
 import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
 import { isDesktopShell } from "../../lib/openExternalUrl";
@@ -523,6 +525,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   onDeleteWorktree,
   onRenameWorktreeBranch,
 }: RepositoryPanelProps) {
+  const queryClient = useQueryClient();
   const enableNativeReorderPreview = !isDesktopShell();
   const enableDesktopPointerReorder = isDesktopShell();
   const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(
@@ -651,18 +654,24 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   const reviewsByRepositoryId = useMemo(
     () => {
       const byRepositoryId: Record<string, Record<string, ReviewRef>> = {};
+      const metadataRepositoryIds = new Set(metadataRepositories.map((repository) => repository.id));
 
-      for (const repository of repositories) {
-        byRepositoryId[repository.id] = {};
-      }
+      for (const repository of visibleRepositories) {
+        if (metadataRepositoryIds.has(repository.id)) {
+          const index = metadataRepositories.findIndex((entry) => entry.id === repository.id);
+          byRepositoryId[repository.id] = repositoryReviewQueries[index]?.data?.reviewsByBranch ?? {};
+          continue;
+        }
 
-      for (const [index, repository] of metadataRepositories.entries()) {
-        byRepositoryId[repository.id] = repositoryReviewQueries[index]?.data?.reviewsByBranch ?? {};
+        const cached = queryClient.getQueryData<RepositoryReviewState>(
+          queryKeys.repositories.reviews(repository.id),
+        );
+        byRepositoryId[repository.id] = cached?.reviewsByBranch ?? {};
       }
 
       return byRepositoryId;
     },
-    [metadataRepositories, repositories, repositoryReviewQueries],
+    [metadataRepositories, queryClient, repositoryReviewQueries, visibleRepositories],
   );
   const reviewKindsByRepositoryId = useMemo(
     () => {
@@ -1250,7 +1259,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
         </div>
       ) : null}
 
-      <ScrollArea className="min-h-0 flex-1 overflow-y-auto overflow-x-visible pb-1">
+      <ScrollArea className="min-h-0 flex-1 pb-1">
         {repositories.length === 0 ? (
           <div className="py-3 text-xs text-muted-foreground">
             No repositories added yet.

@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread } from "@codesymphony/shared-types";
+import { MOBILE_OVERLAY_Z_CLASS } from "../../lib/mobileStacking";
 import { ChatPane } from "./ChatPane";
 
 // ChatMessageList + Composer + gate cards are heavy lazy children. Mock them as
@@ -240,6 +241,93 @@ describe("ChatPane", () => {
     expect(container.querySelector("[data-testid='plan-decision-composer']")).not.toBeNull();
   });
 
+  it("reserves scroll space for a pinned mobile composer before the keyboard opens", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ChatPane
+            threadId="thread-x"
+            thread={makeThread("thread-x")}
+            worktreeId="wt-1"
+            repositoryId="repo-1"
+            worktreeOperational
+            worktreePath="/tmp/wt-1"
+            providers={[]}
+            claudeModels={[]}
+            codexModels={[]}
+            cursorModels={[]}
+            opencodeModels={[]}
+            modelCatalogReadyByAgent={{}}
+            runtimeInfo={null}
+            slashCommands={[]}
+            slashCommandsLoading={false}
+            sendMessagesWith="enter"
+            autoConvertLongTextEnabled={false}
+            mobileComposerPinned
+            onSubmitMessage={vi.fn().mockResolvedValue(true)}
+            onSetThreadMode={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadAgentSelection={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadPermissionMode={vi.fn().mockResolvedValue(undefined)}
+            onStopAssistantRun={vi.fn().mockResolvedValue(undefined)}
+            onError={vi.fn()}
+            onOpenReadFile={vi.fn()}
+            onAgentModelSelectorOpen={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    const scrollRegion = container.querySelector<HTMLElement>("[data-chat-scroll-region='true']");
+    expect(scrollRegion?.style.paddingBottom).toBe("var(--cs-mobile-composer-scroll-padding, 7.5rem)");
+    expect(chatMessageListProps.current?.contentScrollPadding).toBeUndefined();
+  });
+
+  it("forwards mobileBottomOffset to the composer for keyboard lift", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ChatPane
+            threadId="thread-x"
+            thread={makeThread("thread-x")}
+            worktreeId="wt-1"
+            repositoryId="repo-1"
+            worktreeOperational
+            worktreePath="/tmp/wt-1"
+            providers={[]}
+            claudeModels={[]}
+            codexModels={[]}
+            cursorModels={[]}
+            opencodeModels={[]}
+            modelCatalogReadyByAgent={{}}
+            runtimeInfo={null}
+            slashCommands={[]}
+            slashCommandsLoading={false}
+            sendMessagesWith="enter"
+            autoConvertLongTextEnabled={false}
+            mobileBottomOffset={280}
+            mobileComposerPinned
+            onSubmitMessage={vi.fn().mockResolvedValue(true)}
+            onSetThreadMode={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadAgentSelection={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadPermissionMode={vi.fn().mockResolvedValue(undefined)}
+            onStopAssistantRun={vi.fn().mockResolvedValue(undefined)}
+            onError={vi.fn()}
+            onOpenReadFile={vi.fn()}
+            onAgentModelSelectorOpen={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(composerProps.current?.mobileBottomOffset).toBe(280);
+
+    const scrollRegion = container.querySelector<HTMLElement>("[data-chat-scroll-region='true']");
+    expect(scrollRegion?.style.paddingBottom).toBe(
+      "calc(var(--cs-mobile-keyboard-offset, 0px) + var(--cs-mobile-composer-scroll-padding, 7.5rem))",
+    );
+    expect(chatMessageListProps.current?.contentScrollPadding).toBeUndefined();
+  });
+
   it("hides the composer while a user gate is pending", () => {
     useThreadPaneSessionMock.mockImplementation(() =>
       makeSession({
@@ -253,6 +341,191 @@ describe("ChatPane", () => {
     renderPane("thread-x");
 
     expect(container.querySelector("[data-testid='composer']")).toBeNull();
+  });
+
+  it("drops mobile composer viewport reserve while a user gate is pending", () => {
+    useThreadPaneSessionMock.mockImplementation(() =>
+      makeSession({
+        gates: {
+          ...makeSession().gates,
+          isWaitingForUserGate: true,
+          pendingPermissionRequests: [
+            {
+              requestId: "req-1",
+              toolName: "Bash",
+              command: "ls",
+              editTarget: null,
+              blockedPath: null,
+              decisionReason: null,
+              canAlwaysAllow: false,
+              alwaysAllowScope: null,
+              alwaysAllowDescription: null,
+            },
+          ],
+        },
+      }),
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ChatPane
+            threadId="thread-x"
+            thread={makeThread("thread-x")}
+            worktreeId="wt-1"
+            repositoryId="repo-1"
+            worktreeOperational
+            worktreePath="/tmp/wt-1"
+            providers={[]}
+            claudeModels={[]}
+            codexModels={[]}
+            cursorModels={[]}
+            opencodeModels={[]}
+            modelCatalogReadyByAgent={{}}
+            runtimeInfo={null}
+            slashCommands={[]}
+            slashCommandsLoading={false}
+            sendMessagesWith="enter"
+            autoConvertLongTextEnabled={false}
+            mobileComposerPinned
+            onSubmitMessage={vi.fn().mockResolvedValue(true)}
+            onSetThreadMode={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadAgentSelection={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadPermissionMode={vi.fn().mockResolvedValue(undefined)}
+            onStopAssistantRun={vi.fn().mockResolvedValue(undefined)}
+            onError={vi.fn()}
+            onOpenReadFile={vi.fn()}
+            onAgentModelSelectorOpen={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    const scrollRegion = container.querySelector<HTMLElement>("[data-chat-scroll-region='true']");
+    expect(scrollRegion?.style.paddingBottom).toBe("");
+  });
+
+  it("renders mobile user gates in a fixed overlay surface above the composer slot", async () => {
+    useThreadPaneSessionMock.mockImplementation(() =>
+      makeSession({
+        gates: {
+          ...makeSession().gates,
+          isWaitingForUserGate: true,
+          pendingPermissionRequests: [
+            {
+              requestId: "req-1",
+              toolName: "Bash",
+              command: "ls",
+              editTarget: null,
+              blockedPath: null,
+              decisionReason: null,
+              canAlwaysAllow: false,
+              alwaysAllowScope: null,
+              alwaysAllowDescription: null,
+            },
+          ],
+        },
+      }),
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ChatPane
+            threadId="thread-x"
+            thread={makeThread("thread-x")}
+            worktreeId="wt-1"
+            repositoryId="repo-1"
+            worktreeOperational
+            worktreePath="/tmp/wt-1"
+            providers={[]}
+            claudeModels={[]}
+            codexModels={[]}
+            cursorModels={[]}
+            opencodeModels={[]}
+            modelCatalogReadyByAgent={{}}
+            runtimeInfo={null}
+            slashCommands={[]}
+            slashCommandsLoading={false}
+            sendMessagesWith="enter"
+            autoConvertLongTextEnabled={false}
+            mobileComposerPinned
+            onSubmitMessage={vi.fn().mockResolvedValue(true)}
+            onSetThreadMode={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadAgentSelection={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadPermissionMode={vi.fn().mockResolvedValue(undefined)}
+            onStopAssistantRun={vi.fn().mockResolvedValue(undefined)}
+            onError={vi.fn()}
+            onOpenReadFile={vi.fn()}
+            onAgentModelSelectorOpen={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const gateSurface = container.querySelector<HTMLElement>("[data-mobile-gate-surface='true']");
+    const permissionGate = container.querySelector("[data-testid='permission-prompts-container']");
+    expect(gateSurface?.className).toContain(MOBILE_OVERLAY_Z_CLASS);
+    expect(gateSurface?.contains(permissionGate)).toBe(true);
+    expect(container.querySelector("[data-chat-scroll-region='true']")?.contains(permissionGate)).toBe(false);
+  });
+
+  it("renders the mobile plan decision gate in the overlay surface instead of the list footer", async () => {
+    useThreadPaneSessionMock.mockImplementation(() =>
+      makeSession({
+        gates: {
+          ...makeSession().gates,
+          showPlanDecisionComposer: true,
+          isWaitingForUserGate: true,
+        },
+      }),
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ChatPane
+            threadId="thread-x"
+            thread={makeThread("thread-x")}
+            worktreeId="wt-1"
+            repositoryId="repo-1"
+            worktreeOperational
+            worktreePath="/tmp/wt-1"
+            providers={[]}
+            claudeModels={[]}
+            codexModels={[]}
+            cursorModels={[]}
+            opencodeModels={[]}
+            modelCatalogReadyByAgent={{}}
+            runtimeInfo={null}
+            slashCommands={[]}
+            slashCommandsLoading={false}
+            sendMessagesWith="enter"
+            autoConvertLongTextEnabled={false}
+            mobileComposerPinned
+            onSubmitMessage={vi.fn().mockResolvedValue(true)}
+            onSetThreadMode={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadAgentSelection={vi.fn().mockResolvedValue(undefined)}
+            onSetThreadPermissionMode={vi.fn().mockResolvedValue(undefined)}
+            onStopAssistantRun={vi.fn().mockResolvedValue(undefined)}
+            onError={vi.fn()}
+            onOpenReadFile={vi.fn()}
+            onAgentModelSelectorOpen={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const gateSurface = container.querySelector("[data-mobile-gate-surface='true']");
+    const planGate = container.querySelector("[data-testid='plan-decision-composer']");
+    expect(gateSurface?.contains(planGate)).toBe(true);
+    expect(chatMessageListProps.current?.footer).toBeNull();
   });
 
   it("renders a permission prompt when the pane's thread has a pending permission", async () => {

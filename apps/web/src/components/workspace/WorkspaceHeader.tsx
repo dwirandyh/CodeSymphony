@@ -98,6 +98,8 @@ type WorkspaceHeaderProps = {
   onReorderTab?: (tabId: string, toIndex: number) => void;
   onTabDragStart?: () => void;
   onTabDragEnd?: () => void;
+  /** Hide + / dropdown new thread|terminal when landing empty (actions live on WorkspaceEmptyState). */
+  hideCreateSessionButton?: boolean;
 };
 
 function FilledPlayIcon({ className }: { className?: string }) {
@@ -171,6 +173,7 @@ export function WorkspaceHeader({
   onTabDragStart,
   onTabDragEnd,
   mergeWithContent = false,
+  hideCreateSessionButton = false,
 }: WorkspaceHeaderProps) {
   const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -548,14 +551,16 @@ export function WorkspaceHeader({
               data-testid="split-tab-strips-trailing-controls"
             >
               <div className="pointer-events-auto flex items-center gap-1">
-                <CreateSessionButton
-                  preferenceScopeKey={worktreePath}
-                  threadDisabled={createThreadDisabled ?? disabled}
-                  terminalDisabled={createTerminalDisabled ?? disabled}
-                  onCreateThread={onCreateThread}
-                  onCreateTerminal={onCreateTerminal ?? onCreateThread}
-                  className="shrink-0"
-                />
+                {!hideCreateSessionButton ? (
+                  <CreateSessionButton
+                    preferenceScopeKey={worktreePath}
+                    threadDisabled={createThreadDisabled ?? disabled}
+                    terminalDisabled={createTerminalDisabled ?? disabled}
+                    onCreateThread={onCreateThread}
+                    onCreateTerminal={onCreateTerminal ?? onCreateThread}
+                    className="shrink-0"
+                  />
+                ) : null}
                 {historyPopover}
               </div>
             </div>
@@ -606,7 +611,7 @@ export function WorkspaceHeader({
           />
         )}
 
-        {!splitTabStrips ? (
+        {!splitTabStrips && !hideCreateSessionButton ? (
           <CreateSessionButton
             preferenceScopeKey={worktreePath}
             threadDisabled={createThreadDisabled ?? disabled}

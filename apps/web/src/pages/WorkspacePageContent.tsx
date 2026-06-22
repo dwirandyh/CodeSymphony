@@ -185,6 +185,7 @@ import {
   measureStartupMetricSinceBoot,
   trackStartupPersistedRead,
 } from "../lib/startupPerf";
+import { MOBILE_OVERLAY_Z_CLASS, shouldLockMobileChatSurface } from "../lib/mobileStacking";
 import { cn } from "../lib/utils";
 import { isOptimisticThreadId } from "../lib/threadIds";
 import {
@@ -318,6 +319,10 @@ import {
 } from "./workspace/workspaceTabSurfaceDiagnostics";
 import {
   computeMobileKeyboardState,
+  resolveMobileComposerBottomPx,
+  resolveMobileComposerLiftInsetPx,
+  resolveMobileKeyboardChromeVisible,
+  shouldClearPeakKeyboardOffset,
   createMobileKeyboardBaseline,
   type MobileKeyboardBaseline,
 } from "./workspace/mobileKeyboard";
@@ -439,6 +444,8 @@ function isMacDesktopShell(): boolean {
 const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository-panel-expanded";
 const LEFT_SIDEBAR_VISIBLE_STORAGE_KEY = "codesymphony:workspace:left-sidebar-visible";
 const MOBILE_KEYBOARD_OFFSET_CSS_VAR = "--cs-mobile-keyboard-offset";
+const MOBILE_KEYBOARD_VISUAL_LEFT_CSS_VAR = "--cs-mobile-keyboard-visual-left";
+const MOBILE_KEYBOARD_VISUAL_WIDTH_CSS_VAR = "--cs-mobile-keyboard-visual-width";
 type MobileInlinePanel = "files" | "git" | "more" | "utilities" | "device";
 type MobilePanelState = "repos" | MobileInlinePanel | null;
 type MobileReposOrigin = {
@@ -3111,8 +3118,8 @@ export function WorkspacePage() {
     const rootElement = document.documentElement;
     const rootStyle = document.documentElement.style;
     let keyboardVisibleRef = false;
-    let allowFocusedFallback = false;
-    let sawMeasuredKeyboard = false;
+    let lastComposerScrollPaddingPx = 0;
+    let peakKeyboardOffsetPx = 0;
     let baseline: MobileKeyboardBaseline = createMobileKeyboardBaseline({
       activeElement: document.activeElement,
       layoutHeight: window.innerHeight,
@@ -3123,7 +3130,11 @@ export function WorkspacePage() {
       visualWidth: viewport?.width ?? window.innerWidth,
     });
 
-    const updateKeyboardState = (reason: "init" | "focusin" | "focusout" | "viewport") => {
+    const updateKeyboardState = (
+      reason: "init" | "focusin" | "focusout" | "viewport",
+      options?: { cssAndState?: boolean },
+    ) => {
+      const applyReactState = options?.cssAndState !== false;
       const nextState = computeMobileKeyboardState({
         baseline,
         snapshot: {
@@ -3138,61 +3149,100 @@ export function WorkspacePage() {
       });
 
       baseline = nextState.baseline;
-      rootStyle.setProperty(MOBILE_KEYBOARD_OFFSET_CSS_VAR, `${nextState.bottomInsetPx}px`);
-
-      if (!nextState.activeIsEditable || reason === "focusout") {
-        allowFocusedFallback = false;
-        sawMeasuredKeyboard = false;
-      } else if (nextState.measuredVisible) {
-        sawMeasuredKeyboard = true;
-        allowFocusedFallback = false;
-      } else if (reason === "focusin") {
-        allowFocusedFallback = !sawMeasuredKeyboard;
-      } else if (sawMeasuredKeyboard) {
-        // The editor may keep focus after the user dismisses the soft keyboard.
-        // Once measured keyboard geometry collapses back to zero, stop relying on focus fallback.
-        allowFocusedFallback = false;
-        sawMeasuredKeyboard = false;
+      if (nextState.offsetPx > peakKeyboardOffsetPx) {
+        peakKeyboardOffsetPx = nextState.offsetPx;
+      }
+      if (shouldClearPeakKeyboardOffset({
+        activeIsEditable: nextState.activeIsEditable,
+        baselineVisualHeight: nextState.baseline.visualHeight,
+        measuredVisible: nextState.measuredVisible,
+        offsetPx: nextState.offsetPx,
+        peakOffsetPx: peakKeyboardOffsetPx,
+        reason,
+        visualHeight: viewport?.height ?? window.innerHeight,
+      })) {
+        peakKeyboardOffsetPx = 0;
       }
 
-      const nextKeyboardVisible = nextState.measuredVisible || (allowFocusedFallback && nextState.activeIsEditable);
-      if (keyboardVisibleRef !== nextKeyboardVisible || nextState.bottomInsetPx > 0) {
+      const visualOffsetTop = viewport?.offsetTop ?? 0;
+      const visualOffsetLeft = viewport?.offsetLeft ?? 0;
+      const layoutHeight = window.innerHeight;
+      const visualHeight = viewport?.height ?? layoutHeight;
+      const visualWidth = viewport?.width ?? window.innerWidth;
+
+      if (!nextState.activeIsEditable || reason === "focusout") {
+        peakKeyboardOffsetPx = 0;
+      }
+
+      const nextKeyboardVisible = resolveMobileKeyboardChromeVisible(nextState, peakKeyboardOffsetPx);
+      const composerScrollPaddingPx = resolveMobileComposerLiftInsetPx(nextState, peakKeyboardOffsetPx);
+      const nextScrollPaddingPx = nextKeyboardVisible ? composerScrollPaddingPx : 0;
+      const composerBottomPx = nextKeyboardVisible
+        ? resolveMobileComposerBottomPx(
+          nextState,
+          peakKeyboardOffsetPx,
+          layoutHeight,
+          visualHeight,
+          visualOffsetTop,
+        )
+        : 0;
+
+      rootStyle.setProperty(MOBILE_KEYBOARD_OFFSET_CSS_VAR, `${composerBottomPx}px`);
+      rootStyle.setProperty("--cs-mobile-keyboard-scroll-padding", `${nextScrollPaddingPx}px`);
+      rootStyle.setProperty(MOBILE_KEYBOARD_VISUAL_LEFT_CSS_VAR, `${visualOffsetLeft}px`);
+      rootStyle.setProperty(MOBILE_KEYBOARD_VISUAL_WIDTH_CSS_VAR, `${visualWidth}px`);
+
+      if (
+        applyReactState
+        && (
+          keyboardVisibleRef !== nextKeyboardVisible
+          || nextScrollPaddingPx !== lastComposerScrollPaddingPx
+        )
+      ) {
         if (keyboardVisibleRef !== nextKeyboardVisible) {
           keyboardVisibleRef = nextKeyboardVisible;
           rootElement.dataset.mobileKeyboardVisible = nextKeyboardVisible ? "true" : "false";
-          setMobileKeyboardOffset(nextKeyboardVisible ? 1 : 0);
         }
+        lastComposerScrollPaddingPx = nextScrollPaddingPx;
+        setMobileKeyboardOffset(nextScrollPaddingPx);
         debugLog("workspace.mobileKeyboard", "state.changed", {
           reason,
           visible: nextKeyboardVisible,
           bottomInsetPx: nextState.bottomInsetPx,
+          composerBottomPx,
+          composerScrollPaddingPx,
           measuredVisible: nextState.measuredVisible,
           activeIsEditable: nextState.activeIsEditable,
           activeTag: document.activeElement instanceof HTMLElement ? document.activeElement.tagName : null,
         });
       }
+
     };
 
-    const handleViewportChange = () => updateKeyboardState("viewport");
+    const handleViewportGeometryChange = () => updateKeyboardState("viewport");
+    const handleViewportPan = () => updateKeyboardState("viewport", { cssAndState: false });
     const handleFocusIn = () => updateKeyboardState("focusin");
     const handleFocusOut = () => updateKeyboardState("focusout");
 
     updateKeyboardState("init");
 
-    viewport?.addEventListener("resize", handleViewportChange, { passive: true });
-    viewport?.addEventListener("scroll", handleViewportChange, { passive: true });
-    virtualKeyboard?.addEventListener("geometrychange", handleViewportChange);
-    window.addEventListener("resize", handleViewportChange, { passive: true });
+    viewport?.addEventListener("resize", handleViewportGeometryChange, { passive: true });
+    viewport?.addEventListener("scroll", handleViewportPan, { passive: true });
+    virtualKeyboard?.addEventListener("geometrychange", handleViewportGeometryChange);
+    window.addEventListener("resize", handleViewportGeometryChange, { passive: true });
     document.addEventListener("focusin", handleFocusIn);
     document.addEventListener("focusout", handleFocusOut);
 
     return () => {
       rootStyle.setProperty(MOBILE_KEYBOARD_OFFSET_CSS_VAR, "0px");
+      rootStyle.setProperty("--cs-mobile-keyboard-scroll-padding", "0px");
       rootElement.dataset.mobileKeyboardVisible = "false";
-      viewport?.removeEventListener("resize", handleViewportChange);
-      viewport?.removeEventListener("scroll", handleViewportChange);
-      virtualKeyboard?.removeEventListener("geometrychange", handleViewportChange);
-      window.removeEventListener("resize", handleViewportChange);
+      viewport?.removeEventListener("resize", handleViewportGeometryChange);
+      viewport?.removeEventListener("scroll", handleViewportPan);
+      virtualKeyboard?.removeEventListener("geometrychange", handleViewportGeometryChange);
+      window.removeEventListener("resize", handleViewportGeometryChange);
+      rootStyle.setProperty(MOBILE_KEYBOARD_VISUAL_LEFT_CSS_VAR, "0px");
+      rootStyle.setProperty(MOBILE_KEYBOARD_VISUAL_WIDTH_CSS_VAR, "100%");
       document.removeEventListener("focusin", handleFocusIn);
       document.removeEventListener("focusout", handleFocusOut);
     };
@@ -4477,10 +4527,17 @@ export function WorkspacePage() {
     const group = editorGroupsRef.current.groups[groupId];
     const activeTab = group.tabs.find((t) => t.id === group.activeTabId);
     if (activeTab?.type === "chat") {
-      setFocusComposerSignalByGroup((signals) => ({
-        ...signals,
-        [groupId]: signals[groupId] + 1,
-      }));
+      const skipComposerRefocusOnMobile =
+        typeof window !== "undefined"
+        && window.matchMedia("(max-width: 1023px)").matches
+        && document.activeElement instanceof HTMLElement
+        && document.activeElement.closest("[data-composer-root] [contenteditable='true']") != null;
+      if (!skipComposerRefocusOnMobile) {
+        setFocusComposerSignalByGroup((signals) => ({
+          ...signals,
+          [groupId]: signals[groupId] + 1,
+        }));
+      }
     } else if (activeTab?.type === "terminal") {
       window.setTimeout(() => {
         const pane = document.querySelector(`[data-editor-quadrant="${groupId}"]`);
@@ -4648,6 +4705,37 @@ export function WorkspacePage() {
     [editorGroups, chat.selectedThreadId],
   );
 
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const root = document.documentElement;
+    const lockMobileChatSurface = shouldLockMobileChatSurface({
+      desktopLayout,
+      activeView,
+      mobileInlinePanel,
+      chatThreadId: unsplitChatPaneThreadId,
+      mobileReposDrawerOpen,
+    });
+
+    if (lockMobileChatSurface) {
+      root.dataset.mobileChatSurface = "true";
+    } else {
+      delete root.dataset.mobileChatSurface;
+    }
+
+    return () => {
+      delete root.dataset.mobileChatSurface;
+    };
+  }, [
+    activeView,
+    desktopLayout,
+    mobileInlinePanel,
+    mobileReposDrawerOpen,
+    unsplitChatPaneThreadId,
+  ]);
+
   const tabSurfaceIssueReportSignatureRef = useRef<string | null>(null);
   useEffect(() => {
     const diagnostic = buildWorkspaceTabSurfaceDiagnostic({
@@ -4723,6 +4811,8 @@ export function WorkspacePage() {
             onOpenReadFile={openReadFile}
             focusSignal={focusSignal}
             onFocusPane={onFocusPane}
+            mobileBottomOffset={mobileKeyboardOffset}
+            mobileComposerPinned={!desktopLayout}
             onAgentModelSelectorOpen={handleOpenAgentModelSelector}
           />
         </Suspense>
@@ -4738,6 +4828,8 @@ export function WorkspacePage() {
       generalSettings.autoConvertLongTextEnabled,
       generalSettings.sendMessagesWith,
       handleOpenAgentModelSelector,
+      desktopLayout,
+      mobileKeyboardOffset,
       modelCatalogReadyByAgent,
       modelProviders,
       opencodeModels,
@@ -4969,7 +5061,8 @@ export function WorkspacePage() {
   return (
     <div
       className={cn(
-        "flex h-full p-1 pb-0 sm:p-2 sm:pb-0 lg:p-0",
+        "flex h-full min-h-0 overflow-hidden p-1 pb-0 sm:p-2 sm:pb-0 lg:p-0",
+        !desktopApp && "h-dvh max-h-dvh",
         !showMacDesktopTitleBar && "safe-top",
       )}
     >
@@ -5189,6 +5282,7 @@ export function WorkspacePage() {
                     onReorderTab={(tabId, toIndex) => handleReorderGroupTab("topLeft", tabId, toIndex)}
                     onTabDragStart={handleEditorTabDragStart}
                     onTabDragEnd={handleEditorTabDragEnd}
+                    hideCreateSessionButton={showWorkspaceEmptyState}
                   />
                 </Suspense>
 
@@ -5645,7 +5739,8 @@ export function WorkspacePage() {
           {/* ── Mobile drawer backdrop ── */}
           <div
             className={cn(
-              "fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity duration-300 lg:hidden",
+              "fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300 lg:hidden",
+              MOBILE_OVERLAY_Z_CLASS,
               mobileReposDrawerOpen ? "opacity-100" : "pointer-events-none opacity-0",
             )}
             onClick={() => {
@@ -5659,7 +5754,8 @@ export function WorkspacePage() {
           {/* ── Mobile repos drawer (slide from left) ── */}
           <aside
             className={cn(
-              "fixed inset-y-0 left-0 z-50 flex w-[85vw] max-w-[320px] flex-col bg-card shadow-2xl drawer-slide safe-top lg:hidden",
+              "fixed inset-y-0 left-0 flex w-[85vw] max-w-[320px] flex-col bg-card shadow-2xl drawer-slide safe-top lg:hidden",
+              MOBILE_OVERLAY_Z_CLASS,
               mobileReposDrawerOpen ? "translate-x-0" : "-translate-x-full",
             )}
             role="dialog"
@@ -5812,6 +5908,7 @@ export function WorkspacePage() {
           <LiveStatusErrorToast
             description={visibleLiveError.description}
             title={visibleLiveError.title}
+            mobileComposerPinned={!desktopLayout}
             onDismiss={() => setDismissedLiveErrorSignature(visibleLiveError.signature)}
           />
         </Suspense>

@@ -39,6 +39,17 @@ interface ListenerOptions {
     replay?: boolean;
 }
 
+type SessionViewerKind = "authoritative" | "remote";
+
+interface SessionViewerCounts {
+    authoritative: number;
+    remote: number;
+}
+
+interface TerminalResizeOptions {
+    authoritative?: boolean;
+}
+
 function buildShellArgs(shell: string | undefined, options?: SpawnOptions): string[] {
     const mode = options?.mode ?? "shell";
     if (mode === "exec") {
@@ -247,6 +258,34 @@ export function buildExecShellArgs(shell: string | undefined, command: string): 
 
 export function createTerminalService(prisma: PrismaClient) {
     const sessions = new Map<string, TerminalSession>();
+    const sessionViewerCounts = new Map<string, SessionViewerCounts>();
+
+    function registerSessionViewer(sessionId: string, kind: SessionViewerKind): () => void {
+        const counts = sessionViewerCounts.get(sessionId) ?? { authoritative: 0, remote: 0 };
+        counts[kind] += 1;
+        sessionViewerCounts.set(sessionId, counts);
+
+        return () => {
+            const current = sessionViewerCounts.get(sessionId);
+            if (!current) {
+                return;
+            }
+
+            current[kind] = Math.max(0, current[kind] - 1);
+            if (current.authoritative === 0 && current.remote === 0) {
+                sessionViewerCounts.delete(sessionId);
+            }
+        };
+    }
+
+    function shouldApplySharedTerminalResize(sessionId: string, authoritative: boolean): boolean {
+        if (authoritative) {
+            return true;
+        }
+
+        const counts = sessionViewerCounts.get(sessionId);
+        return !counts || counts.authoritative === 0;
+    }
 
     function resolveCwdCandidates(cwd?: string): string[] {
         const normalizedCwd = normalizeCwd(cwd);
@@ -503,7 +542,12 @@ export function createTerminalService(prisma: PrismaClient) {
         }
     }
 
-    function resize(sessionId: string, cols: number, rows: number): void {
+    function resize(sessionId: string, cols: number, rows: number, options?: TerminalResizeOptions): void {
+        const authoritative = options?.authoritative !== false;
+        if (!shouldApplySharedTerminalResize(sessionId, authoritative)) {
+            return;
+        }
+
         const session = sessions.get(sessionId);
         if (!session?.active) {
             return;
@@ -740,5 +784,25 @@ export function createTerminalService(prisma: PrismaClient) {
         sessions.clear();
     }
 
-    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, listSessions, getScrollback, getAttachSnapshot, getExitEvent, killAll, createTab, listTabs, renameTab, closeTab };
+    return {
+        spawn,
+        write,
+        resize,
+        registerSessionViewer,
+        shouldApplySharedTerminalResize,
+        addListener,
+        addExitListener,
+        kill,
+        has,
+        listResourceSessions,
+        listSessions,
+        getScrollback,
+        getAttachSnapshot,
+        getExitEvent,
+        killAll,
+        createTab,
+        listTabs,
+        renameTab,
+        closeTab,
+    };
 }

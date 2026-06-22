@@ -56,6 +56,9 @@ const mockSearchAddon = {
 };
 
 const mockTerminal = {
+  options: { fontSize: 13 },
+  element: null as HTMLElement | null,
+  resize: vi.fn(),
   loadAddon: vi.fn(),
   open: vi.fn(),
   onData: vi.fn((handler: (data: string) => void) => {
@@ -400,7 +403,7 @@ describe("TerminalTab", () => {
 
       const sentMessagesAfterOpen = MockWebSocket.instances[0]?.send.mock.calls.map(([message]) => message);
       expect(sentMessagesAfterOpen).toEqual([
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
       ]);
 
       await act(async () => {
@@ -408,11 +411,11 @@ describe("TerminalTab", () => {
       });
 
       expect(MockWebSocket.instances[0]?.send.mock.calls.map(([message]) => message)).toEqual([
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
       ]);
     } finally {
       if (clientWidthDescriptor) {
@@ -477,10 +480,10 @@ describe("TerminalTab", () => {
       // redraw into the freshly-active DOM renderer. The reconnect nudge runs
       // twice (at 120ms and 360ms), so the shrink/restore pair appears twice.
       expect(sendsAfterLoss).toEqual([
-        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
       ]);
     } finally {
       if (clientWidthDescriptor) {
@@ -975,10 +978,10 @@ describe("TerminalTab", () => {
       });
 
       expect(MockWebSocket.instances[0]?.send.mock.calls.map(([message]) => message)).toEqual([
-        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
       ]);
     } finally {
       if (clientWidthDescriptor) {
@@ -1186,10 +1189,10 @@ describe("TerminalTab", () => {
       });
 
       expect(MockWebSocket.instances[0]?.send.mock.calls.map(([message]) => message)).toEqual([
-        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 79, rows: 24 }),
-        JSON.stringify({ type: "resize", cols: 80, rows: 24 }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 79, rows: 24, authoritative: true }),
+        JSON.stringify({ type: "resize", cols: 80, rows: 24, authoritative: true }),
       ]);
     } finally {
       if (clientWidthDescriptor) {

@@ -1,6 +1,7 @@
 import { createRoot, type Root } from "react-dom/client";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MOBILE_OVERLAY_Z_CLASS } from "../../lib/mobileStacking";
 import { SessionSwitcherOverlay } from "./SessionSwitcherOverlay";
 import type { SessionSwitcherItem } from "../../pages/workspace/sessionSwitcherItems";
 
@@ -48,6 +49,14 @@ describe("SessionSwitcherOverlay", () => {
       root.render(<SessionSwitcherOverlay open items={items} selectedIndex={0} />);
     });
     expect(container.textContent).toContain("feature/x");
+  });
+
+  it("stacks above the fixed mobile composer", () => {
+    act(() => {
+      root.render(<SessionSwitcherOverlay open items={items} selectedIndex={0} />);
+    });
+    const overlay = container.querySelector(".fixed.inset-0");
+    expect(overlay?.className).toContain(MOBILE_OVERLAY_Z_CLASS);
   });
 
   it("marks the selected item via aria-selected", () => {

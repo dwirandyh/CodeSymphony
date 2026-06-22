@@ -158,6 +158,12 @@ export type ChatMessageListProps = {
   onOpenReadFile?: (path: string) => void | Promise<void>;
   worktreePath?: string | null;
   footer?: ReactNode;
+  /** Mobile web: timeline scroll stays inside the bounded chat region. */
+  mobileComposerPinned?: boolean;
+  /** Internal scroll padding so the last message clears the portaled composer. */
+  contentScrollPadding?: string;
+  /** Keyboard lift signal used to realign the tail while the mobile keyboard opens. */
+  mobileBottomOffset?: number;
 };
 
 export type ChatWorkingStatus = {

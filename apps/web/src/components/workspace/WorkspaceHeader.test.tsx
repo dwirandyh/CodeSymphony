@@ -124,6 +124,23 @@ describe("WorkspaceHeader", () => {
     expect(tabs.length).toBe(0);
   });
 
+  it("hides create session button when hideCreateSessionButton is true", () => {
+    renderHeader({
+      orderedTabs: [],
+      threads: [],
+      selectedThreadId: null,
+      hideCreateSessionButton: true,
+    });
+
+    expect(container.querySelector('[data-testid="create-session-button"]')).toBeNull();
+  });
+
+  it("shows create session button when hideCreateSessionButton is false", () => {
+    renderHeader({ hideCreateSessionButton: false });
+
+    expect(container.querySelector('[data-testid="create-session-button"]')).not.toBeNull();
+  });
+
   it("does not inject a pending thread tab when orderedTabs is empty but selection is stale", () => {
     renderHeader({
       orderedTabs: [],

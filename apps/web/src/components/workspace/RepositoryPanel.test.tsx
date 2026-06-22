@@ -1358,6 +1358,64 @@ describe("RepositoryPanel", () => {
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
   });
 
+  it("keeps cached review metadata visible when a repository stays expanded via live status outside metadata scope", async () => {
+    getRepositoryReviewsMock.mockResolvedValue({
+      provider: "github",
+      kind: "pr",
+      available: true,
+      reviewsByBranch: {
+        "feature-x": { number: 29, display: "#29", url: "https://example.com/pr/29", state: "open" },
+      },
+    });
+
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-root",
+      enableMetadataQueries: true,
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.textContent).toContain("#29");
+
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r2",
+      selectedWorktreeId: "r2-wt-root",
+      threadSnapshot: makeThreadSnapshot({
+        "r1-wt-root": [],
+        "r1-wt-feat": [
+          makeThread({
+            id: "t-running-r1",
+            worktreeId: "r1-wt-feat",
+            active: true,
+          }),
+        ],
+        "r2-wt-root": [],
+        "r2-wt-feat": [],
+      }),
+      enableMetadataQueries: true,
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.textContent).toContain("#29");
+  });
+
   it("keeps cached review and diff metadata visible while metadata queries are paused", async () => {
     getRepositoryReviewsMock.mockResolvedValue({
       provider: "github",

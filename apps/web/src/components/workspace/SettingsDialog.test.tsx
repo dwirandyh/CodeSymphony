@@ -366,6 +366,19 @@ async function setInputValue(input: HTMLInputElement, value: string) {
   });
 }
 
+async function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+  if (!valueSetter) {
+    throw new Error("Textarea value setter not available");
+  }
+
+  await act(async () => {
+    valueSetter.call(textarea, value);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 function normalizeText(value: string | null | undefined) {
   return value?.replace(/\s+/g, " ").trim() ?? "";
 }
@@ -1150,6 +1163,49 @@ describe("SettingsDialog", () => {
     expect(getRadixSelectTriggerText("Default Branch")).toBe("dev");
   });
 
+  it("keeps saved script field text after autosave when repositories refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      renderDialog([makeRepo()]);
+      await flushEffects();
+      await openWorkspaceTab();
+
+      const runScriptTextarea = document.body.querySelector('textarea[rows="3"]') as HTMLTextAreaElement;
+      const setupTextarea = document.body.querySelector('textarea[rows="5"]') as HTMLTextAreaElement;
+      const teardownTextarea = Array.from(document.body.querySelectorAll('textarea[rows="5"]')).at(-1) as HTMLTextAreaElement;
+
+      await setTextareaValue(runScriptTextarea, "npm run dev\n");
+      await setTextareaValue(setupTextarea, "bun install\n");
+      await setTextareaValue(teardownTextarea, "docker-compose down\n");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        await Promise.resolve();
+      });
+
+      expect(apiMocks.updateRepositoryScripts).toHaveBeenCalledWith("r1", expect.objectContaining({
+        runScript: ["npm run dev"],
+        setupScript: ["bun install"],
+        teardownScript: ["docker-compose down"],
+      }));
+
+      renderDialog([
+        makeRepo({
+          runScript: ["npm run dev"],
+          setupScript: ["bun install"],
+          teardownScript: ["docker-compose down"],
+          updatedAt: "2026-01-02T00:00:00Z",
+        }),
+      ]);
+      await flushEffects();
+
+      expect(runScriptTextarea.value).toBe("npm run dev\n");
+      expect(setupTextarea.value).toBe("bun install\n");
+      expect(teardownTextarea.value).toBe("docker-compose down\n");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("reselects a valid repository when the current one disappears", async () => {
     renderDialog([

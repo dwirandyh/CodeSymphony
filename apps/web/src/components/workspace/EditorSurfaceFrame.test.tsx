@@ -63,4 +63,32 @@ describe("EditorSurfaceFrame", () => {
     const hit = overlay?.querySelector('[data-testid="editor-pane-drop-hit"]') as HTMLElement | null;
     expect(hit?.className).toContain("pointer-events-none");
   });
+
+  it("does not call onFocusPane when pointerdown starts on the composer editor", () => {
+    const onFocusPane = vi.fn();
+    act(() => {
+      root.render(
+        <EditorSurfaceFrame
+          paneGroupId="topLeft"
+          layout="horizontal"
+          groups={emptyGroups}
+          onPaneDrop={vi.fn()}
+          onFocusPane={onFocusPane}
+        >
+          <section data-composer-root="true">
+            <div role="textbox" contentEditable="true" data-testid="composer-editor">
+              type here
+            </div>
+          </section>
+        </EditorSurfaceFrame>,
+      );
+    });
+
+    const editor = container.querySelector("[data-testid='composer-editor']") as HTMLDivElement;
+    act(() => {
+      editor.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+
+    expect(onFocusPane).not.toHaveBeenCalled();
+  });
 });

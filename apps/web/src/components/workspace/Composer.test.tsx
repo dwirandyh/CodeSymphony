@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatQueuedMessage, FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
+import { clearMobileComposerScrollPadding } from "../../lib/mobileComposerMetrics";
+import { MOBILE_COMPOSER_Z_CLASS, MOBILE_OVERLAY_Z_CLASS } from "../../lib/mobileStacking";
 import { Composer } from "./composer";
 import { getPlainTextFromEditor, getSerializedTextFromEditor } from "./composer/composerEditorUtils";
 import { EXPLORER_ENTRY_DRAG_MIME } from "./explorerDrag";
@@ -223,6 +225,7 @@ describe("Composer", () => {
     delete (window as DesktopTestWindow).__CS_ELECTRON__;
     delete (window as DesktopTestWindow).__CS_ELECTRON_BRIDGE__;
     act(() => root.unmount());
+    clearMobileComposerScrollPadding();
     document.body.removeChild(container);
   });
 
@@ -236,8 +239,12 @@ describe("Composer", () => {
     });
   }
 
+  function getComposerRoot(): ParentNode {
+    return document.body.querySelector("[data-composer-root]") ?? container;
+  }
+
   function getEditor(): HTMLDivElement {
-    const el = container.querySelector<HTMLDivElement>('[role="textbox"]');
+    const el = getComposerRoot().querySelector<HTMLDivElement>('[role="textbox"]');
     if (!el) throw new Error("Editor not found");
     return el;
   }
@@ -256,7 +263,7 @@ describe("Composer", () => {
   }
 
   function getModelSelectorButton(): HTMLButtonElement {
-    const modelButton = container.querySelector<HTMLButtonElement>(
+    const modelButton = getComposerRoot().querySelector<HTMLButtonElement>(
       'button[aria-label="Select CLI agent and model"], button[aria-label^="Select "][aria-label$=" model"]',
     );
     if (!modelButton) {
@@ -266,7 +273,7 @@ describe("Composer", () => {
   }
 
   function getPermissionSelectorButton(): HTMLButtonElement {
-    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+    const buttons = Array.from(getComposerRoot().querySelectorAll<HTMLButtonElement>("button"));
     const permissionButton = buttons.find((button) => button.textContent?.trim() === "Default");
     if (!permissionButton) {
       throw new Error("Permission selector button not found");
@@ -275,7 +282,7 @@ describe("Composer", () => {
   }
 
   function getSessionSettingsButton(): HTMLButtonElement {
-    const sessionButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open session settings"]');
+    const sessionButton = getComposerRoot().querySelector<HTMLButtonElement>('button[aria-label="Open session settings"]');
     if (!sessionButton) {
       throw new Error("Session settings button not found");
     }
@@ -416,20 +423,14 @@ describe("Composer", () => {
     expect(document.activeElement).toBe(editor);
   });
 
-  it("focuses the editor on mobile before notifying the pane on editor tap", async () => {
+  it("does not refocus or notify pane when tapping the editor on mobile", async () => {
     setMobileViewport(true);
-    const callOrder: string[] = [];
-    const onFocusPane = vi.fn(() => {
-      callOrder.push("onFocusPane");
-    });
+    const onFocusPane = vi.fn();
     renderComposer({ onFocusPane });
     const editor = getEditor();
     editor.blur();
 
-    const focusSpy = vi.spyOn(editor, "focus").mockImplementation(function (this: HTMLDivElement, ...args) {
-      callOrder.push("focus");
-      return HTMLElement.prototype.focus.apply(this, args);
-    });
+    const focusSpy = vi.spyOn(editor, "focus");
 
     if (typeof globalThis.PointerEvent === "undefined") {
       globalThis.PointerEvent = class extends MouseEvent {
@@ -446,18 +447,86 @@ describe("Composer", () => {
       await new Promise((resolve) => window.requestAnimationFrame(resolve));
     });
 
-    expect(callOrder).toEqual(["focus", "onFocusPane"]);
-    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
-    expect(document.activeElement).toBe(editor);
+    expect(onFocusPane).not.toHaveBeenCalled();
+    expect(focusSpy).not.toHaveBeenCalled();
     focusSpy.mockRestore();
+  });
+
+  it("does not call onFocusPane when tapping the editor on mobile", async () => {
+    setMobileViewport(true);
+    const onFocusPane = vi.fn();
+    renderComposer({ onFocusPane });
+    const editor = getEditor();
+    editor.blur();
+
+    await act(async () => {
+      editor.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, cancelable: true }),
+      );
+    });
+
+    expect(onFocusPane).not.toHaveBeenCalled();
+  });
+
+  it("pins the composer portal on mobile before the keyboard opens", () => {
+    setMobileViewport(true);
+    renderComposer({ mobileBottomOffset: 0 });
+    const section = document.body.querySelector<HTMLElement>("section[data-composer-mobile-portal='true']");
+    expect(section).not.toBeNull();
+    expect(section?.getAttribute("data-composer-mobile-keyboard-offset")).toBe("false");
+    expect(section?.style.bottom).toBe("var(--cs-mobile-composer-rest-offset, 0px)");
+    expect(container.querySelector("section[data-composer-root='true']")).toBeNull();
+  });
+
+  it("publishes the measured mobile composer height for the chat viewport inset", () => {
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    class MockResizeObserver implements ResizeObserver {
+      constructor(private callback: ResizeObserverCallback) {}
+
+      observe(element: Element) {
+        Object.defineProperty(element, "offsetHeight", {
+          configurable: true,
+          value: 136,
+        });
+        this.callback([], this);
+      }
+
+      unobserve() {}
+
+      disconnect() {}
+    }
+
+    globalThis.ResizeObserver = MockResizeObserver;
+
+    try {
+      setMobileViewport(true);
+      renderComposer({ mobileBottomOffset: 0 });
+      expect(
+        document.documentElement.style.getPropertyValue("--cs-mobile-composer-scroll-padding"),
+      ).toBe("136px");
+    } finally {
+      globalThis.ResizeObserver = OriginalResizeObserver;
+    }
+  });
+
+  it("keeps the same editor node when the mobile keyboard offset activates", () => {
+    setMobileViewport(true);
+    renderComposer({ mobileBottomOffset: 0 });
+    const editor = getEditor();
+
+    renderComposer({ mobileBottomOffset: 280 });
+
+    expect(getEditor()).toBe(editor);
   });
 
   it("lifts the composer above the mobile keyboard offset", () => {
     setMobileViewport(true);
     renderComposer({ mobileBottomOffset: 1 });
-    const section = container.querySelector("section");
+    const section = document.body.querySelector<HTMLElement>("section[data-composer-mobile-portal='true']")
+      ?? container.querySelector("section");
     expect(section?.getAttribute("data-composer-mobile-keyboard-offset")).toBe("true");
-    expect(section?.style.marginBottom).toBe("var(--cs-mobile-keyboard-offset, 0px)");
+    expect(section?.getAttribute("data-composer-mobile-portal")).toBe("true");
+    expect(section?.style.bottom).toBe("var(--cs-mobile-keyboard-offset, 0px)");
     expect(section?.className).not.toContain("safe-bottom");
   });
 
@@ -1576,6 +1645,24 @@ describe("Composer", () => {
 
     expect(container.textContent).toContain("Always allow approval-gated actions");
     expect(container.textContent).not.toContain("Ask before approval-gated actions");
+  });
+
+  it("stacks the mobile session sheet above the fixed composer", () => {
+    setMobileViewport(true);
+    renderComposer({ mobileBottomOffset: 0 });
+
+    const sessionButton = getSessionSettingsButton();
+    act(() => {
+      sessionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const composer = document.body.querySelector<HTMLElement>("[data-composer-root]");
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    const overlay = document.body.querySelector<HTMLElement>("[data-radix-dialog-overlay], .fixed.inset-0");
+
+    expect(composer?.className).toContain(MOBILE_COMPOSER_Z_CLASS);
+    expect(dialog?.className).toContain(MOBILE_OVERLAY_Z_CLASS);
+    expect(overlay?.className).toContain(MOBILE_OVERLAY_Z_CLASS);
   });
 
   it("shows inline permission descriptions on mobile", () => {

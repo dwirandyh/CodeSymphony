@@ -24,6 +24,69 @@ const listTerminalTabsQuerySchema = z.object({
     worktreeId: z.string().min(1).optional(),
 });
 
+type TerminalSocket = {
+    send: (data: string) => void;
+    readyState: number;
+};
+
+const terminalSessionSockets = new Map<string, Set<TerminalSocket>>();
+
+function registerTerminalSessionSocket(sessionId: string, socket: TerminalSocket): () => void {
+    let sockets = terminalSessionSockets.get(sessionId);
+    if (!sockets) {
+        sockets = new Set();
+        terminalSessionSockets.set(sessionId, sockets);
+    }
+
+    sockets.add(socket);
+    return () => {
+        const currentSockets = terminalSessionSockets.get(sessionId);
+        if (!currentSockets) {
+            return;
+        }
+
+        currentSockets.delete(socket);
+        if (currentSockets.size === 0) {
+            terminalSessionSockets.delete(sessionId);
+        }
+    };
+}
+
+function broadcastTerminalGeometry(
+    sessionId: string,
+    cols: number,
+    rows: number,
+    excludeSocket?: TerminalSocket,
+): void {
+    const sockets = terminalSessionSockets.get(sessionId);
+    if (!sockets) {
+        return;
+    }
+
+    const payload = JSON.stringify({
+        kind: "cs-terminal-event",
+        type: "geometry",
+        cols,
+        rows,
+    });
+
+    for (const sessionSocket of sockets) {
+        if (sessionSocket === excludeSocket || sessionSocket.readyState !== 1) {
+            continue;
+        }
+
+        try {
+            sessionSocket.send(payload);
+        } catch {
+            // ignore send errors
+        }
+    }
+}
+
+export function resetTerminalSessionSocketsForTests(): void {
+    terminalSessionSockets.clear();
+}
+
 export function handleTerminalWebSocket(
     app: FastifyInstance,
     socket: {
@@ -37,6 +100,12 @@ export function handleTerminalWebSocket(
     const query = request.query as Record<string, string>;
     const sessionId = query.sessionId || "default";
     const cwd = query.cwd || undefined;
+    const viewport = query.viewport === "remote" ? "remote" as const : "authoritative" as const;
+    const unregisterSessionViewer = app.terminalService.registerSessionViewer(
+        sessionId,
+        viewport,
+    );
+    const unregisterSessionSocket = registerTerminalSessionSocket(sessionId, socket);
 
     let session;
     try {
@@ -185,7 +254,11 @@ export function handleTerminalWebSocket(
             if (parsed.type === "resize") {
                 const cols = Number(parsed.cols) || 80;
                 const rows = Number(parsed.rows) || 24;
-                app.terminalService.resize(sessionId, cols, rows);
+                const authoritative = viewport === "authoritative" && parsed.authoritative !== false;
+                app.terminalService.resize(sessionId, cols, rows, { authoritative });
+                if (authoritative) {
+                    broadcastTerminalGeometry(sessionId, cols, rows, socket);
+                }
                 return sendInitialPayload();
             }
         } catch {
@@ -219,12 +292,16 @@ export function handleTerminalWebSocket(
     });
 
     socket.on("close", () => {
+        unregisterSessionSocket();
+        unregisterSessionViewer();
         removeListener();
         removeExitListener();
         app.logService.log("info", "terminal", `Terminal session disconnected: ${sessionId}`, { sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
     });
 
     socket.on("error", (error: Error) => {
+        unregisterSessionSocket();
+        unregisterSessionViewer();
         app.logService.log("error", "terminal", `Terminal WebSocket error: ${error.message}`, { sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
         removeListener();
         removeExitListener();

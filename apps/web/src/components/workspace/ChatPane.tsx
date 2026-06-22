@@ -15,6 +15,14 @@ import type {
   UpdateChatThreadAgentSelectionInput,
 } from "@codesymphony/shared-types";
 import { useThreadThinkingActive } from "../../collections/threadStreamState";
+import {
+  MOBILE_OVERLAY_Z_CLASS,
+  resolveMobileChatContentScrollPadding,
+  resolveMobileChatScrollRegionClass,
+  resolveMobileGateSurfaceStyle,
+  resolveMobileChatViewportInset,
+} from "../../lib/mobileStacking";
+import { cn } from "../../lib/utils";
 import { useThreadPaneSession } from "../../pages/workspace/hooks/chat-session/useThreadPaneSession";
 import { useGateRequestNavigation } from "../../pages/workspace/hooks/useGateRequestNavigation";
 import {
@@ -62,6 +70,8 @@ export interface ChatPaneProps {
   focusSignal?: number;
   onFocusPane?: () => void;
   mobileBottomOffset?: number;
+  /** Mobile web: composer is fixed above the action bar before the keyboard opens. */
+  mobileComposerPinned?: boolean;
   // Cross-cutting thread-list mutations live in the parent useChatSession; each
   // is thread-explicit so a pane always targets its OWN thread.
   onSubmitMessage: (
@@ -113,6 +123,7 @@ export function ChatPane({
   focusSignal,
   onFocusPane,
   mobileBottomOffset = 0,
+  mobileComposerPinned = false,
   onSubmitMessage,
   onSetThreadMode,
   onSetThreadAgentSelection,
@@ -179,52 +190,21 @@ export function ChatPane({
   });
 
   const composerWorktreePath = worktreeOperational ? worktreePath : null;
+  const mobileChatViewportInset = resolveMobileChatViewportInset({
+    mobileComposerPinned,
+    mobileBottomOffset,
+    isWaitingForUserGate: gates.isWaitingForUserGate,
+  });
+  const mobileGateSurfaceStyle = resolveMobileGateSurfaceStyle(mobileBottomOffset);
+  const mobileChatContentScrollPadding = resolveMobileChatContentScrollPadding({
+    mobileComposerPinned,
+  });
 
-  return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-      <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="min-h-0 min-w-0 flex-1">
-          <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
-            <ChatMessageList
-              threadId={threadId}
-              items={session.timelineItems}
-              emptyState={session.messageListEmptyState}
-              showThinkingPlaceholder={showThinkingPlaceholder}
-              workingStatus={workingStatus}
-              onOpenReadFile={onOpenReadFile}
-              worktreePath={composerWorktreePath}
-              footer={gates.showPlanDecisionComposer ? (
-                <Suspense fallback={null}>
-                  <PlanDecisionComposer
-                    busy={gates.planActionBusy}
-                    currentSelection={{
-                      agent: session.composerAgent,
-                      model: session.composerModel,
-                      modelProviderId: session.composerModelProviderId,
-                    }}
-                    threadKind={session.threadKind}
-                    hasMessages={session.messages.length > 0}
-                    providers={providers}
-                    claudeModels={claudeModels}
-                    codexModels={codexModels ?? []}
-                    cursorModels={cursorModels ?? []}
-                    opencodeModels={opencodeModels}
-                    modelCatalogReadyByAgent={modelCatalogReadyByAgent}
-                    runtimeInfo={runtimeInfo ?? null}
-                    onAgentModelSelectorOpen={onAgentModelSelectorOpen}
-                    onApprove={(selection) => void gates.handleApprovePlan(selection)}
-                    onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
-                    onDismiss={() => void gates.handleDismissPlan()}
-                  />
-                </Suspense>
-              ) : null}
-            />
-          </Suspense>
-        </div>
-      </section>
-
-      {showPermissionGate ? (
-        <section className="mx-auto w-full max-w-3xl px-3" data-testid="permission-prompts-container">
+  const permissionGateSection = showPermissionGate ? (
+        <section
+          className="mx-auto w-full max-w-3xl px-3"
+          data-testid="permission-prompts-container"
+        >
           <div className="space-y-2">
             {hasMultiplePendingPermissions ? (
               activePermissionRequest ? (
@@ -276,10 +256,13 @@ export function ChatPane({
             )}
           </div>
         </section>
-      ) : null}
+  ) : null;
 
-      {showQuestionGate ? (
-        <section className="mx-auto w-full max-w-3xl px-3" data-testid="question-prompts-container">
+  const questionGateSection = showQuestionGate ? (
+        <section
+          className="mx-auto w-full max-w-3xl px-3"
+          data-testid="question-prompts-container"
+        >
           <div className="space-y-2">
             {activeQuestionRequest ? (
               <Suspense fallback={null} key={activeQuestionRequest.requestId}>
@@ -304,11 +287,39 @@ export function ChatPane({
             ) : null}
           </div>
         </section>
-      ) : null}
+  ) : null;
 
-      {!gates.showPlanDecisionComposer && gates.isWaitingForUserGate ? <div className="pb-2 pt-1" /> : null}
+  const planDecisionGateSection = gates.showPlanDecisionComposer ? (
+        <Suspense fallback={null}>
+          <PlanDecisionComposer
+            busy={gates.planActionBusy}
+            currentSelection={{
+              agent: session.composerAgent,
+              model: session.composerModel,
+              modelProviderId: session.composerModelProviderId,
+            }}
+            threadKind={session.threadKind}
+            hasMessages={session.messages.length > 0}
+            providers={providers}
+            claudeModels={claudeModels}
+            codexModels={codexModels ?? []}
+            cursorModels={cursorModels ?? []}
+            opencodeModels={opencodeModels}
+            modelCatalogReadyByAgent={modelCatalogReadyByAgent}
+            runtimeInfo={runtimeInfo ?? null}
+            onAgentModelSelectorOpen={onAgentModelSelectorOpen}
+            onApprove={(selection) => void gates.handleApprovePlan(selection)}
+            onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
+            onDismiss={() => void gates.handleDismissPlan()}
+          />
+        </Suspense>
+  ) : null;
 
-      {!gates.isWaitingForUserGate ? (
+  const gateSpacer = !gates.showPlanDecisionComposer && gates.isWaitingForUserGate
+    ? <div className="pb-2 pt-1" />
+    : null;
+
+  const composerSection = !gates.isWaitingForUserGate ? (
         <Suspense fallback={<div className="px-3 pb-3 pt-2 text-xs text-muted-foreground">Loading composer...</div>}>
           <Composer
             attachedTop={false}
@@ -357,7 +368,59 @@ export function ChatPane({
             onCancelQueuedMessageDispatch={(queueMessageId) => void session.cancelQueuedDraftDispatch(queueMessageId)}
           />
         </Suspense>
-      ) : null}
+  ) : null;
+
+  const inlineGateSections = (
+    <>
+      {permissionGateSection}
+      {questionGateSection}
+      {gateSpacer}
+    </>
+  );
+
+  const mobileGateSurface = mobileComposerPinned && gates.isWaitingForUserGate ? (
+        <div
+          className={cn(
+            "fixed left-0 right-0 bg-background px-1.5 pb-1 pt-0.5 shadow-[0_-10px_30px_rgba(0,0,0,0.18)] sm:px-2.5",
+            MOBILE_OVERLAY_Z_CLASS,
+          )}
+          style={mobileGateSurfaceStyle}
+          data-mobile-gate-surface="true"
+        >
+          {inlineGateSections}
+          {planDecisionGateSection}
+        </div>
+  ) : null;
+
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div
+          className={cn(resolveMobileChatScrollRegionClass(mobileComposerPinned))}
+          style={mobileChatViewportInset != null ? { paddingBottom: mobileChatViewportInset } : undefined}
+          data-chat-scroll-region={mobileComposerPinned ? "true" : undefined}
+        >
+          <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading conversation...</div>}>
+            <ChatMessageList
+              threadId={threadId}
+              items={session.timelineItems}
+              emptyState={session.messageListEmptyState}
+              showThinkingPlaceholder={showThinkingPlaceholder}
+              workingStatus={workingStatus}
+              onOpenReadFile={onOpenReadFile}
+              worktreePath={composerWorktreePath}
+              mobileComposerPinned={mobileComposerPinned}
+              mobileBottomOffset={mobileBottomOffset}
+              contentScrollPadding={mobileChatContentScrollPadding}
+              footer={!mobileComposerPinned ? planDecisionGateSection : null}
+            />
+          </Suspense>
+        </div>
+      </section>
+
+      {!mobileComposerPinned ? inlineGateSections : null}
+      {mobileGateSurface}
+      {composerSection}
     </div>
   );
 }

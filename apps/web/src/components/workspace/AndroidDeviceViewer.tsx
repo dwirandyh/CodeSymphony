@@ -5,6 +5,7 @@ import { api } from "../../lib/api";
 import { writeTextToBrowserClipboard } from "../../lib/browserClipboard";
 import { debugLog } from "../../lib/debugLog";
 import { createDeviceStreamMetrics } from "../../lib/deviceStreamMetrics";
+import { MOBILE_ELEVATED_Z_CLASS } from "../../lib/mobileStacking";
 import { cn } from "../../lib/utils";
 import { getMobileDeviceViewerControlsFlag, supportsAndroidNativeViewer } from "./deviceViewerEnvironment";
 import {
@@ -1672,7 +1673,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
       data-device-viewer="android-native"
       className={cn(
         "relative flex h-full min-h-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(96,165,250,0.16),_transparent_48%),linear-gradient(180deg,_rgba(9,9,11,0.96),_rgba(2,6,23,0.98))]",
-        viewerExpanded && "fixed inset-0 z-[90]",
+        viewerExpanded && cn("fixed inset-0", MOBILE_ELEVATED_Z_CLASS),
       )}
     >
       {canUseKeyboardBridge ? (

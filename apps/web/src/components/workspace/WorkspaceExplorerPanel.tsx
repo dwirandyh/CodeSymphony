@@ -30,6 +30,7 @@ import {
   type MaterialIconThemeManifest,
 } from "../../lib/materialIconTheme";
 import { queryKeys } from "../../lib/queryKeys";
+import { MOBILE_CONTEXT_Z_CLASS } from "../../lib/mobileStacking";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -553,7 +554,7 @@ function ExplorerContextMenu({
 
   return (
     <div
-      className="fixed z-[80] w-48 overflow-hidden rounded-md border border-border bg-popover py-1 shadow-xl"
+      className={cn("fixed w-48 overflow-hidden rounded-md border border-border bg-popover py-1 shadow-xl", MOBILE_CONTEXT_Z_CLASS)}
       style={{ left: menu.x, top: menu.y }}
       onMouseDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}

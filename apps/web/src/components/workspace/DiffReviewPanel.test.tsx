@@ -429,7 +429,7 @@ describe("DiffReviewPanel", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
 
-    const scrollArea = container.querySelector(".overflow-auto") as HTMLDivElement | null;
+    const scrollArea = container.querySelector("[data-radix-scroll-area-viewport]") as HTMLDivElement | null;
     const fileHeader = Array.from(container.querySelectorAll("button"))
       .find((button) => button.getAttribute("title") === "src/anchored.ts");
 

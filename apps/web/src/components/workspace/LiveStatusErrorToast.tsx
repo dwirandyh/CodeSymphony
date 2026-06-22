@@ -1,17 +1,29 @@
 import { AlertTriangle, X } from "lucide-react";
+import { MOBILE_OVERLAY_Z_CLASS } from "../../lib/mobileStacking";
+import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
 export function LiveStatusErrorToast({
   title,
   description,
+  mobileComposerPinned = false,
   onDismiss,
 }: {
   title: string;
   description: string;
+  mobileComposerPinned?: boolean;
   onDismiss: () => void;
 }) {
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-3 z-50 flex justify-end px-3 sm:inset-x-auto sm:right-4 sm:px-0">
+    <div
+      className={cn(
+        "pointer-events-none fixed inset-x-0 flex justify-end px-3 sm:inset-x-auto sm:right-4 sm:px-0",
+        MOBILE_OVERLAY_Z_CLASS,
+        mobileComposerPinned
+          ? "bottom-[calc(0.75rem+var(--cs-mobile-composer-rest-offset,4rem))]"
+          : "bottom-3",
+      )}
+    >
       <section
         aria-live="polite"
         className="pointer-events-auto w-full max-w-sm rounded-2xl border border-destructive/30 bg-background/95 p-4 shadow-2xl backdrop-blur sm:w-[22rem]"

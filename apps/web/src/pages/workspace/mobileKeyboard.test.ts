@@ -3,6 +3,11 @@ import {
   computeMobileKeyboardState,
   createMobileKeyboardBaseline,
   isEditableElement,
+  resolveMobileComposerBottomPx,
+  resolveMobileComposerLiftInsetPx,
+  resolveMobileKeyboardChromeVisible,
+  shouldAllowMobileKeyboardFocusFallback,
+  shouldClearPeakKeyboardOffset,
   type MobileKeyboardSnapshot,
 } from "./mobileKeyboard";
 
@@ -125,5 +130,99 @@ describe("mobileKeyboard", () => {
     expect(state.bottomInsetPx).toBe(0);
     expect(state.measuredVisible).toBe(false);
     expect(state.offsetPx).toBe(0);
+  });
+});
+
+describe("resolveMobileKeyboardChromeVisible", () => {
+  it("stays hidden when editable is not focused even if offset is reported", () => {
+    expect(resolveMobileKeyboardChromeVisible({ activeIsEditable: false, measuredVisible: true, offsetPx: 262 }, 0)).toBe(false);
+  });
+
+  it("stays hidden on small inset jitter before full keyboard opens", () => {
+    expect(resolveMobileKeyboardChromeVisible({ activeIsEditable: true, measuredVisible: false, offsetPx: 104 }, 0)).toBe(false);
+  });
+
+  it("shows when measured keyboard is open and editor is focused", () => {
+    expect(resolveMobileKeyboardChromeVisible({ activeIsEditable: true, measuredVisible: true, offsetPx: 262 }, 0)).toBe(true);
+  });
+});
+
+describe("shouldAllowMobileKeyboardFocusFallback", () => {
+  it("does not enable fallback on focusin before keyboard geometry is reported", () => {
+    expect(shouldAllowMobileKeyboardFocusFallback({ sawMeasuredKeyboard: false, offsetPx: 0 })).toBe(false);
+    expect(shouldAllowMobileKeyboardFocusFallback({ sawMeasuredKeyboard: false, offsetPx: 120 })).toBe(true);
+  });
+});
+
+describe("resolveMobileComposerBottomPx", () => {
+  it("places composer at visual viewport bottom when keyboard is open (iOS layout vs visual)", () => {
+    expect(resolveMobileComposerBottomPx({
+      activeIsEditable: true,
+      measuredVisible: true,
+      offsetPx: 262,
+    }, 262, 696, 386, 0)).toBe(310);
+  });
+
+  it("tracks visual viewport bottom while user scrolls the obscured page", () => {
+    expect(resolveMobileComposerBottomPx({
+      activeIsEditable: true,
+      measuredVisible: true,
+      offsetPx: 262,
+    }, 262, 696, 386, 226)).toBe(84);
+  });
+});
+
+describe("resolveMobileComposerLiftInsetPx", () => {
+  it("uses measured keyboard height when bottom inset is zero during viewport pan", () => {
+    expect(resolveMobileComposerLiftInsetPx({
+      activeIsEditable: true,
+      bottomInsetPx: 0,
+      measuredVisible: true,
+      offsetPx: 280,
+    })).toBe(280);
+  });
+
+  it("returns zero when keyboard is not measured open", () => {
+    expect(resolveMobileComposerLiftInsetPx({
+      activeIsEditable: true,
+      bottomInsetPx: 0,
+      measuredVisible: false,
+      offsetPx: 0,
+    })).toBe(0);
+  });
+
+  it("uses peak offset when live geometry briefly reports zero during viewport pan", () => {
+    expect(resolveMobileComposerLiftInsetPx({
+      activeIsEditable: true,
+      bottomInsetPx: 0,
+      measuredVisible: false,
+      offsetPx: 0,
+    }, 280)).toBe(280);
+  });
+});
+
+describe("shouldClearPeakKeyboardOffset", () => {
+  it("keeps peak while editable stays focused during transient zero-offset viewport events", () => {
+    expect(shouldClearPeakKeyboardOffset({
+      activeIsEditable: true,
+      baselineVisualHeight: 900,
+      measuredVisible: false,
+      offsetPx: 0,
+      peakOffsetPx: 280,
+      reason: "viewport",
+      visualHeight: 620,
+    })).toBe(false);
+  });
+
+  it("clears peak after keyboard collapses and visual viewport recovers", () => {
+    expect(shouldClearPeakKeyboardOffset({
+      activeIsEditable: true,
+      baselineVisualHeight: 900,
+      measuredVisible: false,
+      offsetPx: 0,
+      peakOffsetPx: 280,
+      reason: "viewport",
+      visualHeight: 895,
+    })).toBe(true);
   });
 });

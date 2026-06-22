@@ -1,5 +1,6 @@
 import { FileCode2, GitPullRequest, MessageSquare, TerminalSquare } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { MOBILE_OVERLAY_Z_CLASS } from "../../lib/mobileStacking";
 import { cn } from "../../lib/utils";
 import type { SessionSwitcherItem, SessionSwitcherItemKind } from "../../pages/workspace/sessionSwitcherItems";
 
@@ -24,7 +25,7 @@ export function SessionSwitcherOverlay({
   }
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-start justify-center px-4 pt-[14vh]">
+    <div className={cn("fixed inset-0 flex items-start justify-center px-4 pt-[14vh]", MOBILE_OVERLAY_Z_CLASS)}>
       <div
         className="w-full max-w-[720px] overflow-hidden rounded-xl border border-border/70 bg-popover/95 shadow-2xl backdrop-blur-[2px]"
         role="listbox"

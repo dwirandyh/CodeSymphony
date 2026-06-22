@@ -5,6 +5,20 @@ import type { PaneSplitDropTarget } from "../../pages/workspace/editorPaneSplitD
 import { cn } from "../../lib/utils";
 import { EditorPaneDropOverlay } from "./EditorPaneDropOverlay";
 
+function shouldSkipPaneFocusOnPointerTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const composerRoot = target.closest("[data-composer-root]");
+  if (!composerRoot) {
+    return false;
+  }
+
+  const editable = target.closest("[contenteditable='true']");
+  return editable instanceof HTMLElement && composerRoot.contains(editable);
+}
+
 export type EditorSurfaceFrameProps = {
   paneGroupId: EditorQuadrantId;
   layout: EditorLayoutMode;
@@ -33,7 +47,12 @@ export function EditorSurfaceFrame({
     <div
       className={cn("relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden", className)}
       data-testid={`editor-surface-frame-${paneGroupId}`}
-      onMouseDown={onFocusPane}
+      onMouseDown={(event) => {
+        if (shouldSkipPaneFocusOnPointerTarget(event.target)) {
+          return;
+        }
+        onFocusPane?.();
+      }}
     >
       {children}
       <EditorPaneDropOverlay

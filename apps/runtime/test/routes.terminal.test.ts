@@ -2,7 +2,11 @@ import Fastify, { type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getRuntimeDebugEntries, resetRuntimeDebugLog } from "../src/routes/debug";
-import { handleTerminalWebSocket, registerTerminalRoutes } from "../src/routes/terminal";
+import {
+  handleTerminalWebSocket,
+  registerTerminalRoutes,
+  resetTerminalSessionSocketsForTests,
+} from "../src/routes/terminal";
 
 let app: FastifyInstance;
 
@@ -23,6 +27,7 @@ const mockTerminalService = {
   write: vi.fn(),
   has: vi.fn(),
   resize: vi.fn(),
+  registerSessionViewer: vi.fn(() => vi.fn()),
   kill: vi.fn(),
   listSessions: vi.fn(),
   getScrollback: vi.fn(),
@@ -63,6 +68,7 @@ beforeAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   resetRuntimeDebugLog();
+  resetTerminalSessionSocketsForTests();
   mockTerminalService.spawn.mockReturnValue({ resolvedCwd: "/tmp" });
   mockTerminalService.listSessions.mockReturnValue([]);
   mockTerminalService.getScrollback.mockReturnValue("");
@@ -487,7 +493,8 @@ describe("terminal routes", () => {
         rows: 32,
       })));
 
-      expect(mockTerminalService.resize).toHaveBeenCalledWith("wt1:script-runner:1", 120, 32);
+      expect(mockTerminalService.resize).toHaveBeenCalledWith("wt1:script-runner:1", 120, 32, { authoritative: true });
+      expect(mockTerminalService.registerSessionViewer).toHaveBeenCalledWith("wt1:script-runner:1", "authoritative");
       expect(mockTerminalService.getAttachSnapshot).toHaveBeenCalledWith("wt1:script-runner:1");
 
       const attachFrame = JSON.parse((socket.send.mock.calls[0]?.[0]) as string);
@@ -513,6 +520,80 @@ describe("terminal routes", () => {
       })));
 
       expect(socket.send).toHaveBeenCalledTimes(2);
+    });
+
+    it("marks remote mobile viewers as non-authoritative resize clients", async () => {
+      let messageHandler: ((raw: Buffer | ArrayBuffer | Buffer[]) => void) | null = null;
+      mockTerminalService.getAttachSnapshot.mockResolvedValue(emptySnapshot());
+      mockTerminalService.getExitEvent.mockReturnValue(null);
+
+      const socket = {
+        close: vi.fn(),
+        on: vi.fn((event: string, listener: (...args: any[]) => void) => {
+          if (event === "message") {
+            messageHandler = listener as (raw: Buffer | ArrayBuffer | Buffer[]) => void;
+          }
+        }),
+        send: vi.fn(),
+        readyState: 1,
+      };
+
+      handleTerminalWebSocket(app, socket, {
+        query: { sessionId: "wt1:terminal:1", cwd: "/tmp/wt1", viewport: "remote" },
+      });
+
+      await messageHandler?.(Buffer.from(JSON.stringify({
+        type: "resize",
+        cols: 42,
+        rows: 18,
+        authoritative: false,
+      })));
+
+      expect(mockTerminalService.registerSessionViewer).toHaveBeenCalledWith("wt1:terminal:1", "remote");
+      expect(mockTerminalService.resize).toHaveBeenCalledWith("wt1:terminal:1", 42, 18, { authoritative: false });
+    });
+
+    it("broadcasts authoritative geometry updates to every connected viewer", async () => {
+      let desktopHandler: ((raw: Buffer | ArrayBuffer | Buffer[]) => void) | null = null;
+      mockTerminalService.getAttachSnapshot.mockResolvedValue(emptySnapshot({ cols: 120, rows: 40 }));
+      mockTerminalService.getExitEvent.mockReturnValue(null);
+
+      const desktopSocket = {
+        close: vi.fn(),
+        on: vi.fn((event: string, listener: (...args: any[]) => void) => {
+          if (event === "message") {
+            desktopHandler = listener as (raw: Buffer | ArrayBuffer | Buffer[]) => void;
+          }
+        }),
+        send: vi.fn(),
+        readyState: 1,
+      };
+      const mobileSocket = {
+        close: vi.fn(),
+        on: vi.fn(),
+        send: vi.fn(),
+        readyState: 1,
+      };
+
+      handleTerminalWebSocket(app, desktopSocket, {
+        query: { sessionId: "wt1:terminal:1", cwd: "/tmp/wt1" },
+      });
+      handleTerminalWebSocket(app, mobileSocket, {
+        query: { sessionId: "wt1:terminal:1", cwd: "/tmp/wt1", viewport: "remote" },
+      });
+
+      await desktopHandler?.(Buffer.from(JSON.stringify({
+        type: "resize",
+        cols: 128,
+        rows: 44,
+      })));
+
+      expect(mobileSocket.send).toHaveBeenCalledWith(JSON.stringify({
+        kind: "cs-terminal-event",
+        type: "geometry",
+        cols: 128,
+        rows: 44,
+      }));
     });
 
     it("logs sanitized terminal input received over the websocket", async () => {

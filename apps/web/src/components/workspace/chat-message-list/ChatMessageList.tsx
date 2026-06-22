@@ -13,6 +13,7 @@ import type {
   ChatTimelineItem,
   TimelineCtx,
 } from "./ChatMessageList.types";
+import { cn } from "../../../lib/utils";
 import { getTimelineItemKey } from "./toolEventUtils";
 import { TimelineItem, ThinkingPlaceholder } from "./TimelineItem";
 
@@ -247,6 +248,9 @@ export const ChatMessageList = memo(function ChatMessageList({
   onOpenReadFile,
   worktreePath = null,
   footer = null,
+  mobileComposerPinned = false,
+  contentScrollPadding,
+  mobileBottomOffset = 0,
 }: ChatMessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const vlistRef = useRef<VListHandle>(null);
@@ -1026,6 +1030,21 @@ export const ChatMessageList = memo(function ChatMessageList({
   }, [displayItems, scrollToBottom]);
 
   useLayoutEffect(() => {
+    if (!mobileComposerPinned || mobileBottomOffset <= 0 || displayItems.length === 0) {
+      return;
+    }
+
+    stickyBottomRef.current = true;
+    scrollToBottom("bottom");
+  }, [
+    displayItems.length,
+    mobileBottomOffset,
+    mobileComposerPinned,
+    scrollToBottom,
+    threadId,
+  ]);
+
+  useLayoutEffect(() => {
     if (restorableScrollSignature == null || displayItems.length === 0) {
       return;
     }
@@ -1258,12 +1277,22 @@ export const ChatMessageList = memo(function ChatMessageList({
   return (
     <div
       ref={containerRef}
-      className="relative h-full min-h-0"
+      className={cn(
+        "relative h-full min-h-0",
+        mobileComposerPinned && "flex min-h-0 flex-col overflow-hidden",
+      )}
       data-testid="chat-scroll"
       onWheelCapture={handleWheelCapture}
     >
       {displayItems.length === 0 ? (
-        emptyState ? <EmptyStateCard state={emptyState} /> : null
+        <div
+          className={cn(
+            mobileComposerPinned && "min-h-0 flex-1 overflow-y-auto overscroll-y-contain",
+          )}
+          style={contentScrollPadding ? { paddingBottom: contentScrollPadding } : undefined}
+        >
+          {emptyState ? <EmptyStateCard state={emptyState} /> : null}
+        </div>
       ) : (
         <VList
           // virtua only applies cache restoration on mount, so thread switches
@@ -1278,6 +1307,7 @@ export const ChatMessageList = memo(function ChatMessageList({
           style={{
             height: "100%",
             overflowAnchor: "none",
+            paddingBottom: contentScrollPadding,
           }}
           onScroll={handleScroll}
           onScrollEnd={handleScrollEnd}

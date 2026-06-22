@@ -19,6 +19,7 @@ import {
   normalizeCursorCatalogModelId,
   dedupeCursorCatalogEntries,
 } from "@codesymphony/shared-types";
+import { MOBILE_CONTEXT_Z_CLASS } from "../../../lib/mobileStacking";
 import { cn } from "../../../lib/utils";
 import { ModelOptionsEditor } from "./ModelOptionsEditor";
 
@@ -1158,7 +1159,7 @@ export function AgentModelSelector({
         <>
           <div
             ref={agentPanelRef}
-            className="pointer-events-auto absolute z-[80]"
+            className={cn("pointer-events-auto absolute", MOBILE_CONTEXT_Z_CLASS)}
             style={{
               top: desktopPopoverLayout.agentTop,
               left: desktopPopoverLayout.left,
@@ -1168,7 +1169,7 @@ export function AgentModelSelector({
           </div>
           <div
             ref={modelPanelRef}
-            className="pointer-events-auto absolute z-[80]"
+            className={cn("pointer-events-auto absolute", MOBILE_CONTEXT_Z_CLASS)}
             style={{
               top: desktopPopoverLayout.modelTop,
               left: desktopPopoverLayout.left + AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP,
@@ -1179,7 +1180,7 @@ export function AgentModelSelector({
           {editorPanelContent ? (
             <div
               ref={editorPanelRef}
-              className="pointer-events-auto absolute z-[80]"
+              className={cn("pointer-events-auto absolute", MOBILE_CONTEXT_Z_CLASS)}
               style={{
                 top: desktopPopoverLayout.editorTop,
                 left: desktopPopoverLayout.left + AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH + MODEL_PANEL_GAP,
@@ -1196,7 +1197,7 @@ export function AgentModelSelector({
         <>
           <div
             ref={modelPopoverRef}
-            className="pointer-events-auto absolute z-[80]"
+            className={cn("pointer-events-auto absolute", MOBILE_CONTEXT_Z_CLASS)}
             style={{
               top: popoverPosition.top,
               left: popoverPosition.left,

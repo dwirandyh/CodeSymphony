@@ -21,6 +21,17 @@ import {
 } from "@codesymphony/shared-types";
 import { debugLog } from "../../lib/debugLog";
 import { resolveRuntimeApiBase } from "../../lib/runtimeUrl";
+import {
+  computeRemoteTerminalFontSize,
+  DEFAULT_TERMINAL_FONT_SIZE,
+  hasRemoteTerminalGeometry,
+  resolveRemoteTerminalGeometry,
+} from "../../lib/terminalRemoteViewportFit";
+import {
+  appendTerminalViewportQuery,
+  buildTerminalResizeMessage,
+  shouldControlSharedPtySize,
+} from "../../lib/terminalViewport";
 import { parseFileLocation } from "../../lib/worktree";
 import { suppressQueryResponses } from "./suppressQueryResponses";
 
@@ -147,6 +158,8 @@ type TerminalRuntimeEntry = {
   modeScanTail: string;
   onAlternateScreen: boolean;
   lastResize: { cols: number; rows: number } | null;
+  serverPtyCols: number | null;
+  serverPtyRows: number | null;
   connected: boolean;
   title: string;
   defaultTitle: string;
@@ -304,6 +317,7 @@ function buildTerminalWebSocketUrl(sessionId: string, cwd: string | null): strin
   if (cwd) {
     params.set("cwd", cwd);
   }
+  appendTerminalViewportQuery(params);
 
   return `${getWsBase()}/terminal/ws?${params.toString()}`;
 }
@@ -487,6 +501,71 @@ function writeTerminalOutput(entry: TerminalRuntimeEntry, chunk: string): void {
   });
 }
 
+function setServerPtyGeometry(entry: TerminalRuntimeEntry, cols: number, rows: number): void {
+  if (!hasRemoteTerminalGeometry(cols, rows)) {
+    return;
+  }
+
+  entry.serverPtyCols = cols;
+  entry.serverPtyRows = rows;
+}
+
+function resetAuthoritativeTerminalPresentation(entry: TerminalRuntimeEntry): void {
+  entry.wrapper.style.display = "";
+  entry.wrapper.style.flexDirection = "";
+  entry.wrapper.style.overflow = "";
+  entry.wrapper.style.alignItems = "";
+  if (entry.terminal.options.fontSize !== DEFAULT_TERMINAL_FONT_SIZE) {
+    entry.terminal.options.fontSize = DEFAULT_TERMINAL_FONT_SIZE;
+  }
+  entry.serverPtyCols = null;
+  entry.serverPtyRows = null;
+}
+
+function applyRemoteMobileTerminalPresentation(entry: TerminalRuntimeEntry): boolean {
+  const geometry = resolveRemoteTerminalGeometry(entry.serverPtyCols, entry.serverPtyRows);
+  if (!geometry) {
+    return false;
+  }
+
+  const container = entry.wrapper.parentElement;
+  if (!(container instanceof HTMLElement) || container.clientWidth < 2 || container.clientHeight < 2) {
+    return false;
+  }
+
+  const { cols: ptyCols, rows: ptyRows } = geometry;
+  const { terminal } = entry;
+
+  terminal.options.fontSize = DEFAULT_TERMINAL_FONT_SIZE;
+  terminal.resize(ptyCols, ptyRows);
+
+  const element = terminal.element;
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+
+  const renderedWidth = element.offsetWidth || element.clientWidth || element.scrollWidth;
+  const renderedHeight = element.offsetHeight || element.clientHeight || element.scrollHeight;
+  const nextFontSize = computeRemoteTerminalFontSize({
+    containerWidth: container.clientWidth,
+    containerHeight: container.clientHeight,
+    renderedWidth,
+    renderedHeight,
+  });
+
+  if (terminal.options.fontSize !== nextFontSize) {
+    terminal.options.fontSize = nextFontSize;
+    terminal.resize(ptyCols, ptyRows);
+  }
+
+  entry.wrapper.style.display = "flex";
+  entry.wrapper.style.flexDirection = "column";
+  entry.wrapper.style.overflow = "auto";
+  entry.wrapper.style.alignItems = "flex-start";
+  terminal.refresh(0, Math.max(0, terminal.rows - 1));
+  return true;
+}
+
 function sendResize(entry: TerminalRuntimeEntry, cols: number, rows: number): boolean {
   if (cols < MIN_VALID_TERMINAL_COLS || rows < MIN_VALID_TERMINAL_ROWS) {
     return false;
@@ -502,8 +581,22 @@ function sendResize(entry: TerminalRuntimeEntry, cols: number, rows: number): bo
   }
 
   entry.lastResize = { cols, rows };
-  webSocket.send(JSON.stringify({ type: "resize", cols, rows }));
+  webSocket.send(JSON.stringify(buildTerminalResizeMessage(cols, rows)));
   return true;
+}
+
+function fitAuthoritativeTerminalRuntime(entry: TerminalRuntimeEntry): boolean {
+  entry.fitAddon.fit();
+  const dimensions = entry.fitAddon.proposeDimensions();
+  if (!dimensions) {
+    return false;
+  }
+
+  if (dimensions.cols < MIN_VALID_TERMINAL_COLS || dimensions.rows < MIN_VALID_TERMINAL_ROWS) {
+    return false;
+  }
+
+  return sendResize(entry, dimensions.cols, dimensions.rows);
 }
 
 function fitTerminalRuntime(entry: TerminalRuntimeEntry): boolean {
@@ -516,17 +609,26 @@ function fitTerminalRuntime(entry: TerminalRuntimeEntry): boolean {
     return false;
   }
 
-  entry.fitAddon.fit();
-  const dimensions = entry.fitAddon.proposeDimensions();
-  if (!dimensions) {
-    return false;
+  if (!shouldControlSharedPtySize()) {
+    if (applyRemoteMobileTerminalPresentation(entry)) {
+      return true;
+    }
+
+    entry.fitAddon.fit();
+    const dimensions = entry.fitAddon.proposeDimensions();
+    if (!dimensions) {
+      return false;
+    }
+
+    if (dimensions.cols < MIN_VALID_TERMINAL_COLS || dimensions.rows < MIN_VALID_TERMINAL_ROWS) {
+      return false;
+    }
+
+    return sendResize(entry, dimensions.cols, dimensions.rows);
   }
 
-  if (dimensions.cols < MIN_VALID_TERMINAL_COLS || dimensions.rows < MIN_VALID_TERMINAL_ROWS) {
-    return false;
-  }
-
-  return sendResize(entry, dimensions.cols, dimensions.rows);
+  resetAuthoritativeTerminalPresentation(entry);
+  return fitAuthoritativeTerminalRuntime(entry);
 }
 
 function clearScheduledFitBurst(entry: TerminalRuntimeEntry): void {
@@ -580,6 +682,7 @@ function applyAttachSnapshot(entry: TerminalRuntimeEntry, frame: TerminalAttachF
   const { terminal } = entry;
   const onAlternateScreen = frame.modes?.alternateScreen === true;
   entry.onAlternateScreen = onAlternateScreen;
+  setServerPtyGeometry(entry, frame.cols, frame.rows);
 
   // [DEBUG-pty-typing] Log inputSeq at snapshot time to detect snapshot-overwrite-during-typing
   debugLog("terminal.render", "attach.snapshot", {
@@ -599,6 +702,9 @@ function applyAttachSnapshot(entry: TerminalRuntimeEntry, frame: TerminalAttachF
     openStreamGate(entry);
     terminal.scrollToBottom();
     terminal.refresh(0, Math.max(0, terminal.rows - 1));
+    if (!shouldControlSharedPtySize()) {
+      applyRemoteMobileTerminalPresentation(entry);
+    }
     // Surface the post-restore buffer state so a stuck-launch issue report shows
     // whether the deterministic restore actually landed on the alternate screen
     // (a blank pane after this with alternateScreen mismatch = restore failed).
@@ -724,6 +830,10 @@ function resolveResizeNudgeDimensions(
 }
 
 function scheduleReconnectRedrawNudge(entry: TerminalRuntimeEntry): void {
+  if (!shouldControlSharedPtySize()) {
+    return;
+  }
+
   clearReconnectRedrawNudges(entry);
 
   for (const delayMs of RECONNECT_REDRAW_NUDGE_DELAYS_MS) {
@@ -993,6 +1103,16 @@ function connectTerminalRuntime(entry: TerminalRuntimeEntry, nextCwd: string | n
       }
       if (
         parsed.kind === "cs-terminal-event"
+        && parsed.type === "geometry"
+        && typeof parsed.cols === "number"
+        && typeof parsed.rows === "number"
+      ) {
+        setServerPtyGeometry(entry, parsed.cols, parsed.rows);
+        applyRemoteMobileTerminalPresentation(entry);
+        return;
+      }
+      if (
+        parsed.kind === "cs-terminal-event"
         && parsed.type === "exit"
         && typeof parsed.exitCode === "number"
         && typeof parsed.signal === "number"
@@ -1200,6 +1320,8 @@ function createTerminalRuntime(
     modeScanTail: "",
     onAlternateScreen: false,
     lastResize: null,
+    serverPtyCols: null,
+    serverPtyRows: null,
     connected: false,
     title: defaultTitle,
     defaultTitle,

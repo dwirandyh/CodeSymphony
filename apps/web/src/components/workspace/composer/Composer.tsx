@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowUp,
   Check,
@@ -61,6 +62,11 @@ import {
   hasPrimarySubmitModifier,
   type SendMessagesWith,
 } from "../../../lib/generalSettings";
+import {
+  clearMobileComposerScrollPadding,
+  publishMobileComposerScrollPadding,
+} from "../../../lib/mobileComposerMetrics";
+import { MOBILE_COMPOSER_Z_CLASS, MOBILE_OVERLAY_Z_CLASS } from "../../../lib/mobileStacking";
 import { cn } from "../../../lib/utils";
 import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
 import { QueuedMessageList } from "../QueuedMessageList";
@@ -230,10 +236,12 @@ function getModelSelectionBlockedReason(params: ModelSelectionBlockedReasonParam
 
 function AttachmentPreviewDialog({
   attachment,
+  elevatedStack = false,
   open,
   onOpenChange,
 }: {
   attachment: PendingAttachment | null;
+  elevatedStack?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -241,9 +249,17 @@ function AttachmentPreviewDialog({
     return null;
   }
 
+  const elevatedSheetClassName = elevatedStack ? MOBILE_OVERLAY_Z_CLASS : undefined;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-fit border-none bg-transparent p-0 shadow-none">
+      <DialogContent
+        overlayClassName={elevatedSheetClassName}
+        className={cn(
+          "max-w-fit border-none bg-transparent p-0 shadow-none",
+          elevatedSheetClassName,
+        )}
+      >
         <DialogTitle className="sr-only">Attachment preview</DialogTitle>
         <DialogDescription className="sr-only">{attachment.filename}</DialogDescription>
         <AttachmentPreviewPanel attachment={attachment} />
@@ -567,6 +583,7 @@ function ComposerContent({
       : modelLabel;
 
   const editorRef = useRef<HTMLDivElement>(null);
+  const composerRootRef = useRef<HTMLElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const pathDragDepthRef = useRef(0);
   const isComposingRef = useRef(false);
@@ -1129,21 +1146,23 @@ function ComposerContent({
 
       if (tappedEditor) {
         if (isMobile) {
-          focusEditor();
           debugLog("composer.mobileKeyboard", "editor.focus", {
             tappedEditor: true,
             mobileBottomOffset,
             threadId,
             activeTag: document.activeElement instanceof HTMLElement ? document.activeElement.tagName : null,
+            skippedSyncFocus: true,
           });
         } else {
           window.requestAnimationFrame(focusEditor);
         }
-      } else if (!isMobile) {
+      } else {
         window.requestAnimationFrame(focusEditor);
       }
 
-      onFocusPane?.();
+      if (!(isMobile && tappedEditor)) {
+        onFocusPane?.();
+      }
     },
     [disabled, isMobile, mobileBottomOffset, onFocusPane, threadId],
   );
@@ -1643,15 +1662,59 @@ function ComposerContent({
 
   const modelOptionsEditingTarget = optionsEditingTarget ?? { agent, model, modelProviderId };
   const editingModelOptions = resolveModelOptions(modelOptionsEditingTarget);
+  const useMobileComposerPortal = isMobile;
+  const mobileKeyboardLiftActive = isMobile && mobileBottomOffset > 0;
 
-  return (
+  useLayoutEffect(() => {
+    if (!useMobileComposerPortal) {
+      clearMobileComposerScrollPadding();
+      return;
+    }
+
+    const node = composerRootRef.current;
+    if (!node) {
+      return;
+    }
+
+    const publishHeight = () => {
+      publishMobileComposerScrollPadding(node.offsetHeight);
+    };
+
+    publishHeight();
+
+    const observer = typeof ResizeObserver === "function"
+      ? new ResizeObserver(() => {
+        publishHeight();
+      })
+      : null;
+    observer?.observe(node);
+
+    return () => {
+      observer?.disconnect();
+      clearMobileComposerScrollPadding();
+    };
+  }, [useMobileComposerPortal]);
+
+  const composerSection = (
     <section
+      ref={composerRootRef}
+      data-composer-root="true"
       className={cn(
         "px-1.5 pb-1 pt-0.5 sm:px-2.5 lg:px-3 lg:pb-2 lg:pt-1",
-        isMobile && mobileBottomOffset > 0 ? "z-30" : "safe-bottom",
+        useMobileComposerPortal
+          ? cn("fixed left-0 right-0 bg-background shadow-[0_-10px_30px_rgba(0,0,0,0.18)]", MOBILE_COMPOSER_Z_CLASS)
+          : "safe-bottom",
       )}
-      style={isMobile && mobileBottomOffset > 0 ? { marginBottom: "var(--cs-mobile-keyboard-offset, 0px)" } : undefined}
-      data-composer-mobile-keyboard-offset={isMobile && mobileBottomOffset > 0 ? "true" : undefined}
+      style={useMobileComposerPortal ? {
+        bottom: mobileKeyboardLiftActive
+          ? "var(--cs-mobile-keyboard-offset, 0px)"
+          : "var(--cs-mobile-composer-rest-offset, 0px)",
+        left: "var(--cs-mobile-keyboard-visual-left, 0px)",
+        width: "var(--cs-mobile-keyboard-visual-width, 100%)",
+        right: "auto",
+      } : undefined}
+      data-composer-mobile-keyboard-offset={useMobileComposerPortal ? String(mobileKeyboardLiftActive) : undefined}
+      data-composer-mobile-portal={useMobileComposerPortal ? "true" : undefined}
     >
       <div className="mx-auto w-full max-w-3xl">
         {canRenderQueuedMessages ? (
@@ -1907,7 +1970,13 @@ function ComposerContent({
                   <span className="max-w-[96px] truncate">{mobileSessionSummaryLabel}</span>
                   {permissionMode === "full_access" ? <ShieldCheck className="h-3.5 w-3.5 shrink-0" /> : null}
                 </button>
-                <DialogContent className="bottom-0 left-0 top-auto grid w-full max-w-none translate-x-0 translate-y-0 gap-3 rounded-b-none rounded-t-3xl border-border/70 bg-card/98 px-4 pb-4 pt-5 shadow-2xl md:bottom-auto md:left-[50%] md:top-[50%] md:w-full md:max-w-lg md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl">
+                <DialogContent
+                  overlayClassName={MOBILE_OVERLAY_Z_CLASS}
+                  className={cn(
+                    "bottom-0 left-0 top-auto grid w-full max-w-none translate-x-0 translate-y-0 gap-3 rounded-b-none rounded-t-3xl border-border/70 bg-card/98 px-4 pb-4 pt-5 shadow-2xl md:bottom-auto md:left-[50%] md:top-[50%] md:w-full md:max-w-lg md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl",
+                    MOBILE_OVERLAY_Z_CLASS,
+                  )}
+                >
                   <DialogTitle className="text-base">Session settings</DialogTitle>
                   <DialogDescription className="text-xs">
                     Choose agent, model, and permission mode for this thread.
@@ -1931,7 +2000,13 @@ function ComposerContent({
                 </DialogContent>
               </Dialog>
               <Dialog open={modelOptionsSheetOpen} onOpenChange={setModelOptionsSheetOpen}>
-                <DialogContent className="bottom-0 left-0 top-auto grid w-full max-w-none translate-x-0 translate-y-0 gap-3 rounded-b-none rounded-t-3xl border-border/70 bg-card/98 px-4 pb-6 pt-5 shadow-2xl">
+                <DialogContent
+                  overlayClassName={MOBILE_OVERLAY_Z_CLASS}
+                  className={cn(
+                    "bottom-0 left-0 top-auto grid w-full max-w-none translate-x-0 translate-y-0 gap-3 rounded-b-none rounded-t-3xl border-border/70 bg-card/98 px-4 pb-6 pt-5 shadow-2xl",
+                    MOBILE_OVERLAY_Z_CLASS,
+                  )}
+                >
                   <DialogTitle className="text-base">Model options</DialogTitle>
                   <DialogDescription className="text-xs">
                     Adjust available options for the selected model.
@@ -2082,6 +2157,7 @@ function ComposerContent({
       </div>
       <AttachmentPreviewDialog
         attachment={selectedAttachmentPreview}
+        elevatedStack={useMobileComposerPortal}
         open={selectedAttachmentPreview !== null}
         onOpenChange={(open) => {
           if (!open) {
@@ -2091,6 +2167,12 @@ function ComposerContent({
       />
     </section>
   );
+
+  if (useMobileComposerPortal && typeof document !== "undefined") {
+    return createPortal(composerSection, document.body);
+  }
+
+  return composerSection;
 }
 
 export function Composer(props: ComposerProps) {

@@ -7,6 +7,8 @@ html[data-mobile-keyboard-visible="true"] [data-mobile-action-bar="true"] {
 }
 
 :root {
+  --cs-mobile-composer-rest-offset: calc(4rem + env(safe-area-inset-bottom, 0px));
+  --cs-mobile-composer-scroll-padding: 7.5rem;
   --background: 220 18% 10%;
   --foreground: 210 20% 92%;
   --card: 220 18% 12%;
@@ -72,6 +74,29 @@ html[data-mobile-keyboard-visible="true"] [data-mobile-action-bar="true"] {
   body {
     touch-action: manipulation;
   }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border) / 0.6) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border) / 0.6);
+    border-radius: 9999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--border) / 0.8);
+  }
 }
 
 @layer utilities {
@@ -101,6 +126,12 @@ mark {
    Keep the workspace header as a stable non-flexing top row. */
 .workspace-main {
   overflow: hidden;
+}
+
+html[data-mobile-chat-surface="true"],
+html[data-mobile-chat-surface="true"] body {
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .workspace-header {

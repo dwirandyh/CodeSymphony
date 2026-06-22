@@ -1,6 +1,7 @@
 import type { RefObject } from "react";
 import { FileCode2, Search } from "lucide-react";
 import { Input } from "../ui/input";
+import { MOBILE_OVERLAY_Z_CLASS } from "../../lib/mobileStacking";
 import { cn } from "../../lib/utils";
 import type { QuickFileItem } from "./quickFilePickerUtils";
 
@@ -35,7 +36,10 @@ export function QuickFilePicker({
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-start justify-center bg-black/35 px-4 pt-[10vh] backdrop-blur-[2px]"
+      className={cn(
+        "fixed inset-0 flex items-start justify-center bg-black/35 px-4 pt-[10vh] backdrop-blur-[2px]",
+        MOBILE_OVERLAY_Z_CLASS,
+      )}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
