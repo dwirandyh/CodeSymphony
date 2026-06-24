@@ -9,11 +9,13 @@ import { isDesktopShell } from "./lib/openExternalUrl";
 import { bootstrapWorkspaceStartup } from "./lib/startupBoot";
 import { initializeStartupPerfSession } from "./lib/startupPerf";
 import { installDesktopShellVitePreloadGuard } from "./lib/vitePreloadGuard";
-import { AppCrashFallback } from "./components/error/AppCrashFallback";
+import { RootErrorBoundary } from "./components/error/RootErrorBoundary";
+import { installGlobalErrorReporter } from "./components/error/installGlobalErrorReporter";
 import "./styles.css";
 
 ensureBrowserCryptoRandomUUID();
 installDesktopShellVitePreloadGuard();
+installGlobalErrorReporter();
 initializeStartupPerfSession({
   target: isDesktopShell() ? "desktop" : "web",
 });
@@ -25,35 +27,6 @@ const router = createRouter({ routeTree });
 declare module "@tanstack/react-router" {
   interface Register {
     router: typeof router;
-  }
-}
-
-type RootErrorBoundaryState = {
-  error: Error | null;
-};
-
-class RootErrorBoundary extends React.Component<React.PropsWithChildren, RootErrorBoundaryState> {
-  constructor(props: React.PropsWithChildren) {
-    super(props);
-    this.state = { error: null };
-  }
-
-  static getDerivedStateFromError(error: Error) {
-    return { error };
-  }
-
-  render() {
-    if (this.state.error) {
-      return (
-        <AppCrashFallback
-          error={this.state.error}
-          onReload={() => window.location.reload()}
-          onResetHome={() => window.location.assign("/")}
-        />
-      );
-    }
-
-    return this.props.children;
   }
 }
 

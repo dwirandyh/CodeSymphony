@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RepositoryReviewState } from "@codesymphony/shared-types";
-import { mergeRepositoryReviewSnapshots } from "./repositoryReviewSnapshot";
+import { countReviewBranchesInSnapshot, mergeRepositoryReviewSnapshots } from "./repositoryReviewSnapshot";
 
 function makeReviewState(
   overrides: Partial<RepositoryReviewState> = {},
@@ -85,5 +85,32 @@ describe("mergeRepositoryReviewSnapshots", () => {
     });
 
     expect(mergeRepositoryReviewSnapshots(undefined, incoming)).toEqual(incoming);
+  });
+
+  it("countReviewBranchesInSnapshot returns zero when reviewsByBranch is null", () => {
+    expect(countReviewBranchesInSnapshot(makeReviewState({
+      reviewsByBranch: null as unknown as Record<string, never>,
+    }))).toBe(0);
+  });
+
+  it("does not throw when reviewsByBranch is null on either snapshot", () => {
+    const current = makeReviewState({
+      reviewsByBranch: {
+        "feature-x": {
+          number: 12,
+          display: "#12",
+          url: "https://example.com/pr/12",
+          state: "open",
+        },
+      },
+    });
+    const incoming = makeReviewState({
+      available: false,
+      unavailableReason: "gh is not installed",
+      reviewsByBranch: null as unknown as Record<string, never>,
+    });
+
+    expect(() => mergeRepositoryReviewSnapshots(current, incoming)).not.toThrow();
+    expect(mergeRepositoryReviewSnapshots(current, incoming).reviewsByBranch).toEqual(current.reviewsByBranch);
   });
 });

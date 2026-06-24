@@ -139,6 +139,7 @@ export function createWorktreeDeletionService(args: {
       const worktree = await loadDeletionCandidate(worktreeId);
 
       if (worktree.status === "deleting" && activeJobs.has(worktreeId)) {
+        await activeJobs.get(worktreeId);
         return;
       }
 
@@ -150,7 +151,7 @@ export function createWorktreeDeletionService(args: {
         });
       }
 
-      scheduleDeletion(worktreeId, {
+      await scheduleDeletion(worktreeId, {
         force: options?.force,
         repositoryId: worktree.repositoryId,
       });

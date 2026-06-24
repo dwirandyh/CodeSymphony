@@ -23,6 +23,7 @@ const {
   startWorkspaceStartupBootstrapMock,
   refetchRepositoriesCollectionMock,
   refreshRepositoriesCollectionFromServerMock,
+  removeWorktreeFromCollectionMock,
   refetchAllThreadsCollectionsMock,
   refetchThreadsCollectionMock,
   removeThreadFromCollectionMock,
@@ -40,6 +41,7 @@ const {
   startWorkspaceStartupBootstrapMock: vi.fn(),
   refetchRepositoriesCollectionMock: vi.fn(),
   refreshRepositoriesCollectionFromServerMock: vi.fn(),
+  removeWorktreeFromCollectionMock: vi.fn(),
   refetchAllThreadsCollectionsMock: vi.fn(),
   refetchThreadsCollectionMock: vi.fn(),
   removeThreadFromCollectionMock: vi.fn(),
@@ -69,6 +71,7 @@ vi.mock("../../../lib/workspaceStartupBootstrap", () => ({
 vi.mock("../../../collections/repositories", () => ({
   refetchRepositoriesCollection: refetchRepositoriesCollectionMock,
   refreshRepositoriesCollectionFromServer: refreshRepositoriesCollectionFromServerMock,
+  removeWorktreeFromCollection: removeWorktreeFromCollectionMock,
 }));
 
 vi.mock("../../../collections/threads", () => ({
@@ -224,6 +227,7 @@ beforeEach(() => {
   refetchRepositoriesCollectionMock.mockResolvedValue(undefined);
   refreshRepositoriesCollectionFromServerMock.mockReset();
   refreshRepositoriesCollectionFromServerMock.mockResolvedValue([]);
+  removeWorktreeFromCollectionMock.mockReset();
   refetchAllThreadsCollectionsMock.mockReset();
   refetchAllThreadsCollectionsMock.mockResolvedValue([]);
   refetchThreadsCollectionMock.mockReset();
@@ -570,6 +574,32 @@ describe("useWorkspaceSyncStream", () => {
       });
     });
 
+    expect(refreshRepositoriesCollectionFromServerMock).toHaveBeenCalledWith(queryClient);
+  });
+
+  it("removes deleted worktrees from the repository collection before refreshing", async () => {
+    renderHook();
+
+    act(() => {
+      MockWebSocket.instances[0]!.open();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.emit({
+        id: "ws-worktree-deleted",
+        type: "worktree.deleted",
+        repositoryId: "repo-1",
+        worktreeId: "wt-2",
+        threadId: null,
+        createdAt: "2026-01-01T00:00:04Z",
+      });
+    });
+
+    expect(removeWorktreeFromCollectionMock).toHaveBeenCalledWith(queryClient, "wt-2");
     expect(refreshRepositoriesCollectionFromServerMock).toHaveBeenCalledWith(queryClient);
   });
 });

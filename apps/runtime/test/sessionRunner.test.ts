@@ -3263,7 +3263,7 @@ describe("thinking_delta", () => {
     expect(thinkingChunks).toEqual([]);
   });
 
-  it("preserves Claude settings sources for custom providers", async () => {
+  it("excludes user settingSources for custom providers to avoid ~/.claude/settings.json conflicts", async () => {
     mockQuery.mockImplementation(() => {
       return attachQueryControls((async function* () {
         yield { type: "system", subtype: "init", session_id: "session-provider-mcp" };

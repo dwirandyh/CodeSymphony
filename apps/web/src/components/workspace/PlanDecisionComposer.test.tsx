@@ -137,7 +137,7 @@ describe("PlanDecisionComposer", () => {
     const selectorButton = container.querySelector('button[aria-label="Select plan execution target"]') as HTMLButtonElement;
     act(() => selectorButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
-    const agentList = container.querySelector('[data-cli-agent-list="true"]');
+    const agentList = document.body.querySelector('[data-cli-agent-list="true"]');
     const codexAgentButton = Array.from(agentList?.querySelectorAll<HTMLButtonElement>("button") ?? [])
       .find((button) => button.textContent?.includes("Codex"));
     if (!codexAgentButton) {
@@ -146,7 +146,7 @@ describe("PlanDecisionComposer", () => {
 
     act(() => codexAgentButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
 
-    const customModelButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    const customModelButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => button.textContent?.includes("GPT-5 Custom") && button.textContent?.includes("Team Codex"));
     if (!customModelButton) {
       throw new Error("Custom Codex model button not found");
@@ -190,9 +190,11 @@ describe("PlanDecisionComposer", () => {
 
     const popoverHost = container.querySelector<HTMLDivElement>('[data-plan-decision-popover-host="true"]');
     expect(popoverHost).not.toBeNull();
-    expect(popoverHost?.querySelector('[data-agent-model-panel="agent"]')).not.toBeNull();
+    expect(popoverHost?.querySelector('[data-agent-model-panel="agent"]')).toBeNull();
 
-    const overlayPanel = popoverHost?.querySelector<HTMLElement>('[data-agent-model-panel="overlay"]') ?? null;
+    const agentPanel = document.body.querySelector('[data-agent-model-panel="agent"]');
+    const overlayPanel = document.body.querySelector<HTMLElement>('[data-agent-model-panel="overlay"]');
+    expect(agentPanel).not.toBeNull();
     expect(overlayPanel).not.toBeNull();
     expect(actionRow.contains(overlayPanel)).toBe(false);
   });
@@ -211,7 +213,7 @@ describe("PlanDecisionComposer", () => {
     const selectorButton = container.querySelector('button[aria-label="Select plan execution target"]') as HTMLButtonElement;
     act(() => selectorButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
-    const agentList = container.querySelector('[data-cli-agent-list="true"]');
+    const agentList = document.body.querySelector('[data-cli-agent-list="true"]');
     const codexAgentButton = Array.from(agentList?.querySelectorAll<HTMLButtonElement>("button") ?? [])
       .find((button) => button.textContent?.includes("Codex"));
     if (!codexAgentButton) {
@@ -220,7 +222,7 @@ describe("PlanDecisionComposer", () => {
 
     act(() => codexAgentButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
 
-    const builtinCodexButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    const builtinCodexButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => {
         const label = button.querySelector(".font-medium")?.textContent ?? button.textContent ?? "";
         return label.includes("GPT-5.4") && !label.includes("Codex");
@@ -251,7 +253,7 @@ describe("PlanDecisionComposer", () => {
     const selectorButton = container.querySelector('button[aria-label="Select plan execution target"]') as HTMLButtonElement;
     act(() => selectorButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
-    const agentList = container.querySelector('[data-cli-agent-list="true"]');
+    const agentList = document.body.querySelector('[data-cli-agent-list="true"]');
     const claudeAgentButton = Array.from(agentList?.querySelectorAll<HTMLButtonElement>("button") ?? [])
       .find((button) => button.textContent?.includes("Claude"));
     if (!claudeAgentButton) {
@@ -260,7 +262,7 @@ describe("PlanDecisionComposer", () => {
 
     act(() => claudeAgentButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
 
-    const sonnetButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    const sonnetButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
       .find((button) => {
         const label = button.querySelector(".font-medium")?.textContent ?? button.textContent ?? "";
         return label.includes("Sonnet 4.6") && !label.includes("Claude");

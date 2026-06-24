@@ -155,7 +155,101 @@ function extractReadTargetFromBashCommand(command: string): string | null {
   return candidate;
 }
 
+function readPathFromToolInput(event: ChatEvent): string | null {
+  const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+  if (!toolInput) {
+    return null;
+  }
+
+  return payloadStringOrNull(toolInput.path)
+    ?? payloadStringOrNull(toolInput.file_path)
+    ?? payloadStringOrNull(toolInput.filePath);
+}
+
+export function buildSearchParamsFromToolInput(event: ChatEvent): string | null {
+  const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+  if (!toolInput) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  const pattern = payloadStringOrNull(toolInput.pattern);
+  const glob = payloadStringOrNull(toolInput.glob) ?? payloadStringOrNull(toolInput.globPattern);
+  if (pattern) {
+    parts.push(`pattern=${pattern}`);
+  }
+  if (glob) {
+    parts.push(`glob=${glob}`);
+  }
+
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+function shortenExploreCommandForDisplay(command: string): string {
+  const normalized = normalizeRtkWrappedCommand(command);
+  const maxLength = 90;
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function exploreCommandFromEvent(event: ChatEvent): string | null {
+  const directCommand = payloadStringOrNull(event.payload.command);
+  if (directCommand && isExploreLikeBashCommand(directCommand)) {
+    return directCommand;
+  }
+
+  const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+  const toolInputCommand = toolInput ? payloadStringOrNull(toolInput.command) : null;
+  if (toolInputCommand && isExploreLikeBashCommand(toolInputCommand)) {
+    return toolInputCommand;
+  }
+
+  const summary = payloadStringOrNull(event.payload.summary);
+  if (summary) {
+    const commandFromSummary = extractCommandFromRanSummary(summary.trim());
+    if (commandFromSummary && isExploreLikeBashCommand(commandFromSummary)) {
+      return commandFromSummary;
+    }
+  }
+
+  return null;
+}
+
+function buildSearchParamsFromExploreEvent(event: ChatEvent): string | null {
+  const explicitSearchParams = payloadStringOrNull(event.payload.searchParams) ?? buildSearchParamsFromToolInput(event);
+  if (explicitSearchParams) {
+    return explicitSearchParams.trim();
+  }
+
+  const description = payloadStringOrNull(event.payload.description);
+  if (description) {
+    return description.trim();
+  }
+
+  const exploreCommand = exploreCommandFromEvent(event);
+  if (exploreCommand) {
+    return shortenExploreCommandForDisplay(exploreCommand);
+  }
+
+  return null;
+}
+
+function isCursorSdkJsonSummary(summary: string): boolean {
+  return summary.trimStart().startsWith("{\"status\":\"success\"");
+}
+
 export function extractReadFileEntry(event: ChatEvent): ReadFileTimelineEntry | null {
+  const pathFromToolInput = readPathFromToolInput(event);
+  if (pathFromToolInput) {
+    return {
+      label: shortenReadTargetForDisplay(pathFromToolInput),
+      openPath: pathFromToolInput,
+    };
+  }
+
   const summary = payloadStringOrNull(event.payload.summary);
   if (summary) {
     const normalizedSummary = summary.trim();
@@ -226,10 +320,10 @@ export function normalizeSearchSummary(summary: string): string {
 
 export function searchContextFromEvent(event: ChatEvent): { toolName: string | null; searchParams: string | null } {
   const rawToolName = payloadStringOrNull(event.payload.toolName);
-  const searchParams = payloadStringOrNull(event.payload.searchParams);
+  const searchParams = buildSearchParamsFromExploreEvent(event);
   return {
     toolName: rawToolName && !/^bash$/i.test(rawToolName) ? rawToolName.trim() : null,
-    searchParams: searchParams ? searchParams.trim() : null,
+    searchParams,
   };
 }
 
@@ -278,6 +372,14 @@ export function extractSearchEntryLabel(
     const failedCommandFromSummary = extractCommandFromFailedSummary(normalized);
     if (failedCommandFromSummary && isExploreLikeBashCommand(failedCommandFromSummary)) {
       return "Failed search";
+    }
+
+    if (isCursorSdkJsonSummary(normalized)) {
+      const paramsFromToolInput = buildSearchParamsFromToolInput(event);
+      return buildSearchCompletedFallbackLabel(
+        fallbackToolName,
+        paramsFromToolInput ?? fallbackSearchParams,
+      );
     }
 
     return normalizeSearchSummary(summary);

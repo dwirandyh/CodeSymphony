@@ -536,6 +536,8 @@ const MODEL_POPOVER_MIN_SCROLLER_HEIGHT = 96;
 const MODEL_VISIBLE_OPTION_LIMIT = 10;
 const MODEL_OPTION_ROW_HEIGHT = 28;
 const MODEL_OPTION_SEPARATOR_HEIGHT = 10;
+const VIEWPORT_CONTAINER_RECT = { left: 0, top: 0, bottom: 0 } as Pick<DOMRect, "bottom" | "left" | "top">;
+const PORTAL_POPOVER_WRAPPER_CLASS = "pointer-events-auto fixed";
 
 type PopoverPosition = {
   top: number;
@@ -842,7 +844,7 @@ export function AgentModelSelector({
       }
 
       const triggerRect = trigger.getBoundingClientRect();
-      const containerRect = popoverContainer.getBoundingClientRect();
+      const containerRect = VIEWPORT_CONTAINER_RECT;
       if (showAgentList) {
         const minLeft = MODEL_POPOVER_VIEWPORT_MARGIN - containerRect.left;
         const basePopoverWidth = AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH;
@@ -1159,7 +1161,7 @@ export function AgentModelSelector({
         <>
           <div
             ref={agentPanelRef}
-            className={cn("pointer-events-auto absolute", MOBILE_CONTEXT_Z_CLASS)}
+            className={cn(PORTAL_POPOVER_WRAPPER_CLASS, MOBILE_CONTEXT_Z_CLASS)}
             style={{
               top: desktopPopoverLayout.agentTop,
               left: desktopPopoverLayout.left,
@@ -1169,7 +1171,7 @@ export function AgentModelSelector({
           </div>
           <div
             ref={modelPanelRef}
-            className={cn("pointer-events-auto absolute", MOBILE_CONTEXT_Z_CLASS)}
+            className={cn(PORTAL_POPOVER_WRAPPER_CLASS, MOBILE_CONTEXT_Z_CLASS)}
             style={{
               top: desktopPopoverLayout.modelTop,
               left: desktopPopoverLayout.left + AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP,
@@ -1179,8 +1181,7 @@ export function AgentModelSelector({
           </div>
           {editorPanelContent ? (
             <div
-              ref={editorPanelRef}
-              className={cn("pointer-events-auto absolute", MOBILE_CONTEXT_Z_CLASS)}
+              className={cn(PORTAL_POPOVER_WRAPPER_CLASS, MOBILE_CONTEXT_Z_CLASS)}
               style={{
                 top: desktopPopoverLayout.editorTop,
                 left: desktopPopoverLayout.left + AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH + MODEL_PANEL_GAP,
@@ -1190,14 +1191,14 @@ export function AgentModelSelector({
             </div>
           ) : null}
         </>,
-        popoverContainer,
+        document.body,
       ) : null}
 
       {modelPopoverOpen && popoverContainer && !showAgentList && popoverPosition ? createPortal(
         <>
           <div
             ref={modelPopoverRef}
-            className={cn("pointer-events-auto absolute", MOBILE_CONTEXT_Z_CLASS)}
+            className={cn(PORTAL_POPOVER_WRAPPER_CLASS, MOBILE_CONTEXT_Z_CLASS)}
             style={{
               top: popoverPosition.top,
               left: popoverPosition.left,
@@ -1213,7 +1214,7 @@ export function AgentModelSelector({
             )}
           </div>
         </>,
-        popoverContainer,
+        document.body,
       ) : null}
 
       {modelPopoverOpen && !popoverContainer ? (

@@ -8,7 +8,11 @@ import { isOptimisticThreadId } from "../../../lib/threadIds";
 import { measureStartupMetricSinceBoot } from "../../../lib/startupPerf";
 import { startWorkspaceStartupBootstrap } from "../../../lib/workspaceStartupBootstrap";
 import { subscribeToWorkspaceSyncSocket } from "../../../lib/workspaceLiveSocket";
-import { refetchRepositoriesCollection, refreshRepositoriesCollectionFromServer } from "../../../collections/repositories";
+import {
+  refetchRepositoriesCollection,
+  refreshRepositoriesCollectionFromServer,
+  removeWorktreeFromCollection,
+} from "../../../collections/repositories";
 import {
   disposeThreadCollections,
   getThreadCollectionCounts,
@@ -155,6 +159,10 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
     void refreshRepositoriesCollectionFromServer(queryClient).catch(() => {
       void refetchRepositoriesCollection(queryClient);
     });
+  }
+
+  if (event.type === "worktree.deleted" && event.worktreeId) {
+    removeWorktreeFromCollection(queryClient, event.worktreeId);
   }
 
   if (

@@ -577,6 +577,18 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Start with a task, bug, or question");
   });
 
+  it("centers existing-thread empty state vertically in the scroll region", () => {
+    mountChatMessageList({ emptyState: "existing-thread-empty" });
+
+    const scroll = container.querySelector("[data-testid='chat-scroll']");
+    const emptyWrapper = scroll?.firstElementChild as HTMLElement | null;
+    const emptyCard = emptyWrapper?.firstElementChild as HTMLElement | null;
+
+    expect(emptyWrapper?.className).toContain("h-full");
+    expect(emptyCard?.className).toContain("items-center");
+    expect(emptyCard?.className).toContain("justify-center");
+  });
+
   it("renders user message", () => {
     const items: ChatTimelineItem[] = [
       { kind: "message", message: makeMessage("m1", "user", "Hello there", 1) },

@@ -356,7 +356,10 @@ function WorktreeMetaSlot({
 }
 
 function isVisibleWorktreeStatus(status: Repository["worktrees"][number]["status"]): boolean {
-  return status === "active" || status === "creating" || status === "create_failed" || status === "delete_failed";
+  return status === "active"
+    || status === "creating"
+    || status === "create_failed"
+    || status === "delete_failed";
 }
 
 function renderWorktreeLifecycleBadge(worktree: Repository["worktrees"][number]) {
@@ -382,6 +385,19 @@ function renderWorktreeLifecycleBadge(worktree: Repository["worktrees"][number])
       >
         <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
         Create failed
+      </Badge>
+    );
+  }
+
+  if (worktree.status === "deleting") {
+    return (
+      <Badge
+        variant="secondary"
+        className="inline-flex h-4 items-center gap-1 rounded-md px-1 py-0 text-[9px] leading-none shadow-sm"
+        title="Deleting worktree"
+      >
+        <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
+        Deleting
       </Badge>
     );
   }
@@ -1450,7 +1466,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                 </span>
                               }
                               branchContent={
-                                <span className="truncate text-xs">
+                                <span className="min-w-0 flex-1 truncate text-xs">
                                   {rootWorkspace.branch}
                                 </span>
                               }
@@ -1615,7 +1631,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                       />
                                     ) : (
                                       <span
-                                        className="truncate text-xs"
+                                        className="min-w-0 flex-1 truncate text-xs"
                                         onDoubleClick={(e) => {
                                           e.stopPropagation();
                                           setEditingWorktreeId(worktree.id);
@@ -1685,7 +1701,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                   >
                                     <Trash2 className="h-3.5 w-3.5" />
                                   </Button>
-                                ) : worktree.status === "creating" ? null : (
+                                ) : worktree.status === "creating" || worktree.status === "deleting" ? null : (
                                   <>
                                     <Button
                                       type="button"

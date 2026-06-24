@@ -42,6 +42,106 @@ function extractCommand(input: unknown): string | undefined {
   return typeof command === "string" && command.length > 0 ? command : undefined;
 }
 
+function extractPathsFromArgs(input: unknown): string[] {
+  const object = coerceObject(input);
+  if (!object) {
+    return [];
+  }
+
+  const singlePath = object.path ?? object.file_path ?? object.filePath;
+  if (typeof singlePath === "string" && singlePath.length > 0) {
+    return [singlePath];
+  }
+
+  const paths = object.paths;
+  if (!Array.isArray(paths)) {
+    return [];
+  }
+
+  return paths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+}
+
+function extractPathFromArgs(input: unknown): string | undefined {
+  return extractPathsFromArgs(input)[0];
+}
+
+function parseReadLintsResult(result: unknown): { totalDiagnostics: number | null } | null {
+  const object = coerceObject(result);
+  if (!object) {
+    return null;
+  }
+
+  const value = coerceObject(object.value) ?? object;
+  const totalDiagnostics = value.totalDiagnostics;
+  if (typeof totalDiagnostics !== "number") {
+    return null;
+  }
+
+  return { totalDiagnostics };
+}
+
+function buildReadLintsSummary(paths: string[], result: unknown): string {
+  const parsed = parseReadLintsResult(result);
+  const issueCount = parsed?.totalDiagnostics ?? null;
+  const issueLabel = issueCount == null
+    ? null
+    : `${issueCount} issue${issueCount === 1 ? "" : "s"}`;
+
+  if (paths.length === 1) {
+    const basename = paths[0].split("/").pop() ?? paths[0];
+    return issueLabel ? `Checked lints ${basename} (${issueLabel})` : `Checked lints ${basename}`;
+  }
+
+  if (paths.length > 1) {
+    return issueLabel
+      ? `Checked lints ${paths.length} files (${issueLabel})`
+      : `Checked lints ${paths.length} files`;
+  }
+
+  return issueLabel ? `Checked lints (${issueLabel})` : "Checked lints";
+}
+
+function buildSearchParamsFromArgs(input: unknown): string | undefined {
+  const object = coerceObject(input);
+  if (!object) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  const pattern = object.pattern;
+  const glob = object.glob ?? object.globPattern;
+  if (typeof pattern === "string" && pattern.length > 0) {
+    parts.push(`pattern=${pattern}`);
+  }
+  if (typeof glob === "string" && glob.length > 0) {
+    parts.push(`glob=${glob}`);
+  }
+
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}
+
+function isShellLikeTool(toolName: string): boolean {
+  const normalized = toolName.trim().toLowerCase();
+  return normalized === "shell" || normalized === "bash";
+}
+
+function bashPayloadExtras(tool: ToolState): {
+  command?: string;
+  shell?: "bash";
+  isBash?: true;
+} {
+  const command = extractCommand(tool.args);
+  if (!command && !isShellLikeTool(tool.toolName)) {
+    return {};
+  }
+
+  return {
+    ...(command ? { command } : {}),
+    shell: "bash",
+    isBash: true,
+  };
+}
+
 function stringifyResult(result: unknown): string {
   if (typeof result === "string") {
     return result;
@@ -62,6 +162,38 @@ function stringifyResult(result: unknown): string {
 }
 
 function buildToolSummary(tool: ToolState): string {
+  const toolName = tool.toolName.trim().toLowerCase();
+  const path = extractPathFromArgs(tool.args);
+  const command = extractCommand(tool.args);
+  const searchParams = buildSearchParamsFromArgs(tool.args);
+
+  if (toolName === "read" && path) {
+    return `Read ${path}`;
+  }
+
+  if ((toolName === "edit" || toolName === "write") && path) {
+    return `Edited ${path}`;
+  }
+
+  if ((toolName === "grep" || toolName === "glob" || toolName === "search") && searchParams) {
+    return `Completed ${toolName} (${searchParams})`;
+  }
+
+  if ((toolName === "grep" || toolName === "glob" || toolName === "search")) {
+    return `Completed ${toolName}`;
+  }
+
+  if (toolName === "readlints") {
+    const paths = extractPathsFromArgs(tool.args);
+    if (paths.length > 0 || tool.result != null) {
+      return buildReadLintsSummary(paths, tool.result);
+    }
+  }
+
+  if (command) {
+    return `Ran ${command}`;
+  }
+
   const output = stringifyResult(tool.result);
   return output.trim() || `${tool.toolName} completed`;
 }
@@ -219,13 +351,15 @@ async function handleToolMessage(
   toolStates.set(toolUseId, current);
 
   const command = extractCommand(current.args);
+  const searchParams = buildSearchParamsFromArgs(current.args);
   if (!current.startedEmitted) {
     current.startedEmitted = true;
     await callbacks.onToolStarted({
       toolName: current.toolName,
       toolUseId,
       parentToolUseId: null,
-      ...(command ? { command, shell: "bash" as const, isBash: true as const } : {}),
+      ...bashPayloadExtras(current),
+      ...(searchParams ? { searchParams } : {}),
     });
   }
 
@@ -235,6 +369,7 @@ async function handleToolMessage(
       toolUseId,
       parentToolUseId: null,
       elapsedTimeSeconds: Math.max(0, (Date.now() - current.startedAtMs) / 1000),
+      ...bashPayloadExtras(current),
     });
     return;
   }
@@ -246,7 +381,8 @@ async function handleToolMessage(
       summary: buildToolSummary(current),
       precedingToolUseIds: [toolUseId],
       ...(coerceObject(current.args) ? { toolInput: coerceObject(current.args)! } : {}),
-      ...(command ? { command, shell: "bash" as const, isBash: true as const } : {}),
+      ...bashPayloadExtras(current),
+      ...(searchParams ? { searchParams } : {}),
       ...(message.status === "error"
         ? { error: stringifyResult(current.result) }
         : { output: stringifyResult(current.result) }),

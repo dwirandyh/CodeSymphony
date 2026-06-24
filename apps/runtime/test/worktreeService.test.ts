@@ -274,6 +274,24 @@ describe("worktreeService", () => {
       createdWorktreeIds.splice(createdWorktreeIds.indexOf(created.worktree.id), 1);
     });
 
+    it("force-removes a locked worktree", async () => {
+      const created = await service.create(repositoryId, { branch: "locked-wt-test" });
+      createdWorktreeIds.push(created.worktree.id);
+      const readyWorktree = await waitForProvisionedWorktree(service, created.worktree.id);
+
+      // A locked worktree cannot be removed with a single `--force`; git
+      // requires `-f -f`. This mirrors the real symptom: the background delete
+      // job throws, the row flips to delete_failed, and the worktree reappears.
+      git(`worktree lock "${readyWorktree.path}"`);
+
+      await service.remove(created.worktree.id, { force: true });
+
+      const found = await service.getById(created.worktree.id);
+      expect(found).toBeNull();
+      await expect(stat(readyWorktree.path)).rejects.toThrow();
+      createdWorktreeIds.splice(createdWorktreeIds.indexOf(created.worktree.id), 1);
+    });
+
     it("throws when trying to remove primary worktree", async () => {
       const root = await prisma.worktree.findFirst({
         where: { repositoryId, path: repoDir },

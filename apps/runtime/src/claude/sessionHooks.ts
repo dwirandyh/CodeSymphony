@@ -13,6 +13,7 @@ import { sanitizeForLog } from "./sanitize.js";
 import {
   isBashTool,
   isEditTool,
+  bashDescriptionFromToolInput,
   commandFromToolInput,
   commandFromUnknownToolInput,
   readTargetFromUnknownToolInput,
@@ -841,6 +842,7 @@ export function createCanUseTool(
       toolName: displayToolName,
       ...(presentation.toolKind ? { toolKind: presentation.toolKind } : {}),
       command,
+      description: bashDescriptionFromToolInput(input),
       readTarget: readTargetFromUnknownToolInput(displayToolName, input),
       searchParams: presentation.searchParams ?? searchParamsFromUnknownToolInput(displayToolName, input),
       editTarget: editTargetFromUnknownToolInput(displayToolName, input),
@@ -1116,6 +1118,7 @@ export function createPreToolUseHook(
       toolName: presentation.toolName,
       ...(presentation.toolKind ? { toolKind: presentation.toolKind } : {}),
       command,
+      description: bashDescriptionFromToolInput(hookInput.tool_input),
       readTarget: readTargetFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
       searchParams: presentation.searchParams ?? searchParamsFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
       editTarget: editTargetFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
@@ -1386,6 +1389,7 @@ export function createPostToolUseFailureHook(
       ...(metadata.isBash
         ? {
           command,
+          ...(metadata.description ? { description: metadata.description } : {}),
           shell: "bash" as const,
           isBash: true as const,
         }

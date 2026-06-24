@@ -55,6 +55,18 @@ describe("installCursorSdkProcessGuard", () => {
     expect(logger).toHaveBeenCalledTimes(1);
   });
 
+  it("swallows abort rejections raised during cancelled Cursor SDK turns", () => {
+    const logger = vi.fn();
+    installCursorSdkProcessGuard({ logger });
+    const handler = newGuardListener("unhandledRejection");
+
+    const abortError = new Error("Aborted");
+    abortError.name = "AbortError";
+
+    expect(() => handler(abortError)).not.toThrow();
+    expect(logger).toHaveBeenCalledTimes(1);
+  });
+
   it("rethrows genuine rejections so they keep crash-loud behavior", () => {
     installCursorSdkProcessGuard();
     const handler = newGuardListener("unhandledRejection");
@@ -91,7 +103,7 @@ describe("installCursorSdkProcessGuard", () => {
     expect(() => handler(transportError)).not.toThrow();
     expect(logger).toHaveBeenCalledTimes(1);
     expect(logger).toHaveBeenCalledWith(
-      "Suppressed benign Cursor SDK HTTP/2 transport error",
+      "Suppressed benign Cursor SDK async error",
       expect.objectContaining({ kind: "unhandledRejection" }),
     );
   });

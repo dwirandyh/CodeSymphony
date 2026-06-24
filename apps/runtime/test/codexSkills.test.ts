@@ -1,10 +1,13 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, readlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ensureProjectClaudeSkillLinks,
+  listClaudeSkills,
   listCodexSkills,
   normalizeCodexSkillSlashCommandsForPrompt,
+  normalizeSkillSlashCommandsForPrompt,
   resolveCodexSkillCatalogCacheVersion,
 } from "../src/services/chat/codexSkills.js";
 
@@ -80,6 +83,75 @@ describe("listCodexSkills", () => {
   });
 });
 
+describe("listClaudeSkills", () => {
+  let tempRoot: string | null = null;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (tempRoot) {
+      rmSync(tempRoot, { recursive: true, force: true });
+      tempRoot = null;
+    }
+  });
+
+  it("loads home and project Claude skills from ~/.claude/skills", () => {
+    tempRoot = mkdtempSync(join(tmpdir(), "claude-skills-"));
+    const worktreePath = join(tempRoot, "repo");
+    const homePath = join(tempRoot, "home");
+    vi.stubEnv("HOME", homePath);
+
+    mkdirSync(join(worktreePath, ".claude/skills/diagnose"), { recursive: true });
+    mkdirSync(join(homePath, ".claude/skills/grill-with-docs"), { recursive: true });
+    writeFileSync(
+      join(worktreePath, ".claude/skills/diagnose/SKILL.md"),
+      "---\nname: diagnose\ndescription: Diagnose hard bugs.\n---\n",
+    );
+    writeFileSync(
+      join(homePath, ".claude/skills/grill-with-docs/SKILL.md"),
+      "---\nname: grill-with-docs\ndescription: Grill a plan against docs.\n---\n",
+    );
+
+    const skills = listClaudeSkills(worktreePath);
+
+    expect(skills.some((skill) => skill.name === "diagnose")).toBe(true);
+    expect(skills.some((skill) => skill.name === "grill-with-docs")).toBe(true);
+    expect(skills.filter((skill) => skill.name.toLowerCase() === "diagnose")).toHaveLength(1);
+  });
+});
+
+describe("ensureProjectClaudeSkillLinks", () => {
+  let tempRoot: string | null = null;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (tempRoot) {
+      rmSync(tempRoot, { recursive: true, force: true });
+      tempRoot = null;
+    }
+  });
+
+  it("links home Claude skills into the worktree project scope", () => {
+    tempRoot = mkdtempSync(join(tmpdir(), "claude-skill-links-"));
+    const worktreePath = join(tempRoot, "repo");
+    const homePath = join(tempRoot, "home");
+    vi.stubEnv("HOME", homePath);
+
+    const homeSkillDir = join(homePath, ".claude/skills/diagnose");
+    mkdirSync(homeSkillDir, { recursive: true });
+    writeFileSync(
+      join(homeSkillDir, "SKILL.md"),
+      "---\nname: diagnose\ndescription: Diagnose hard bugs.\n---\n",
+    );
+
+    ensureProjectClaudeSkillLinks(worktreePath, ["diagnose"]);
+
+    const linkPath = join(worktreePath, ".claude/skills/diagnose");
+    expect(existsSync(linkPath)).toBe(true);
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(linkPath)).toBe(homeSkillDir);
+  });
+});
+
 describe("normalizeCodexSkillSlashCommandsForPrompt", () => {
   const skills = [
     { name: "dogfood", description: "QA a web app", argumentHint: "" },
@@ -106,5 +178,12 @@ describe("normalizeCodexSkillSlashCommandsForPrompt", () => {
 
   it("keeps content unchanged when no listed skills are invoked", () => {
     expect(normalizeCodexSkillSlashCommandsForPrompt("/commit review changes", skills)).toBe("/commit review changes");
+  });
+
+  it("returns referenced skill names for project linking", () => {
+    expect(normalizeSkillSlashCommandsForPrompt("/dogfood audit settings", skills)).toEqual({
+      content: "Use $dogfood for this task.\n\naudit settings",
+      referencedSkills: ["dogfood"],
+    });
   });
 });

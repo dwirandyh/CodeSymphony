@@ -1,7 +1,7 @@
 import type { ChatEvent, ChatThread, ChatThreadSnapshot, ChatThreadStatus } from "@codesymphony/shared-types";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
 import { shortenReadTargetForDisplay } from "../exploreUtils";
-import { isMetadataToolEvent, normalizePlanCreatedEvent, payloadStringOrNull } from "../eventUtils";
+import { isMetadataToolEvent, isWorktreeDiffEvent, normalizePlanCreatedEvent, payloadStringOrNull } from "../eventUtils";
 
 export type WorktreeThreadUiStatus = ChatThreadStatus;
 
@@ -361,7 +361,7 @@ function isPostPlanReviewExecutionEvent(event: ChatEvent): boolean {
   }
 
   if (event.type === "tool.started" || event.type === "tool.output" || event.type === "tool.finished") {
-    if (isMetadataToolEvent(event)) {
+    if (isMetadataToolEvent(event) || isWorktreeDiffEvent(event)) {
       return false;
     }
 

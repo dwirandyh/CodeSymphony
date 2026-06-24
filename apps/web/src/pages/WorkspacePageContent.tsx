@@ -4455,9 +4455,10 @@ export function WorkspacePage() {
       return reconcileEditorGroups(current, sourceTabs, {
         newFileTabIds: newFileTabIds.length > 0 ? newFileTabIds : undefined,
         activateChatTabId: chatSelectedThreadIdRef.current,
+        allowExplorerFileSplit: desktopLayout,
       });
     });
-  }, [sourceTabs]);
+  }, [desktopLayout, sourceTabs]);
 
   // Align editor strip with navigation; session selection is authoritative for chat threads.
   const currentSelectionTabId: string | null = reviewTabOpen

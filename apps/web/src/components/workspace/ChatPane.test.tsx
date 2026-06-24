@@ -343,7 +343,7 @@ describe("ChatPane", () => {
     expect(container.querySelector("[data-testid='composer']")).toBeNull();
   });
 
-  it("drops mobile composer viewport reserve while a user gate is pending", () => {
+  it("reserves mobile chat viewport inset while a user gate is pending", () => {
     useThreadPaneSessionMock.mockImplementation(() =>
       makeSession({
         gates: {
@@ -402,7 +402,7 @@ describe("ChatPane", () => {
     });
 
     const scrollRegion = container.querySelector<HTMLElement>("[data-chat-scroll-region='true']");
-    expect(scrollRegion?.style.paddingBottom).toBe("");
+    expect(scrollRegion?.style.paddingBottom).toBe("var(--cs-mobile-composer-scroll-padding, 7.5rem)");
   });
 
   it("renders mobile user gates in a fixed overlay surface above the composer slot", async () => {

@@ -19,6 +19,7 @@ export type ToolMetadata = {
     toolName: string;
     toolKind?: "mcp" | "web_search";
     command?: string;
+    description?: string;
     readTarget?: string;
     searchParams?: string;
     editTarget?: string;
@@ -66,6 +67,14 @@ export function commandFromUnknownToolInput(input: unknown): string | undefined 
     }
 
     return commandFromToolInput(input as Record<string, unknown>);
+}
+
+export function bashDescriptionFromToolInput(input: unknown): string | undefined {
+    if (typeof input !== "object" || input == null || Array.isArray(input)) {
+        return undefined;
+    }
+
+    return stringFromUnknown((input as Record<string, unknown>).description);
 }
 
 export function stringFromUnknown(input: unknown): string | undefined {

@@ -165,6 +165,61 @@ describe("worktreeThreadStatus", () => {
     expect(deriveThreadUiStatus(thread, snapshot)).toBe("review_plan");
   });
 
+  it("keeps plan review awaiting decision when only worktree.diff follows ExitPlanMode", () => {
+    const thread = makeThread();
+    const snapshot = makeSnapshot([
+      makeEvent({
+        id: "e1",
+        threadId: thread.id,
+        idx: 1,
+        type: "plan.created",
+        payload: { content: "Plan body", filePath: "/tmp/.claude/plans/plan.md" },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: thread.id,
+        idx: 2,
+        type: "tool.started",
+        payload: { toolName: "ExitPlanMode", toolUseId: "exit-1" },
+      }),
+      makeEvent({
+        id: "e3",
+        threadId: thread.id,
+        idx: 3,
+        type: "tool.finished",
+        payload: { toolName: "ExitPlanMode", precedingToolUseIds: ["exit-1"] },
+      }),
+      makeEvent({
+        id: "e4",
+        threadId: thread.id,
+        idx: 4,
+        type: "tool.finished",
+        payload: {
+          source: "worktree.diff",
+          summary: "Detected worktree changes in 2 files",
+          changedFiles: ["src/a.ts", "src/b.ts"],
+        },
+      }),
+      makeEvent({
+        id: "e5",
+        threadId: thread.id,
+        idx: 5,
+        type: "chat.completed",
+        payload: {},
+      }),
+    ]);
+    const pendingPlan = {
+      content: "Plan body",
+      filePath: "/tmp/.claude/plans/plan.md",
+      createdIdx: 1,
+      status: "pending" as const,
+    };
+
+    expect(hasAssistantExecutionAfterPlanReview(snapshot.events, pendingPlan)).toBe(false);
+    expect(isPendingPlanAwaitingDecision(snapshot.events, pendingPlan)).toBe(true);
+    expect(deriveThreadUiStatus(thread, snapshot)).toBe("review_plan");
+  });
+
   it("treats plan review as stale once assistant execution resumes after the review boundary", () => {
     const thread = makeThread();
     const snapshot = makeSnapshot([

@@ -157,6 +157,10 @@ export class FakeCursorSdkAgent implements SDKAgent {
   constructor(readonly agentId: string) {}
 
   async send(message: string | SDKUserMessage, options?: SendOptions): Promise<Run> {
+    if (listNonTerminalFakeRuns(this.agentId).length > 0) {
+      throw new Error(`Agent ${this.agentId} already has active run`);
+    }
+
     fakeCursorSdkAgents.get(this.agentId)?.sends.push({ message, options });
     const run = new FakeCursorSdkRun(this.agentId);
     run.model = options?.model ?? this.model;
@@ -187,8 +191,36 @@ export class FakeCursorSdkAgent implements SDKAgent {
   }
 }
 
+function listNonTerminalFakeRuns(agentId: string): FakeCursorSdkRun[] {
+  return fakeCursorSdkRuns.filter((run) => (
+    run.agentId === agentId
+    && run.status !== "finished"
+    && run.status !== "error"
+    && run.status !== "cancelled"
+  ));
+}
+
 export const FakeCursorSdkModule = {
   Agent: {
+    listRuns: async (agentId: string) => ({
+      items: fakeCursorSdkRuns
+        .filter((run) => run.agentId === agentId)
+        .map((run) => ({
+          id: run.id,
+          status: run.status,
+        })),
+    }),
+    cancelRun: async (runId: string) => {
+      const run = fakeCursorSdkRuns.find((entry) => entry.id === runId);
+      await run?.cancel();
+    },
+    getRun: async (runId: string) => {
+      const run = fakeCursorSdkRuns.find((entry) => entry.id === runId);
+      if (!run) {
+        throw new Error(`Unknown fake run ${runId}`);
+      }
+      return run;
+    },
     create: async (options: AgentOptions): Promise<SDKAgent> => {
       fakeCursorSdkCreateRequests.push(options);
       const agentId = scenario.agentId ?? options.agentId ?? nextAgentId();

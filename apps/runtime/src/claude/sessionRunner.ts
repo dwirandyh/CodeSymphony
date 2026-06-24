@@ -58,6 +58,7 @@ export const __testing = {
   shouldUseNativeClaudeCliAlias,
   resolveRequestedNativeClaudeCliModel,
   shouldRetryWithNativeClaudeCliModel,
+  createClaudeProcessSpawner,
 };
 
 const NATIVE_CLAUDE_CLI_MODEL_ALIASES: Record<string, string> = {
@@ -254,6 +255,11 @@ function createClaudeProcessSpawner(params: {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
+
+    // Keep a permanent listener so a late child 'error' (common when a run is
+    // aborted and the Claude CLI exits asynchronously) cannot escape as an
+    // uncaughtException and take down the dev runtime.
+    child.on("error", () => {});
 
     child.stderr.on("data", (chunk: Buffer | string) => {
       params.onStderr(chunk.toString());

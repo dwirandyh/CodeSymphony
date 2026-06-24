@@ -222,7 +222,12 @@ export function isBashPayload(payload: Record<string, unknown>): boolean {
   }
 
   const toolName = payload.toolName;
-  return typeof toolName === "string" && toolName.trim().toLowerCase() === "bash";
+  if (typeof toolName !== "string") {
+    return false;
+  }
+
+  const normalized = toolName.trim().toLowerCase();
+  return normalized === "bash" || normalized === "shell";
 }
 
 export function isBashToolEvent(event: ChatEvent): boolean {

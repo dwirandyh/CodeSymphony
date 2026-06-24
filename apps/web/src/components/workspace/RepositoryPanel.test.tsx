@@ -531,6 +531,42 @@ describe("RepositoryPanel", () => {
     expect(onSelectWorktree).toHaveBeenCalledWith("r1", "r1-wt-feat", null);
   });
 
+  it("hides deleting worktrees from the sidebar", () => {
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo({
+        worktrees: [
+          {
+            id: "r1-wt-root",
+            repositoryId: "r1",
+            branch: "main",
+            path: "/home/user/test-repo",
+            baseBranch: "main",
+            status: "active",
+            branchRenamed: false,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "r1-wt-deleting",
+            repositoryId: "r1",
+            branch: "feature-x",
+            path: "/home/user/.cs/worktrees/test-repo/feature-x",
+            baseBranch: "main",
+            status: "deleting",
+            branchRenamed: false,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      })],
+      selectedRepositoryId: "r1",
+    });
+
+    expect(container.querySelector("[data-worktree-id='r1-wt-deleting']")).toBeNull();
+    expect(container.textContent).not.toContain("Deleting");
+  });
+
   it("shows delete_failed worktrees with retry and force-delete actions", () => {
     const onDeleteWorktree = vi.fn();
     renderPanel({
@@ -1509,6 +1545,73 @@ describe("RepositoryPanel", () => {
 
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')).toBeNull();
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.parentElement?.parentElement?.className).toContain("pl-[14px]");
+  });
+
+  it("keeps worktree status visible while long branch labels shrink with ellipsis", async () => {
+    const longBranch = "feature/very-long-worktree-branch-name-that-should-truncate";
+
+    listThreadsMock.mockImplementation(async (worktreeId: string) => {
+      if (worktreeId === "r1-wt-feat") {
+        return [makeThread({ id: "t-feat", worktreeId: "r1-wt-feat", active: true })];
+      }
+      return [];
+    });
+    getThreadStatusSnapshotMock.mockImplementation(async (threadId: string) => {
+      if (threadId === "t-feat") {
+        return makeStatusSnapshot({ status: "running", newestIdx: null });
+      }
+      return makeStatusSnapshot();
+    });
+
+    container.style.width = "160px";
+
+    renderPanel({
+      repositories: [
+        makeRepo({
+          worktrees: [
+            {
+              id: "r1-wt-root",
+              repositoryId: "r1",
+              branch: "main",
+              path: "/home/user/test-repo",
+              baseBranch: "main",
+              isAutomation: false,
+              status: "active",
+              branchRenamed: false,
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+            },
+            {
+              id: "r1-wt-feat",
+              repositoryId: "r1",
+              branch: longBranch,
+              path: "/home/user/.cs/worktrees/test-repo/feature",
+              baseBranch: "main",
+              isAutomation: false,
+              status: "active",
+              branchRenamed: false,
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+            },
+          ],
+        }),
+      ],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+      expandedByRepo: { r1: true },
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const branchLabel = container.querySelector('[data-testid="worktree-r1-wt-feat-content"] .truncate');
+    expect(branchLabel?.className).toContain("min-w-0");
+    expect(branchLabel?.className).toContain("flex-1");
+    expect(container.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
+    expect(container.textContent).toContain(longBranch);
   });
 
   it("renders root and branch status badges", async () => {

@@ -78,13 +78,10 @@ describe("worktreeDeletionService", () => {
       repositoryId: "repo-1",
       worktreeId: "wt-1",
     });
-
-    await vi.waitFor(() => {
-      expect(worktreeService.remove).toHaveBeenCalledWith("wt-1", { force: undefined });
-      expect(workspaceEventHub.emit).toHaveBeenCalledWith("worktree.deleted", {
-        repositoryId: "repo-1",
-        worktreeId: "wt-1",
-      });
+    expect(worktreeService.remove).toHaveBeenCalledWith("wt-1", { force: undefined });
+    expect(workspaceEventHub.emit).toHaveBeenCalledWith("worktree.deleted", {
+      repositoryId: "repo-1",
+      worktreeId: "wt-1",
     });
   });
 
@@ -119,18 +116,16 @@ describe("worktreeDeletionService", () => {
 
     await service.requestDeletion("wt-1");
 
-    await vi.waitFor(() => {
-      expect(prisma.worktree.update).toHaveBeenCalledWith({
-        where: { id: "wt-1" },
-        data: {
-          status: "delete_failed",
-          lastDeleteError: "teardown failed",
-        },
-      });
-      expect(workspaceEventHub.emit).toHaveBeenCalledWith("worktree.deletion_failed", {
-        repositoryId: "repo-1",
-        worktreeId: "wt-1",
-      });
+    expect(prisma.worktree.update).toHaveBeenCalledWith({
+      where: { id: "wt-1" },
+      data: {
+        status: "delete_failed",
+        lastDeleteError: "teardown failed",
+      },
+    });
+    expect(workspaceEventHub.emit).toHaveBeenCalledWith("worktree.deletion_failed", {
+      repositoryId: "repo-1",
+      worktreeId: "wt-1",
     });
 
     expect(logService.log).toHaveBeenCalledWith(
@@ -144,6 +139,40 @@ describe("worktreeDeletionService", () => {
       },
       { worktreeId: "wt-1" },
     );
+  });
+
+  it("reschedules deletion when a worktree is stuck in deleting without an active job", async () => {
+    const prisma = createPrismaMock();
+    const workspaceEventHub = createWorkspaceEventHubMock();
+    const worktreeService = createWorktreeServiceMock();
+    const logService = createLogServiceMock();
+
+    prisma.worktree.findUnique.mockResolvedValue({
+      id: "wt-1",
+      repositoryId: "repo-1",
+      path: "/tmp/worktrees/feature",
+      status: "deleting",
+      repository: {
+        rootPath: "/tmp/repo",
+      },
+    });
+    worktreeService.remove.mockResolvedValue(undefined);
+
+    const service = createWorktreeDeletionService({
+      prisma,
+      workspaceEventHub,
+      worktreeService,
+      logService,
+    });
+
+    await service.requestDeletion("wt-1");
+
+    expect(prisma.worktree.update).not.toHaveBeenCalled();
+    expect(worktreeService.remove).toHaveBeenCalledWith("wt-1", { force: undefined });
+    expect(workspaceEventHub.emit).toHaveBeenCalledWith("worktree.deleted", {
+      repositoryId: "repo-1",
+      worktreeId: "wt-1",
+    });
   });
 
   it("reconciles interrupted deletions on startup", async () => {

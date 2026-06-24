@@ -5,6 +5,7 @@ import path, { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   FakeCursorSdkModule,
+  FakeCursorSdkRun,
   configureFakeCursorSdk,
   fakeCursorSdkAgents,
   fakeCursorSdkCreateRequests,
@@ -377,6 +378,34 @@ describe("Cursor SDK run turn", () => {
       mode: "plan",
       hasSessionId: false,
     });
+  });
+
+  it("reconciles stale active runs before sending a follow-up prompt", async () => {
+    configureFakeCursorSdk({
+      onSend: ({ run }) => {
+        run.push({
+          type: "assistant",
+          agent_id: "agent-1",
+          run_id: run.id,
+          message: { role: "assistant", content: [{ type: "text", text: "Recovered." }] },
+        });
+      },
+    });
+
+    const stuckRun = new FakeCursorSdkRun("agent-existing");
+    fakeCursorSdkRuns.push(stuckRun);
+
+    const result = await runCursorSdkTurn({
+      prompt: "Continue",
+      sessionId: "agent-existing",
+      cwd: "/tmp/project",
+      apiKey: "cursor-key",
+      ...createCallbacks(),
+    });
+
+    expect(result.output).toBe("Recovered.");
+    expect(stuckRun.status).toBe("cancelled");
+    expect(fakeCursorSdkAgents.get("agent-existing")?.sends).toHaveLength(1);
   });
 
   it("emits cursor.sdk.turnError when the SDK throws after retries", async () => {

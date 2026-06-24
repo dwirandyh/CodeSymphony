@@ -13,7 +13,12 @@ import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
 import { useDeleteRepository } from "../../../hooks/mutations/useDeleteRepository";
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { useUpdateWorktreeBaseBranch } from "../../../hooks/mutations/useUpdateWorktreeBaseBranch";
-import { refetchRepositoriesCollection, upsertRepositoryInCollection } from "../../../collections/repositories";
+import {
+  refetchRepositoriesCollection,
+  refreshRepositoriesCollectionFromServer,
+  removeWorktreeFromCollection,
+  upsertRepositoryInCollection,
+} from "../../../collections/repositories";
 import {
   isPendingWorktreeStatus,
   isRootWorktree,
@@ -55,18 +60,17 @@ function resolveAvailableWorktreeId(repository: Repository, excludedWorktreeId?:
   return rootWorktree?.id ?? selectableWorktrees[0]?.id ?? null;
 }
 
-function markWorktreeDeletionRequested(repositories: Repository[], worktreeId: string): Repository[] {
+function filterRepositoriesForPendingDeletions(
+  repositories: Repository[],
+  pendingDeletedWorktreeIds: ReadonlySet<string>,
+): Repository[] {
+  if (pendingDeletedWorktreeIds.size === 0) {
+    return repositories;
+  }
+
   return repositories.map((repository) => ({
     ...repository,
-    worktrees: repository.worktrees.map((worktree) =>
-      worktree.id === worktreeId
-        ? {
-            ...worktree,
-            status: "deleting",
-            lastDeleteError: null,
-          }
-        : worktree,
-    ),
+    worktrees: repository.worktrees.filter((worktree) => !pendingDeletedWorktreeIds.has(worktree.id)),
   }));
 }
 
@@ -119,9 +123,14 @@ export function useRepositoryManager(
   } = useRepositories({
     enabled: options?.repositoriesEnabled ?? true,
   });
+  const [pendingDeletedWorktreeIds, setPendingDeletedWorktreeIds] = useState<ReadonlySet<string>>(() => new Set());
+  const visibleRepositories = useMemo(
+    () => filterRepositoriesForPendingDeletions(repositories, pendingDeletedWorktreeIds),
+    [pendingDeletedWorktreeIds, repositories],
+  );
   const repositoryWorktreeIndex = useMemo(
-    () => buildRepositoryWorktreeIndex(repositories),
-    [repositories],
+    () => buildRepositoryWorktreeIndex(visibleRepositories),
+    [visibleRepositories],
   );
 
   const createRepoMutation = useCreateRepository();
@@ -202,6 +211,7 @@ export function useRepositoryManager(
   const pendingCreatedWorktreesRef = useRef<Map<string, { previousSelection: { repositoryId: string | null; worktreeId: string | null } }>>(new Map());
   const pendingSetupWorktreeIdsRef = useRef<Set<string>>(new Set());
   const pendingWorktreeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
 
   const selectedRepository = useMemo(() => {
     if (selectedRepositoryId) {
@@ -826,15 +836,12 @@ export function useRepositoryManager(
         ? resolveAvailableWorktreeId(targetRepository, worktreeId)
         : selectedWorktreeId;
 
-    const deletingRepositories = markWorktreeDeletionRequested(repositoriesSnapshot, worktreeId);
-    const deletingRepository = targetRepository
-      ? deletingRepositories.find((repository) => repository.id === targetRepository.id) ?? null
-      : null;
-    if (deletingRepository) {
-      upsertRepositoryInCollection(queryClient, deletingRepository);
-    } else {
-      queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, deletingRepositories);
-    }
+    setPendingDeletedWorktreeIds((current) => {
+      const next = new Set(current);
+      next.add(worktreeId);
+      return next;
+    });
+    removeWorktreeFromCollection(queryClient, worktreeId);
 
     if (selectedWorktreeId === worktreeId) {
       setSelectedRepositoryId(targetRepository?.id ?? previousSelection.repositoryId);
@@ -846,12 +853,27 @@ export function useRepositoryManager(
         worktreeId,
         options: { force: options?.force },
       });
-      void refetchRepositoriesCollection(queryClient);
+      setPendingDeletedWorktreeIds((current) => {
+        const next = new Set(current);
+        next.delete(worktreeId);
+        return next;
+      });
+      removeWorktreeFromCollection(queryClient, worktreeId);
+      await refreshRepositoriesCollectionFromServer(queryClient);
     } catch (e) {
-      if (targetRepository) {
-        upsertRepositoryInCollection(queryClient, targetRepository);
-      } else {
-        queryClient.setQueryData(queryKeys.repositories.all, repositoriesSnapshot);
+      setPendingDeletedWorktreeIds((current) => {
+        const next = new Set(current);
+        next.delete(worktreeId);
+        return next;
+      });
+      try {
+        await refreshRepositoriesCollectionFromServer(queryClient);
+      } catch {
+        if (targetRepository) {
+          upsertRepositoryInCollection(queryClient, targetRepository);
+        } else {
+          queryClient.setQueryData(queryKeys.repositories.all, repositoriesSnapshot);
+        }
       }
       if (selectedWorktreeId === worktreeId) {
         setSelectedRepositoryId(previousSelection.repositoryId);
@@ -946,7 +968,7 @@ export function useRepositoryManager(
   }
 
   return {
-    repositories,
+    repositories: visibleRepositories,
     repositoriesError,
     selectedRepositoryId,
     selectedWorktreeId,

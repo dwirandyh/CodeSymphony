@@ -298,9 +298,21 @@ describe("Composer", () => {
     return optionButton;
   }
 
+  function getAgentModelPopoverPanel(panel: "agent" | "overlay" | "single" | "editor"): Element | null {
+    return document.body.querySelector(`[data-agent-model-panel="${panel}"]`);
+  }
+
+  function getAgentModelPopoverScope(): ParentNode {
+    return document.body;
+  }
+
+  function getAgentModelPopoverButtons(panel: "agent" | "overlay" | "single" | "editor"): HTMLButtonElement[] {
+    const root = getAgentModelPopoverPanel(panel);
+    return Array.from(root?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+  }
+
   function getButtonByExactText(label: string): HTMLButtonElement {
-    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
-    const button = buttons.find((entry) => entry.textContent?.trim() === label);
+    const button = getAgentModelPopoverButtons("agent").find((entry) => entry.textContent?.trim() === label);
     if (!button) {
       throw new Error(`${label} button not found`);
     }
@@ -1094,12 +1106,12 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.querySelector('[data-cli-agent-list="true"]')).toBeNull();
-    expect(container.querySelector('[data-agent-model-panel="single"]')).not.toBeNull();
-    expect(container.querySelector('[data-agent-model-panel="overlay"]')).toBeNull();
-    expect(container.textContent).toContain("Sonnet 4.6");
-    expect(container.textContent).toContain("Opus 4.6");
-    expect(container.textContent).not.toContain("Team Claude");
+    expect(getAgentModelPopoverScope().querySelector('[data-cli-agent-list="true"]')).toBeNull();
+    expect(getAgentModelPopoverScope().querySelector('[data-agent-model-panel="single"]')).not.toBeNull();
+    expect(getAgentModelPopoverScope().querySelector('[data-agent-model-panel="overlay"]')).toBeNull();
+    expect(document.body.textContent).toContain("Sonnet 4.6");
+    expect(document.body.textContent).toContain("Opus 4.6");
+    expect(document.body.textContent).not.toContain("Team Claude");
   });
 
   it("blocks model switching for review threads with history", () => {
@@ -1169,26 +1181,26 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.querySelector('svg[data-agent-icon="claude"]')).not.toBeNull();
-    expect(container.querySelector('svg[data-agent-icon="codex"]')).not.toBeNull();
-    expect(container.querySelector('svg[data-agent-icon="cursor"]')).not.toBeNull();
-    const opencodeIcon = container.querySelector('svg[data-agent-icon="opencode"]');
+    expect(getAgentModelPopoverScope().querySelector('svg[data-agent-icon="claude"]')).not.toBeNull();
+    expect(getAgentModelPopoverScope().querySelector('svg[data-agent-icon="codex"]')).not.toBeNull();
+    expect(getAgentModelPopoverScope().querySelector('svg[data-agent-icon="cursor"]')).not.toBeNull();
+    const opencodeIcon = getAgentModelPopoverScope().querySelector('svg[data-agent-icon="opencode"]');
     expect(opencodeIcon).not.toBeNull();
     expect(opencodeIcon?.querySelectorAll("path")).toHaveLength(1);
     expect(opencodeIcon?.querySelector("path")?.getAttribute("d")).toBe("M16 6H8v12h8V6zm4 16H4V2h16v20z");
-    expect(container.querySelector('[data-agent-model-panel="overlay"]')).not.toBeNull();
-    expect(container.querySelector('[data-agent-model-panel="stacked"]')).toBeNull();
+    expect(getAgentModelPopoverScope().querySelector('[data-agent-model-panel="overlay"]')).not.toBeNull();
+    expect(getAgentModelPopoverScope().querySelector('[data-agent-model-panel="stacked"]')).toBeNull();
     expect(container.textContent).not.toContain("CLI Agent");
     expect(container.textContent).not.toContain("Claude Models");
     expect(container.textContent).not.toContain("Codex Models");
     expect(container.textContent).not.toContain("Cursor Models");
     expect(container.textContent).not.toContain("OpenCode Models");
 
-    const agentList = container.querySelector('[data-cli-agent-list="true"]');
+    const agentList = document.body.querySelector('[data-cli-agent-list="true"]');
     expect(agentList?.querySelectorAll("button")).toHaveLength(4);
   });
 
-  it("renders the desktop agent-model popover in the composer host outside the scroll row", () => {
+  it("renders the desktop agent-model popover in document.body outside the scroll row", () => {
     renderComposer();
 
     const modelButton = getModelSelectorButton();
@@ -1203,10 +1215,11 @@ describe("Composer", () => {
 
     const popoverHost = container.querySelector<HTMLDivElement>('[data-composer-popover-host="true"]');
     expect(popoverHost).not.toBeNull();
+    expect(popoverHost?.querySelector('[data-agent-model-panel="agent"]')).toBeNull();
 
-    expect(popoverHost?.querySelector('[data-agent-model-panel="agent"]')).not.toBeNull();
-
-    const overlayPanel = popoverHost?.querySelector<HTMLElement>('[data-agent-model-panel="overlay"]') ?? null;
+    const agentPanel = document.body.querySelector('[data-agent-model-panel="agent"]');
+    const overlayPanel = document.body.querySelector<HTMLElement>('[data-agent-model-panel="overlay"]');
+    expect(agentPanel).not.toBeNull();
     expect(overlayPanel).not.toBeNull();
     expect(actionRow.contains(overlayPanel)).toBe(false);
   });
@@ -1233,7 +1246,7 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const codexButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    const codexButton = getAgentModelPopoverButtons("agent")
       .find((button) => button.textContent?.includes("Codex"));
     if (!codexButton) {
       throw new Error("Codex agent button not found");
@@ -1243,12 +1256,12 @@ describe("Composer", () => {
       codexButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    const customModelButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    const customModelButton = getAgentModelPopoverButtons("overlay")
       .find((button) => button.textContent?.includes("GPT-5.3 Codex Enterprise") && button.textContent?.includes("Team Codex"));
     if (!customModelButton) {
       throw new Error("Custom Codex model button not found");
     }
-    expect(container.querySelector('[data-model-separator="custom"]')).not.toBeNull();
+    expect(getAgentModelPopoverScope().querySelector('[data-model-separator="custom"]')).not.toBeNull();
 
     act(() => {
       customModelButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
@@ -1317,10 +1330,10 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("CLI default");
-    expect(container.textContent).toContain("GPT-5.4");
-    expect(container.textContent).toContain("GPT-5.4-Mini");
-    expect(container.textContent).toContain("GPT-5.5");
+    expect(document.body.textContent).toContain("CLI default");
+    expect(document.body.textContent).toContain("GPT-5.4");
+    expect(document.body.textContent).toContain("GPT-5.4-Mini");
+    expect(document.body.textContent).toContain("GPT-5.5");
   });
 
   it("renders Codex built-in model choices from the dynamic catalog", () => {
@@ -1350,9 +1363,9 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("GPT-5.5");
-    expect(container.textContent).toContain("GPT-5.2");
-    expect(container.textContent).not.toContain("GPT-5.3 Codex Spark");
+    expect(document.body.textContent).toContain("GPT-5.5");
+    expect(document.body.textContent).toContain("GPT-5.2");
+    expect(document.body.textContent).not.toContain("GPT-5.3 Codex Spark");
   });
 
   it("clarifies when an existing thread can only switch models for the current agent", () => {
@@ -1370,9 +1383,9 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Models for Codex");
-    expect(container.querySelector('[data-cli-agent-list="true"]')).toBeNull();
-    expect(container.textContent).not.toContain("Models for Claude");
+    expect(document.body.textContent).toContain("Models for Codex");
+    expect(getAgentModelPopoverScope().querySelector('[data-cli-agent-list="true"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("Models for Claude");
   });
 
   it("shows OpenCode model options and emits thread agent selection updates", () => {
@@ -1397,7 +1410,7 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const opencodeButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    const opencodeButton = getAgentModelPopoverButtons("agent")
       .find((button) => button.textContent?.includes("OpenCode"));
     if (!opencodeButton) {
       throw new Error("OpenCode agent button not found");
@@ -1407,12 +1420,12 @@ describe("Composer", () => {
       opencodeButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    const customModelButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    const customModelButton = getAgentModelPopoverButtons("overlay")
       .find((button) => button.textContent?.includes("gpt-5-custom") && button.textContent?.includes("OpenCode QA"));
     if (!customModelButton) {
       throw new Error("Custom OpenCode model button not found");
     }
-    expect(container.querySelector('[data-model-separator="custom"]')).not.toBeNull();
+    expect(getAgentModelPopoverScope().querySelector('[data-model-separator="custom"]')).not.toBeNull();
 
     act(() => {
       customModelButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
@@ -1437,7 +1450,7 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const cursorButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    const cursorButton = getAgentModelPopoverButtons("agent")
       .find((button) => button.textContent?.includes("Cursor"));
     if (!cursorButton) {
       throw new Error("Cursor agent button not found");
@@ -1447,7 +1460,7 @@ describe("Composer", () => {
       cursorButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    const cursorModelButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+    const cursorModelButton = getAgentModelPopoverButtons("overlay")
       .find((button) => {
         const label = button.querySelector(".font-medium")?.textContent ?? button.textContent ?? "";
         return label.includes("GPT-5.4") && !label.includes("Cursor");
@@ -1462,7 +1475,7 @@ describe("Composer", () => {
 
     expect(onAgentSelectionChange).toHaveBeenCalledWith(expect.objectContaining({
       agent: "cursor",
-      model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+      model: "gpt-5.4",
       modelProviderId: null,
     }));
   });
@@ -1536,45 +1549,45 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("GPT-5.4 Custom");
-    expect(container.textContent).not.toContain("GLM-4.7");
+    expect(document.body.textContent).toContain("GPT-5.4 Custom");
+    expect(document.body.textContent).not.toContain("GLM-4.7");
 
     const claudeButton = getButtonByExactText("Claude");
     act(() => {
       claudeButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Sonnet 4.6");
-    expect(container.textContent).toContain("GLM 4.7");
-    expect(container.textContent).not.toContain("GPT-5.4 Custom");
+    expect(document.body.textContent).toContain("Sonnet 4.6");
+    expect(document.body.textContent).toContain("GLM 4.7");
+    expect(document.body.textContent).not.toContain("GPT-5.4 Custom");
 
     const codexButton = getButtonByExactText("Codex");
     act(() => {
       codexButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("GPT-5.4");
-    expect(container.textContent).toContain("GPT-5.4 Custom");
-    expect(container.textContent).not.toContain("GLM 4.7");
+    expect(document.body.textContent).toContain("GPT-5.4");
+    expect(document.body.textContent).toContain("GPT-5.4 Custom");
+    expect(document.body.textContent).not.toContain("GLM 4.7");
 
     const cursorButton = getButtonByExactText("Cursor");
     act(() => {
       cursorButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Auto");
-    expect(container.textContent).toContain("GPT-5.4");
-    expect(container.textContent).not.toContain("GPT-5.4 Custom");
+    expect(document.body.textContent).toContain("Auto");
+    expect(document.body.textContent).toContain("GPT-5.4");
+    expect(document.body.textContent).not.toContain("GPT-5.4 Custom");
 
     const opencodeButton = getButtonByExactText("OpenCode");
     act(() => {
       opencodeButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("MiniMax M2.5 Free");
-    expect(container.textContent).toContain("opencode");
-    expect(container.textContent).toContain("gpt-5-custom");
-    expect(container.textContent).toContain("z.ai");
+    expect(document.body.textContent).toContain("MiniMax M2.5 Free");
+    expect(document.body.textContent).toContain("opencode");
+    expect(document.body.textContent).toContain("gpt-5-custom");
+    expect(document.body.textContent).toContain("z.ai");
   });
 
   it("shows OpenCode display names with source labels in the selector", () => {
@@ -1591,11 +1604,11 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("MiniMax M2.5 Free");
-    expect(container.textContent).toContain("Ling 2.6 Flash Free");
-    expect(container.textContent).toContain("GLM-4.7-Flash");
-    expect(container.textContent).toContain("opencode");
-    expect(container.textContent).toContain("zai");
+    expect(document.body.textContent).toContain("MiniMax M2.5 Free");
+    expect(document.body.textContent).toContain("Ling 2.6 Flash Free");
+    expect(document.body.textContent).toContain("GLM-4.7-Flash");
+    expect(document.body.textContent).toContain("opencode");
+    expect(document.body.textContent).toContain("zai");
   });
 
   it("changes permission mode from the selector", () => {

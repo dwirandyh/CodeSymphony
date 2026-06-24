@@ -83,6 +83,21 @@ describe("extractReadTargetFromSummary", () => {
 });
 
 describe("extractReadFileEntry", () => {
+  it("extracts read targets from Cursor SDK toolInput.path", () => {
+    const event = makeEvent({
+      type: "tool.finished",
+      payload: {
+        toolName: "read",
+        summary: "{\"status\":\"success\",\"value\":{\"content\":\"\"}}",
+        toolInput: { path: "/tmp/TerminalView.swift" },
+      },
+    });
+    expect(extractReadFileEntry(event)).toEqual({
+      label: "TerminalView.swift",
+      openPath: "/tmp/TerminalView.swift",
+    });
+  });
+
   it("extracts entry from event with summary", () => {
     const event = makeEvent({ type: "tool.finished", payload: { summary: "Read /src/file.ts" } });
     const entry = extractReadFileEntry(event);
@@ -468,7 +483,10 @@ describe("extractExploreActivityGroups", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]).toMatchObject({ fileCount: 1, searchCount: 1, status: "success" });
     expect(groups[0]?.entries).toEqual([
-      expect.objectContaining({ kind: "search", label: "Searched" }),
+      expect.objectContaining({
+        kind: "search",
+        label: "Searched (rg --files packages/course/lib/presentation/course_main_page)",
+      }),
       expect.objectContaining({
         kind: "read",
         label: "node_training_flow_bloc.dart",

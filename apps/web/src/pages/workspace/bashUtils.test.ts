@@ -147,6 +147,39 @@ describe("extractBashRuns", () => {
     expect(runs.some((r) => r.status === "success")).toBe(true);
   });
 
+  it("absorbs Cursor shell tool.output events into the bash run by toolUseId", () => {
+    const events = [
+      makeEvent({
+        id: "e1", type: "tool.started", idx: 1,
+        payload: {
+          toolName: "shell",
+          toolUseId: "t1",
+          command: "cd /tmp && pwd",
+          shell: "bash",
+          isBash: true,
+        },
+      }),
+      makeEvent({
+        id: "e2", type: "tool.output", idx: 2,
+        payload: { toolName: "shell", toolUseId: "t1", elapsedTimeSeconds: 0.5 },
+      }),
+      makeEvent({
+        id: "e3", type: "tool.finished", idx: 3,
+        payload: {
+          toolName: "shell",
+          summary: "Ran cd /tmp && pwd",
+          precedingToolUseIds: ["t1"],
+          command: "cd /tmp && pwd",
+          shell: "bash",
+          isBash: true,
+        },
+      }),
+    ];
+    const runs = extractBashRuns(events);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.eventIds).toEqual(new Set(["e1", "e2", "e3"]));
+  });
+
   it("tracks elapsed time from tool.output", () => {
     const events = [
       makeEvent({

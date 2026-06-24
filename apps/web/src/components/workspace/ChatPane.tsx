@@ -1,4 +1,4 @@
-import { Suspense, lazy, useMemo } from "react";
+import { Suspense, lazy, useMemo, useRef } from "react";
 import type {
   AttachmentInput,
   ChatMode,
@@ -15,6 +15,7 @@ import type {
   UpdateChatThreadAgentSelectionInput,
 } from "@codesymphony/shared-types";
 import { useThreadThinkingActive } from "../../collections/threadStreamState";
+import { useMobileBottomSurfaceScrollPadding } from "../../lib/mobileComposerMetrics";
 import {
   MOBILE_OVERLAY_Z_CLASS,
   resolveMobileChatContentScrollPadding,
@@ -190,10 +191,12 @@ export function ChatPane({
   });
 
   const composerWorktreePath = worktreeOperational ? worktreePath : null;
+  const mobileGateSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const showMobileGateSurface = mobileComposerPinned && gates.isWaitingForUserGate;
+  useMobileBottomSurfaceScrollPadding(showMobileGateSurface, mobileGateSurfaceRef);
   const mobileChatViewportInset = resolveMobileChatViewportInset({
     mobileComposerPinned,
     mobileBottomOffset,
-    isWaitingForUserGate: gates.isWaitingForUserGate,
   });
   const mobileGateSurfaceStyle = resolveMobileGateSurfaceStyle(mobileBottomOffset);
   const mobileChatContentScrollPadding = resolveMobileChatContentScrollPadding({
@@ -378,8 +381,9 @@ export function ChatPane({
     </>
   );
 
-  const mobileGateSurface = mobileComposerPinned && gates.isWaitingForUserGate ? (
+  const mobileGateSurface = showMobileGateSurface ? (
         <div
+          ref={mobileGateSurfaceRef}
           className={cn(
             "fixed left-0 right-0 bg-background px-1.5 pb-1 pt-0.5 shadow-[0_-10px_30px_rgba(0,0,0,0.18)] sm:px-2.5",
             MOBILE_OVERLAY_Z_CLASS,

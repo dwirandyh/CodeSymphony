@@ -262,6 +262,10 @@ function isBrokenWorktreeMetadataError(message: string): boolean {
   return message.includes("validation failed") || message.includes("does not point back to");
 }
 
+function isLockedWorktreeError(message: string): boolean {
+  return message.includes("locked working tree");
+}
+
 function parseJsonOutput<T>(output: string, label: string): T {
   try {
     return JSON.parse(output) as T;
@@ -363,6 +367,13 @@ export async function removeGitWorktree(args: { repositoryPath: string; worktree
     const message = error instanceof Error ? error.message : "";
     if (message.includes("is not a working tree")) {
       await runGit(["-C", args.repositoryPath, "worktree", "prune"]);
+      return;
+    }
+
+    if (isLockedWorktreeError(message)) {
+      // Git refuses to remove a locked worktree with a single `--force`; it
+      // explicitly requires `-f -f` to override the lock.
+      await runGit(["-C", args.repositoryPath, "worktree", "remove", "--force", "--force", args.worktreePath]);
       return;
     }
 

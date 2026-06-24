@@ -232,6 +232,51 @@ describe("processOrphanToolEvents", () => {
     ]);
   });
 
+  it("normalizes readLints generic tool summaries from persisted Cursor JSON", () => {
+    const inlineToolEvents: ChatEvent[] = [
+      makeEvent(1, "tool.started", {
+        toolName: "readLints",
+        toolUseId: "lints-1",
+      }),
+      makeEvent(2, "tool.output", {
+        toolName: "readLints",
+        toolUseId: "lints-1",
+      }),
+      makeEvent(3, "tool.finished", {
+        toolName: "readLints",
+        summary: "{\"status\":\"success\",\"value\":{\"fileDiagnostics\":[{\"path\":\"/Users/me/termlite/Components/TerminalKeyboardChrome.swift\",\"diagnostics\":[],\"diagnosticsCount\":0}],\"totalFiles\":1,\"totalDiagnostics\":0}}",
+        output: "{\"status\":\"success\",\"value\":{\"fileDiagnostics\":[{\"path\":\"/Users/me/termlite/Components/TerminalKeyboardChrome.swift\",\"diagnostics\":[],\"diagnosticsCount\":0}],\"totalFiles\":1,\"totalDiagnostics\":0}}",
+        precedingToolUseIds: ["lints-1"],
+        toolInput: {
+          paths: ["/Users/me/termlite/Components/TerminalKeyboardChrome.swift"],
+        },
+      }),
+    ];
+
+    const sortable: Array<{ item: { kind: string; [key: string]: unknown } }> = [];
+    processOrphanToolEvents(
+      inlineToolEvents,
+      new Set<string>(),
+      false,
+      [],
+      sortable as never,
+      "t1",
+      {
+        streamingMessageIds: new Set<string>(),
+        stickyRawFallbackMessageIds: new Set<string>(),
+        renderDecisionByMessageId: new Map<string, string>(),
+        loggedOrphanEventIdsByThread: new Map<string, Set<string>>(),
+      },
+    );
+
+    const toolItems = sortable.filter((entry) => entry.item.kind === "tool");
+
+    expect(toolItems).toHaveLength(1);
+    expect(toolItems[0]?.item.toolName).toBe("readLints");
+    expect(toolItems[0]?.item.summary).toBe("Checked lints TerminalKeyboardChrome.swift (0 issues)");
+    expect(toolItems[0]?.item.output).toBeNull();
+  });
+
   it("coalesces AskUserQuestion when requestId differs from toolUseId", () => {
     const inlineToolEvents: ChatEvent[] = [
       makeEvent(1, "tool.started", {

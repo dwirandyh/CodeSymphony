@@ -2,13 +2,12 @@ import { queryOptions, replaceEqualDeep, useQuery, useQueryClient, type QueryCli
 import type { RepositoryReviewState } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
-import { mergeRepositoryReviewSnapshots } from "../../lib/repositoryReviewSnapshot";
+import {
+  countReviewBranchesInSnapshot,
+  mergeRepositoryReviewSnapshots,
+} from "../../lib/repositoryReviewSnapshot";
 import { requestWorkspaceLiveResourceRefresh, useWorkspaceLiveResource } from "../../lib/workspaceLiveResource";
 import { debugLog } from "../../lib/debugLog";
-
-function reviewBranchCount(state: RepositoryReviewState | undefined): number {
-  return state ? Object.keys(state.reviewsByBranch).length : 0;
-}
 
 function repositoryReviewsLiveResourceKey(repositoryId: string) {
   return `repository_reviews:${repositoryId}`;
@@ -31,16 +30,16 @@ export function repositoryReviewsQueryOptions(repositoryId: string) {
       const prevState = prev as RepositoryReviewState | undefined;
       const nextState = next as RepositoryReviewState;
       const merged = mergeRepositoryReviewSnapshots(prevState, nextState);
-      const prevCount = reviewBranchCount(prevState);
-      const mergedCount = reviewBranchCount(merged);
+      const prevCount = countReviewBranchesInSnapshot(prevState);
+      const mergedCount = countReviewBranchesInSnapshot(merged);
       if (prevCount !== mergedCount || prevState?.available !== merged.available) {
         debugLog("workspace.reviews", "query.result", {
           repositoryId,
           incomingAvailable: nextState.available,
-          incomingCount: reviewBranchCount(nextState),
+          incomingCount: countReviewBranchesInSnapshot(nextState),
           prevCount,
           mergedCount,
-          preserved: !nextState.available && reviewBranchCount(nextState) === 0 && prevCount > 0,
+          preserved: !nextState.available && countReviewBranchesInSnapshot(nextState) === 0 && prevCount > 0,
         });
       }
       return replaceEqualDeep(prev, merged);
@@ -73,16 +72,16 @@ export function useRepositoryReviews(repositoryId: string | null, options?: { en
           queryKeys.repositories.reviews(repositoryId),
         );
         const merged = mergeRepositoryReviewSnapshots(current, snapshot);
-        const prevCount = reviewBranchCount(current);
-        const mergedCount = reviewBranchCount(merged);
+        const prevCount = countReviewBranchesInSnapshot(current);
+        const mergedCount = countReviewBranchesInSnapshot(merged);
         if (prevCount !== mergedCount || current?.available !== merged.available) {
           debugLog("workspace.reviews", "live.snapshot", {
             repositoryId,
             incomingAvailable: snapshot.available,
-            incomingCount: reviewBranchCount(snapshot),
+            incomingCount: countReviewBranchesInSnapshot(snapshot),
             prevCount,
             mergedCount,
-            preserved: !snapshot.available && reviewBranchCount(snapshot) === 0 && prevCount > 0,
+            preserved: !snapshot.available && countReviewBranchesInSnapshot(snapshot) === 0 && prevCount > 0,
           });
         }
         queryClient.setQueryData(

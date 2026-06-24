@@ -150,13 +150,78 @@ describe("bash-backed explore activity", () => {
       status: "success",
     });
     expect(groups[0]?.entries).toEqual([
-      expect.objectContaining({ kind: "search", label: "Searched" }),
+      expect.objectContaining({
+        kind: "search",
+        label: "Searched (rg --files packages/course/lib/presentation/course_main_page)",
+      }),
       expect.objectContaining({
         kind: "read",
         label: "node_training_flow_bloc.dart",
         openPath: "packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart",
       }),
     ]);
+  });
+
+  it("labels bash grep/find explore commands from persisted command field", () => {
+    const groups = extractExploreActivityGroups([
+      makeEvent(1, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-1",
+        command: "find . -maxdepth 2 -name \"*.swift\" 2>/dev/null | head -20",
+      }),
+      makeEvent(2, "tool.finished", {
+        toolName: "Bash",
+        command: "find . -maxdepth 2 -name \"*.swift\" 2>/dev/null | head -20",
+        summary: "Ran find . -maxdepth 2 -name \"*.swift\" 2>/dev/null | head -20",
+        precedingToolUseIds: ["bash-1"],
+      }),
+      makeEvent(3, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-2",
+        command: "grep -rl \"resignFirstResponder\" --include=\"*.swift\" . 2>/dev/null",
+      }),
+      makeEvent(4, "tool.finished", {
+        toolName: "Bash",
+        command: "grep -rl \"resignFirstResponder\" --include=\"*.swift\" . 2>/dev/null",
+        summary: "Ran grep -rl \"resignFirstResponder\" --include=\"*.swift\" . 2>/dev/null",
+        precedingToolUseIds: ["bash-2"],
+      }),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.entries).toEqual([
+      expect.objectContaining({
+        kind: "search",
+        label: "Searched (find . -maxdepth 2 -name \"*.swift\" 2>/dev/null | head -20)",
+      }),
+      expect.objectContaining({
+        kind: "search",
+        label: "Searched (grep -rl \"resignFirstResponder\" --include=\"*.swift\" . 2>/dev/null)",
+      }),
+    ]);
+  });
+
+  it("prefers bash description over command when both are present", () => {
+    const groups = extractExploreActivityGroups([
+      makeEvent(1, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-1",
+        command: "grep -rl \"resignFirstResponder\" --include=\"*.swift\" . 2>/dev/null",
+        description: "Search keyboard dismiss patterns",
+      }),
+      makeEvent(2, "tool.finished", {
+        toolName: "Bash",
+        command: "grep -rl \"resignFirstResponder\" --include=\"*.swift\" . 2>/dev/null",
+        description: "Search keyboard dismiss patterns",
+        summary: "Ran grep -rl \"resignFirstResponder\" --include=\"*.swift\" . 2>/dev/null",
+        precedingToolUseIds: ["bash-1"],
+      }),
+    ]);
+
+    expect(groups[0]?.entries[0]).toMatchObject({
+      kind: "search",
+      label: "Searched (Search keyboard dismiss patterns)",
+    });
   });
 
   it("groups shell-wrapped nl | sed inspection as a read explore activity", () => {
@@ -185,6 +250,45 @@ describe("bash-backed explore activity", () => {
       label: "course_main_page.dart",
       openPath: "packages/course/lib/presentation/course_main_page/view/course_main_page.dart",
       pending: false,
+    });
+  });
+
+  it("extracts read targets from Cursor SDK toolInput.path", () => {
+    const event = makeEvent(1, "tool.finished", {
+      toolName: "read",
+      summary: "{\"status\":\"success\",\"value\":{\"content\":\"\",\"totalLines\":365}}",
+      precedingToolUseIds: ["tool-read-1"],
+      toolInput: {
+        path: "/Users/me/project/termlite/Screens/TerminalView.swift",
+      },
+    });
+
+    expect(extractReadFileEntry(event)).toEqual({
+      label: "TerminalView.swift",
+      openPath: "/Users/me/project/termlite/Screens/TerminalView.swift",
+    });
+  });
+
+  it("labels Cursor SDK grep results from toolInput instead of raw JSON summary", () => {
+    const groups = extractExploreActivityGroups([
+      makeEvent(1, "tool.started", {
+        toolName: "grep",
+        toolUseId: "tool-grep-1",
+      }),
+      makeEvent(2, "tool.finished", {
+        toolName: "grep",
+        summary: "{\"status\":\"success\",\"value\":{\"workspaceResults\":{}}}",
+        precedingToolUseIds: ["tool-grep-1"],
+        toolInput: {
+          pattern: "toolbar|keyboard",
+          glob: "**/*.swift",
+        },
+      }),
+    ]);
+
+    expect(groups[0]?.entries[0]).toMatchObject({
+      kind: "search",
+      label: "Searched grep (pattern=toolbar|keyboard, glob=**/*.swift)",
     });
   });
 

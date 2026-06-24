@@ -30,6 +30,8 @@ const mockUpdateWorktreeBaseBranchMutateAsync = vi.fn();
 const measureStartupMetricSinceBootMock = vi.fn();
 const repositoriesCollectionState = vi.hoisted(() => ({
   refetchRepositoriesCollection: vi.fn(),
+  refreshRepositoriesCollectionFromServer: vi.fn().mockResolvedValue([]),
+  removeWorktreeFromCollection: vi.fn(),
   upsertRepositoryInCollection: vi.fn(),
 }));
 
@@ -93,6 +95,8 @@ vi.mock("../../../hooks/queries/useRepositories", () => ({
 
 vi.mock("../../../collections/repositories", () => ({
   refetchRepositoriesCollection: (...args: unknown[]) => repositoriesCollectionState.refetchRepositoriesCollection(...args),
+  refreshRepositoriesCollectionFromServer: (...args: unknown[]) => repositoriesCollectionState.refreshRepositoriesCollectionFromServer(...args),
+  removeWorktreeFromCollection: (...args: unknown[]) => repositoriesCollectionState.removeWorktreeFromCollection(...args),
   upsertRepositoryInCollection: (...args: unknown[]) => repositoriesCollectionState.upsertRepositoryInCollection(...args),
 }));
 
@@ -774,16 +778,52 @@ describe("useRepositoryManager", () => {
         options: { force: undefined },
       });
       expect(hookResult.selectedWorktreeId).toBe("wt-root");
-      expect(repositoriesCollectionState.upsertRepositoryInCollection).toHaveBeenCalledWith(
+      expect(repositoriesCollectionState.upsertRepositoryInCollection).not.toHaveBeenCalledWith(
         queryClient,
         expect.objectContaining({
-          id: "r1",
           worktrees: expect.arrayContaining([
             expect.objectContaining({ id: "wt-feat", status: "deleting" }),
           ]),
         }),
       );
-      expect(repositoriesCollectionState.refetchRepositoriesCollection).toHaveBeenCalledWith(queryClient);
+      expect(repositoriesCollectionState.removeWorktreeFromCollection).toHaveBeenCalledWith(queryClient, "wt-feat");
+      expect(repositoriesCollectionState.refreshRepositoriesCollectionFromServer).toHaveBeenCalledWith(queryClient);
+      expect(repositoriesCollectionState.refetchRepositoriesCollection).not.toHaveBeenCalled();
+    });
+
+    it("optimistically removes the worktree from the collection before the delete mutation resolves", async () => {
+      let resolveDelete: (() => void) | null = null;
+      mockDeleteWorktreeMutateAsync.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      }));
+      render({ desiredWorktreeId: "wt-feat" });
+
+      let removePromise: Promise<void> | null = null;
+      act(() => {
+        removePromise = hookResult.removeWorktree("wt-feat");
+      });
+
+      expect(repositoriesCollectionState.removeWorktreeFromCollection).toHaveBeenCalledWith(queryClient, "wt-feat");
+      expect(mockDeleteWorktreeMutateAsync).toHaveBeenCalled();
+      expect(hookResult.selectedWorktreeId).toBe("wt-root");
+
+      await act(async () => {
+        resolveDelete?.();
+        await removePromise;
+      });
+    });
+
+    it("refreshes repository data from the server when deletion fails", async () => {
+      mockDeleteWorktreeMutateAsync.mockRejectedValueOnce(new Error("Network error"));
+      repositoriesCollectionState.refreshRepositoriesCollectionFromServer.mockResolvedValueOnce(makeRepositories());
+      render({ desiredWorktreeId: "wt-feat" });
+
+      await act(async () => {
+        await hookResult.removeWorktree("wt-feat");
+      });
+
+      expect(repositoriesCollectionState.refreshRepositoriesCollectionFromServer).toHaveBeenCalledWith(queryClient);
+      expect(mockOnError).toHaveBeenCalledWith("Network error");
     });
 
     it("keeps the fallback selection after the deleted worktree disappears from repository data", async () => {

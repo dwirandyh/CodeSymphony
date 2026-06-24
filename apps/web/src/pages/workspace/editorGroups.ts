@@ -16,6 +16,7 @@ import {
 import {
   layoutAfterPlacingNewFileTab,
   targetGroupForNewExplorerFileTab,
+  type ExplorerFileTabPlacementOptions,
 } from "./explorerFileTabPlacement";
 
 export type TabType = "chat" | "terminal" | "review" | "file";
@@ -86,7 +87,7 @@ export type ReconcileEditorGroupsOptions = {
   newFileTabIds?: readonly string[];
   /** Chat tab to activate when it is newly added, so the unsplit pane follows a freshly created/selected thread. */
   activateChatTabId?: string | null;
-};
+} & ExplorerFileTabPlacementOptions;
 
 export function reconcileEditorGroups(
   state: EditorGroupsState,
@@ -130,8 +131,11 @@ export function reconcileEditorGroups(
   let nextActiveGroupId = state.activeGroupId;
 
   if (explorerFileTabs.length > 0) {
-    const targetGroupId = targetGroupForNewExplorerFileTab(state);
-    nextLayout = layoutAfterPlacingNewFileTab(state, targetGroupId);
+    const placementOptions: ExplorerFileTabPlacementOptions = {
+      allowExplorerFileSplit: options?.allowExplorerFileSplit,
+    };
+    const targetGroupId = targetGroupForNewExplorerFileTab(state, placementOptions);
+    nextLayout = layoutAfterPlacingNewFileTab(state, targetGroupId, placementOptions);
     const targetGroup = nextRecord[targetGroupId];
     const lastExplorerId = explorerFileTabs[explorerFileTabs.length - 1]?.id ?? null;
     nextRecord[targetGroupId] = {

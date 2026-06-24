@@ -56,8 +56,21 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
     return created;
   }
 
+  function shouldAttachBashLifecycleEvent(event: ChatEvent): boolean {
+    if (event.type !== "tool.started" && event.type !== "tool.output") {
+      return false;
+    }
+
+    if (isBashToolEvent(event)) {
+      return true;
+    }
+
+    const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+    return toolUseId != null && knownBashToolUseIds.has(toolUseId);
+  }
+
   for (const event of ordered) {
-    if ((event.type === "tool.started" || event.type === "tool.output") && isBashToolEvent(event)) {
+    if (shouldAttachBashLifecycleEvent(event)) {
       const toolUseId = payloadStringOrNull(event.payload.toolUseId);
       if (!toolUseId) {
         continue;

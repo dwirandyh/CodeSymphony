@@ -5,6 +5,8 @@ import { appendRuntimeDebugLog } from "../../routes/debug.js";
 import { withCursorSdkSetupHint } from "./auth.js";
 import { acquireCursorSdkAgent } from "./agentPool.js";
 import { bridgeCursorSdkRunStream } from "./eventBridge.js";
+import { shouldRunCursorSdkInNodeProcess } from "./nodeRuntime.js";
+import { runCursorSdkTurnViaNodeProcess } from "./nodeTurnBridge.js";
 import { buildCursorSdkQuestionTool, applyCursorSdkQuestionSteering, CURSOR_SDK_QUESTION_TOOL_NAME } from "./questionTool.js";
 import {
   buildCursorSdkPermissionEndpointUrl,
@@ -13,6 +15,7 @@ import {
   type CursorSdkPermissionBridgeRegistration,
   type CursorSdkWorktreeHookInstallation,
 } from "./permissionsBridge.js";
+import { reconcileStaleCursorSdkRunsBeforeSend } from "./staleRunRecovery.js";
 import { isCursorSdkHttp2TransportError } from "./transportErrors.js";
 
 type RunnerArgs = Parameters<ChatAgentRunner>[0];
@@ -45,6 +48,12 @@ export type RunCursorSdkTurnParams = CursorSdkTurnCallbacks & {
   onSessionId?: RunnerArgs["onSessionId"];
 };
 
+type CursorSdkPermissionGate = {
+  permissionBridge: CursorSdkPermissionBridgeRegistration | null;
+  worktreeHook: CursorSdkWorktreeHookInstallation | null;
+  dispose: () => Promise<void>;
+};
+
 function createAbortError(): Error {
   const error = new Error("Aborted");
   error.name = "AbortError";
@@ -70,8 +79,6 @@ function summarizeError(error: unknown): { message: string; name: string | null;
   return { message: String(error), name: null, code: null };
 }
 
-// Marks a transport error that occurred after output already streamed, so the
-// retry loop must not re-run the turn (doing so would duplicate output).
 class CursorSdkNonRetryableStreamError extends Error {
   constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause));
@@ -98,9 +105,10 @@ function shouldUsePermissionHook(params: RunCursorSdkTurnParams): boolean {
   return params.permissionMode !== "plan" && params.threadPermissionMode !== "full_access";
 }
 
-export async function runCursorSdkTurn(params: RunCursorSdkTurnParams): Promise<ChatAgentRunnerResult> {
+async function setupCursorSdkPermissionGate(params: RunCursorSdkTurnParams): Promise<CursorSdkPermissionGate> {
   let permissionBridge: CursorSdkPermissionBridgeRegistration | null = null;
   let worktreeHook: CursorSdkWorktreeHookInstallation | null = null;
+
   if (shouldUsePermissionHook(params)) {
     permissionBridge = registerCursorSdkPermissionBridge({
       cwd: params.cwd,
@@ -108,13 +116,24 @@ export async function runCursorSdkTurn(params: RunCursorSdkTurnParams): Promise<
       threadPermissionMode: params.threadPermissionMode,
       onPermissionRequest: params.onPermissionRequest,
     });
-    // Cursor only honors hooks declared in <worktree>/.cursor/hooks.json, so the
-    // gate is installed into the real worktree (refcounted + restored on dispose).
     worktreeHook = await installCursorSdkWorktreeHook(
       params.cwd,
       buildCursorSdkPermissionEndpointUrl(),
     );
   }
+
+  return {
+    permissionBridge,
+    worktreeHook,
+    dispose: async () => {
+      permissionBridge?.dispose();
+      await worktreeHook?.dispose();
+    },
+  };
+}
+
+export async function runCursorSdkTurn(params: RunCursorSdkTurnParams): Promise<ChatAgentRunnerResult> {
+  const gate = await setupCursorSdkPermissionGate(params);
 
   appendRuntimeDebugLog({
     source: "cursor.sdk.turnStart",
@@ -127,79 +146,95 @@ export async function runCursorSdkTurn(params: RunCursorSdkTurnParams): Promise<
       hasSessionId: params.sessionId != null,
       cwd: params.cwd,
       mcpServerCount: params.mcpServers ? Object.keys(params.mcpServers).length : 0,
-      permissionHookEnabled: worktreeHook != null,
+      permissionHookEnabled: gate.worktreeHook != null,
+      nodeDelegated: shouldRunCursorSdkInNodeProcess(),
     },
   });
 
   try {
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= CURSOR_SDK_MAX_ATTEMPTS; attempt += 1) {
-      try {
-        const result = await runCursorSdkTurnAttempt(params, permissionBridge);
+    if (shouldRunCursorSdkInNodeProcess()) {
+      return await runCursorSdkTurnViaNodeProcess({
+        ...params,
+        onSessionId: async (agentId) => {
+          gate.permissionBridge?.bind(agentId);
+          await params.onSessionId?.(agentId);
+        },
+      });
+    }
+
+    return await runCursorSdkTurnDirect(params, gate.permissionBridge);
+  } finally {
+    await gate.dispose();
+  }
+}
+
+export async function runCursorSdkTurnDirect(
+  params: RunCursorSdkTurnParams,
+  permissionBridge: CursorSdkPermissionBridgeRegistration | null = null,
+): Promise<ChatAgentRunnerResult> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= CURSOR_SDK_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await runCursorSdkTurnAttempt(params, permissionBridge);
+      appendRuntimeDebugLog({
+        source: "cursor.sdk.turnCompleted",
+        message: "turn.completed",
+        data: {
+          sdkModel: params.model ?? null,
+          attempts: attempt,
+          outputLength: result.output.length,
+          sessionId: result.sessionId,
+        },
+      });
+      return result;
+    } catch (error) {
+      if (isAbortError(error)) {
         appendRuntimeDebugLog({
-          source: "cursor.sdk.turnCompleted",
-          message: "turn.completed",
+          source: "cursor.sdk.turnAborted",
+          message: "turn.aborted",
+          data: { sdkModel: params.model ?? null, attempts: attempt },
+        });
+        throw createAbortError();
+      }
+
+      lastError = error;
+      if (!isRetryableTransportError(error) || attempt === CURSOR_SDK_MAX_ATTEMPTS) {
+        appendRuntimeDebugLog({
+          source: "cursor.sdk.turnError",
+          message: "turn.failed",
           data: {
             sdkModel: params.model ?? null,
             attempts: attempt,
-            outputLength: result.output.length,
-            sessionId: result.sessionId,
-          },
-        });
-        return result;
-      } catch (error) {
-        if (isAbortError(error)) {
-          appendRuntimeDebugLog({
-            source: "cursor.sdk.turnAborted",
-            message: "turn.aborted",
-            data: { sdkModel: params.model ?? null, attempts: attempt },
-          });
-          throw createAbortError();
-        }
-
-        lastError = error;
-        if (!isRetryableTransportError(error) || attempt === CURSOR_SDK_MAX_ATTEMPTS) {
-          appendRuntimeDebugLog({
-            source: "cursor.sdk.turnError",
-            message: "turn.failed",
-            data: {
-              sdkModel: params.model ?? null,
-              attempts: attempt,
-              retryable: isRetryableTransportError(error),
-              ...summarizeError(error),
-              error: summarizeError(error).message,
-            },
-          });
-          throw withCursorSdkSetupHint(error);
-        }
-        appendRuntimeDebugLog({
-          source: "cursor.sdk.turnRetry",
-          message: "turn.retry",
-          data: {
-            sdkModel: params.model ?? null,
-            attempt,
+            retryable: isRetryableTransportError(error),
             ...summarizeError(error),
+            error: summarizeError(error).message,
           },
         });
-        // Transient HTTP/2 framing failure before any output streamed; retry with a fresh agent.
+        throw withCursorSdkSetupHint(error);
       }
+      appendRuntimeDebugLog({
+        source: "cursor.sdk.turnRetry",
+        message: "turn.retry",
+        data: {
+          sdkModel: params.model ?? null,
+          attempt,
+          ...summarizeError(error),
+        },
+      });
     }
-
-    appendRuntimeDebugLog({
-      source: "cursor.sdk.turnError",
-      message: "turn.failed.exhausted",
-      data: {
-        sdkModel: params.model ?? null,
-        attempts: CURSOR_SDK_MAX_ATTEMPTS,
-        ...summarizeError(lastError),
-        error: summarizeError(lastError).message,
-      },
-    });
-    throw withCursorSdkSetupHint(lastError);
-  } finally {
-    permissionBridge?.dispose();
-    await worktreeHook?.dispose();
   }
+
+  appendRuntimeDebugLog({
+    source: "cursor.sdk.turnError",
+    message: "turn.failed.exhausted",
+    data: {
+      sdkModel: params.model ?? null,
+      attempts: CURSOR_SDK_MAX_ATTEMPTS,
+      ...summarizeError(lastError),
+      error: summarizeError(lastError).message,
+    },
+  });
+  throw withCursorSdkSetupHint(lastError);
 }
 
 async function runCursorSdkTurnAttempt(
@@ -221,15 +256,9 @@ async function runCursorSdkTurnAttempt(
     model: params.model,
     mcpServers: params.mcpServers,
     mode: resolveCursorSdkMode(params.permissionMode),
-    // "user" loads home skill roots (~/.agents/skills, ~/.claude/skills) so user
-    // skills like caveman reach the cursor model. "project" loads the workspace
-    // .cursor config, including the permission gate written to
-    // <worktree>/.cursor/hooks.json for this turn.
     settingSources: ["project", "user"],
     onSessionId: params.onSessionId,
   });
-  // Cursor stamps every permission hook payload with session_id === agentId.
-  // Bind so the hook endpoint routes back to this turn's onPermissionRequest.
   permissionBridge?.bind(lease.agentId);
   appendRuntimeDebugLog({
     source: "cursor.sdk.acquireAgent.done",
@@ -239,8 +268,13 @@ async function runCursorSdkTurnAttempt(
   let run: Run | null = null;
   let removeAbortListener: (() => void) | null = null;
   let streamingStarted = false;
+  let cancelPromise: Promise<void> | null = null;
 
   try {
+    await reconcileStaleCursorSdkRunsBeforeSend({
+      agentId: lease.agentId,
+      cwd: params.cwd,
+    });
     appendRuntimeDebugLog({
       source: "cursor.sdk.send.start",
       message: "send.start",
@@ -255,10 +289,6 @@ async function runCursorSdkTurnAttempt(
       ...(params.model ? { model: params.model } : {}),
       ...(params.mcpServers ? { mcpServers: params.mcpServers } : {}),
       mode: resolveCursorSdkMode(params.permissionMode),
-      // Per-send custom tools: each turn binds its own onQuestionRequest so a
-      // pooled agent always asks through this turn's question flow. Cursor
-      // filters its native askQuestion tool out of the stream, so this is the
-      // supported path for structured questions.
       local: {
         customTools: {
           [CURSOR_SDK_QUESTION_TOOL_NAME]: buildCursorSdkQuestionTool({
@@ -279,7 +309,9 @@ async function runCursorSdkTurnAttempt(
     }
 
     const abortHandler = () => {
-      void run?.cancel();
+      if (run) {
+        cancelPromise = run.cancel().catch(() => undefined);
+      }
     };
     params.abortController?.signal.addEventListener("abort", abortHandler, { once: true });
     removeAbortListener = () => params.abortController?.signal.removeEventListener("abort", abortHandler);
@@ -321,11 +353,8 @@ async function runCursorSdkTurnAttempt(
       throw createAbortError();
     }
 
-    // Plan mode without a saved plan file: Cursor often returns the plan as
-    // inline assistant text instead of writing .cursor/plans/*.md. Surface that
-    // text as the plan so approval/revise/reject controls appear (mirrors codex).
     if (params.permissionMode === "plan" && !planEmitted && output.trim().length > 0) {
-      await params.onPlanFileDetected({
+      await params.onPlanFileDetected?.({
         filePath: path.join(params.cwd, ".cursor", "plans", "cursor-plan.md"),
         content: output.trim(),
         source: "streaming_fallback",
@@ -334,13 +363,20 @@ async function runCursorSdkTurnAttempt(
 
     return { output, sessionId: lease.agentId };
   } catch (error) {
-    // If output already reached the client, a retry would duplicate it; surface the error instead.
     if (streamingStarted && isRetryableTransportError(error)) {
       throw new CursorSdkNonRetryableStreamError(error);
     }
     throw error;
   } finally {
     removeAbortListener?.();
+    if (cancelPromise) {
+      try {
+        await cancelPromise;
+        await run?.wait();
+      } catch {
+        // Best-effort cleanup so the SDK local store does not keep a stale active run.
+      }
+    }
     lease.release();
   }
 }

@@ -19,6 +19,68 @@ function isCollectionSyncNotInitializedError(error: unknown) {
     && error.message === "Collection must be in 'ready' state for manual sync operations. Sync not initialized yet.";
 }
 
+function repositoryWorktreeSetsMatch(left: Repository, right: Repository) {
+  if (left.worktrees.length !== right.worktrees.length) {
+    return false;
+  }
+
+  const rightWorktreeIds = new Set(right.worktrees.map((worktree) => worktree.id));
+  return left.worktrees.every((worktree) => rightWorktreeIds.has(worktree.id));
+}
+
+function upsertRepositoryQueryData(queryClient: QueryClient, repository: Repository) {
+  const nextRepository = toPlainRepository(repository);
+
+  queryClient.setQueryData<Repository[] | undefined>(queryKeys.repositories.all, (current) => {
+    const next = [...(current ?? [])];
+    const existingIndex = next.findIndex((entry) => entry.id === nextRepository.id);
+
+    if (existingIndex === -1) {
+      next.push(nextRepository);
+    } else {
+      next[existingIndex] = nextRepository;
+    }
+
+    return [...next].sort(compareRepositories);
+  });
+
+  return nextRepository;
+}
+
+function writeRepositoryToCollection(collection: RepositoriesCollection, repository: Repository) {
+  const nextRepository = toPlainRepository(repository);
+  const hasRepository = (collection.toArray as unknown as Repository[])
+    .some((entry) => entry.id === nextRepository.id);
+
+  if (hasRepository) {
+    collection.utils.writeBatch(() => {
+      collection.utils.writeDelete(nextRepository.id);
+    });
+  }
+
+  collection.utils.writeBatch(() => {
+    collection.utils.writeInsert(nextRepository);
+  });
+}
+
+function replaceRepositoryInCollection(queryClient: QueryClient, repository: Repository) {
+  const nextRepository = upsertRepositoryQueryData(queryClient, repository);
+  const collection = getExistingRepositoriesCollection(queryClient);
+  if (!collection) {
+    return nextRepository;
+  }
+
+  try {
+    writeRepositoryToCollection(collection, nextRepository);
+  } catch (error) {
+    if (!isCollectionSyncNotInitializedError(error)) {
+      throw error;
+    }
+  }
+
+  return nextRepository;
+}
+
 function toPlainWorktree(worktree: Worktree): Worktree {
   return {
     id: worktree.id,
@@ -157,15 +219,30 @@ export async function refreshRepositoriesCollectionFromServer(queryClient: Query
 
   const liveRepositoryIds = new Set(liveRepositories.map((repository) => repository.id));
 
+  const collectionRepositories = (collection.toArray as unknown as Repository[]);
+
   try {
     collection.utils.writeBatch(() => {
-      for (const repository of (collection.toArray as unknown as Repository[])) {
+      for (const repository of collectionRepositories) {
         if (!liveRepositoryIds.has(repository.id)) {
           collection.utils.writeDelete(repository.id);
         }
       }
 
       for (const repository of liveRepositories) {
+        const existingRepository = collectionRepositories.find((entry) => entry.id === repository.id) ?? null;
+        if (existingRepository && !repositoryWorktreeSetsMatch(existingRepository, repository)) {
+          collection.utils.writeDelete(repository.id);
+        }
+      }
+
+      for (const repository of liveRepositories) {
+        const existingRepository = collectionRepositories.find((entry) => entry.id === repository.id) ?? null;
+        if (existingRepository && !repositoryWorktreeSetsMatch(existingRepository, repository)) {
+          collection.utils.writeInsert(repository);
+          continue;
+        }
+
         collection.utils.writeUpsert(repository);
       }
     });
@@ -175,27 +252,43 @@ export async function refreshRepositoriesCollectionFromServer(queryClient: Query
     }
   }
 
+  await collection.utils.refetch();
+
   return liveRepositories;
+}
+
+export function removeWorktreeFromCollection(queryClient: QueryClient, worktreeId: string) {
+  const collection = getExistingRepositoriesCollection(queryClient);
+  const collectionRepositories = collection
+    ? (collection.toArray as unknown as Repository[])
+    : queryClient.getQueryData<Repository[]>(queryKeys.repositories.all) ?? [];
+
+  for (const repository of collectionRepositories) {
+    if (!repository.worktrees.some((worktree) => worktree.id === worktreeId)) {
+      continue;
+    }
+
+    replaceRepositoryInCollection(queryClient, {
+      ...repository,
+      worktrees: repository.worktrees.filter((worktree) => worktree.id !== worktreeId),
+    });
+  }
 }
 
 export function upsertRepositoryInCollection(queryClient: QueryClient, repository: Repository) {
   const collection = getRepositoriesCollection(queryClient);
   const nextRepository = toPlainRepository(repository);
+  const existingRepository = (collection.toArray as unknown as Repository[])
+    .find((entry) => entry.id === nextRepository.id) ?? null;
 
-  queryClient.setQueryData<Repository[] | undefined>(queryKeys.repositories.all, (current) => {
-    const next = [...(current ?? [])];
-    const existingIndex = next.findIndex((entry) => entry.id === nextRepository.id);
-
-    if (existingIndex === -1) {
-      next.push(nextRepository);
-    } else {
-      next[existingIndex] = nextRepository;
-    }
-
-    return [...next].sort(compareRepositories);
-  });
+  upsertRepositoryQueryData(queryClient, nextRepository);
 
   try {
+    if (existingRepository && !repositoryWorktreeSetsMatch(existingRepository, nextRepository)) {
+      writeRepositoryToCollection(collection, nextRepository);
+      return;
+    }
+
     collection.utils.writeUpsert(nextRepository);
   } catch (error) {
     if (!isCollectionSyncNotInitializedError(error)) {

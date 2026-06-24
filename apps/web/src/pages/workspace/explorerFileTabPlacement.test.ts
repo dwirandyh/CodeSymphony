@@ -123,4 +123,36 @@ describe("layoutAfterPlacingNewFileTab", () => {
     const state = createEmptyEditorGroupsState();
     expect(layoutAfterPlacingNewFileTab(state, "topRight")).toBe("horizontal");
   });
+
+  it("stays single on mobile when explorer split is disabled", () => {
+    const state = createEmptyEditorGroupsState();
+    expect(layoutAfterPlacingNewFileTab(state, "topLeft", { allowExplorerFileSplit: false })).toBe("single");
+  });
+});
+
+describe("reconcileEditorGroups mobile explorer file placement", () => {
+  it("keeps single layout and places new file tab on topLeft when explorer split is disabled", () => {
+    const state = {
+      ...createEmptyEditorGroupsState(),
+      groups: {
+        ...createEmptyEditorGroupsState().groups,
+        topLeft: {
+          tabs: [{ type: "chat" as const, id: "thread1" }],
+          activeTabId: "thread1",
+        },
+      },
+    };
+
+    const reconciled = reconcileEditorGroups(state, [
+      { type: "chat", id: "thread1" },
+      { type: "file", id: "new.ts" },
+    ], { newFileTabIds: ["new.ts"], allowExplorerFileSplit: false });
+
+    expect(reconciled.layout).toBe("single");
+    expect(reconciled.splitMode).toBe(false);
+    expect(reconciled.activeGroupId).toBe("topLeft");
+    expect(reconciled.groups.topLeft.tabs.map((t) => t.id)).toEqual(["thread1", "new.ts"]);
+    expect(reconciled.groups.topLeft.activeTabId).toBe("new.ts");
+    expect(reconciled.groups.topRight.tabs).toEqual([]);
+  });
 });

@@ -565,6 +565,118 @@ describe("chatService queue flow", () => {
     ))).toBe(false);
   });
 
+  it("does not hand off send-now drafts when the ask_user_question tool finishes", async () => {
+    let releaseQuestionGate: (() => void) | null = null;
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({
+      onQuestionRequest,
+      onToolStarted,
+      onToolFinished,
+      onText,
+      abortController,
+    }) => {
+      await onText("Investigating toolbar layout.");
+
+      await new Promise<void>((resolve) => {
+        releaseQuestionGate = resolve;
+      });
+
+      await onToolStarted({
+        toolName: "ask_user_question",
+        toolUseId: "tool-question-1",
+        parentToolUseId: null,
+      });
+
+      await onQuestionRequest({
+        requestId: "tool-question-1",
+        questions: [{ question: "Continue debugging the toolbar?" }],
+      });
+
+      await onToolFinished({
+        toolName: "ask_user_question",
+        summary: "Asked user a question",
+        precedingToolUseIds: ["tool-question-1"],
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        if (abortController?.signal.aborted) {
+          reject(new Error("Aborted during question follow-up"));
+          return;
+        }
+        abortController?.signal.addEventListener("abort", () => {
+          reject(new Error("Aborted during question follow-up"));
+        }, { once: true });
+        setTimeout(resolve, 250);
+      });
+
+      await onText("Continuing after the answer.");
+      return {
+        output: "Investigating toolbar layout.Continuing after the answer.",
+        sessionId: "queue-question-tool-boundary",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "initial message",
+      mode: "default",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "message.delta" && event.payload.delta === "Investigating toolbar layout.",
+    );
+
+    const queuedMessage = await chatService.queueMessage(threadId, {
+      content: "urgent queued draft",
+      mode: "default",
+    });
+    await chatService.requestQueuedMessageDispatch(threadId, queuedMessage.id);
+
+    releaseQuestionGate?.();
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "question.requested" && event.payload.requestId === "tool-question-1",
+    );
+
+    await chatService.answerQuestion(threadId, {
+      requestId: "tool-question-1",
+      answers: { "Continue debugging the toolbar?": "yes" },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const interimEvents = await chatService.listEvents(threadId);
+    expect(interimEvents.some((event) => (
+      event.type === "chat.completed"
+      && event.payload.cancelled === true
+      && event.payload.cancellationReason === "queued_message_dispatch"
+    ))).toBe(false);
+
+    await waitForTerminalEvent(chatService, threadId);
+
+    const queued = await chatService.listQueuedMessages(threadId);
+    const userMessages = (await chatService.listMessages(threadId))
+      .filter((message) => message.role === "user")
+      .map((message) => message.content);
+
+    expect(queued).toHaveLength(0);
+    expect(userMessages).toEqual([
+      "initial message",
+      "urgent queued draft",
+    ]);
+  });
+
   it("prioritizes send-now drafts ahead of FIFO queued drafts after the current tool boundary", async () => {
     let runCount = 0;
     let releaseToolBoundary: (() => void) | null = null;

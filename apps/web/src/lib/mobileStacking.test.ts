@@ -50,17 +50,15 @@ describe("mobileStacking", () => {
     expect(resolveMobileChatScrollRegionClass(true)).toContain("overscroll-none");
   });
 
-  it("drops composer viewport reserve while a user gate owns the mobile surface", () => {
+  it("reserves gate surface height in the chat viewport while a user gate owns the mobile surface", () => {
     expect(resolveMobileChatViewportInset({
       mobileComposerPinned: true,
       mobileBottomOffset: 0,
-      isWaitingForUserGate: true,
-    })).toBeUndefined();
+    })).toBe("var(--cs-mobile-composer-scroll-padding, 7.5rem)");
     expect(resolveMobileChatViewportInset({
       mobileComposerPinned: true,
       mobileBottomOffset: 280,
-      isWaitingForUserGate: true,
-    })).toBeUndefined();
+    })).toBe("calc(var(--cs-mobile-keyboard-offset, 0px) + var(--cs-mobile-composer-scroll-padding, 7.5rem))");
   });
 
   it("reserves composer height in the chat viewport so messages do not sit behind it", () => {

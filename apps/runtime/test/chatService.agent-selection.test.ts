@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -604,6 +604,79 @@ describe("chatService agent selection", () => {
     expect(opencodeRunner).toHaveBeenCalledWith(expect.objectContaining({
       prompt: "Use $diagnose for this task.\n\nwhy no skills?",
     }));
+  });
+
+  it("normalizes /skill prompts for Claude threads with custom providers", async () => {
+    let observedPrompt: string | null = null;
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ prompt, providerApiKey, providerBaseUrl, onSessionId, onText }) => {
+      observedPrompt = prompt;
+      expect(providerApiKey).toBe("provider-key");
+      expect(providerBaseUrl).toBe("https://provider.example.com/v1");
+      await onSessionId?.("claude-session-skill");
+      await onText("Claude reply");
+      return {
+        output: "Claude reply",
+        sessionId: "claude-session-skill",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: createStubModelProviderService({
+        "provider-claude-remote": {
+          id: "provider-claude-remote",
+          compatibility: "anthropic",
+          apiKey: "provider-key",
+          baseUrl: "https://provider.example.com/v1",
+          name: "Remote Claude",
+          modelId: "claude-opus-4.6",
+        },
+      }),
+    });
+    const { thread, worktree } = await seedThread("Claude slash command rewrite");
+    const homePath = mkdtempSync(join(tmpdir(), "codesymphony-home-claude-skills-"));
+    const homeSkillDir = join(homePath, ".claude/skills/diagnose");
+    mkdirSync(homeSkillDir, { recursive: true });
+    writeFileSync(
+      join(homeSkillDir, "SKILL.md"),
+      "---\nname: diagnose\ndescription: Diagnose hard bugs.\n---\n",
+    );
+    vi.stubEnv("HOME", homePath);
+
+    await prisma.modelProvider.create({
+      data: {
+        id: "provider-claude-remote",
+        name: "Remote Claude",
+        compatibility: "anthropic",
+        baseUrl: "https://provider.example.com/v1",
+        apiKey: "provider-key",
+        models: {
+          create: {
+            modelId: "claude-opus-4.6",
+          },
+        },
+      },
+    });
+    await chatService.updateThreadAgentSelection(thread.id, {
+      agent: "claude",
+      model: "claude-opus-4.6",
+      modelProviderId: "provider-claude-remote",
+    });
+
+    await chatService.sendMessage(thread.id, {
+      content: "/diagnose why is this broken?",
+    });
+    await waitForCompletion(chatService, thread.id);
+
+    expect(claudeRunner).toHaveBeenCalledTimes(1);
+    expect(observedPrompt).toBe("Use $diagnose for this task.\n\nwhy is this broken?");
+
+    const linkedSkillPath = join(worktree.path, ".claude/skills/diagnose");
+    expect(existsSync(linkedSkillPath)).toBe(true);
+    expect(lstatSync(linkedSkillPath).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(linkedSkillPath)).toBe(homeSkillDir);
   });
 
   it("includes the effective Codex CLI provider in runtime errors for built-in Codex threads", async () => {

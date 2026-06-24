@@ -8,6 +8,7 @@ import type {
 
 import { sanitizeForLog, truncateForPreview, toIso } from "./sanitize.js";
 import {
+  bashDescriptionFromToolInput,
   commandFromUnknownToolInput,
   readTargetFromUnknownToolInput,
   searchParamsFromUnknownToolInput,
@@ -101,6 +102,7 @@ export function createMarkStarted(
     ownershipCandidates?: string[];
     activeSubagentToolUseIds?: string[];
     command?: string;
+    description?: string;
     searchParams?: string;
     editTarget?: string;
     skillName?: string;
@@ -157,6 +159,7 @@ export function createMarkStarted(
       ...(metadata?.isBash
         ? {
           command: metadata.command,
+          ...(metadata.description ? { description: metadata.description } : {}),
           shell: "bash" as const,
           isBash: true as const,
         }
@@ -199,6 +202,7 @@ export function buildMetadataFromHookInput(
     toolName: presentation.toolName,
     ...(presentation.toolKind ? { toolKind: presentation.toolKind } : {}),
     command: commandFromUnknownToolInput(hookInput.tool_input),
+    description: bashDescriptionFromToolInput(hookInput.tool_input),
     readTarget: readTargetFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
     searchParams: presentation.searchParams ?? searchParamsFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
     editTarget: editTargetFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
@@ -218,6 +222,9 @@ export function buildMetadataFromHookInput(
   }
   if (!metadata.skillName) {
     metadata.skillName = skillNameFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
+  }
+  if (!metadata.description) {
+    metadata.description = bashDescriptionFromToolInput(hookInput.tool_input);
   }
   toolMetadataByUseId.set(hookToolUseId, metadata);
   return metadata;
@@ -288,6 +295,7 @@ export function buildToolFinishedPayload(
     ...(metadata.isBash
       ? {
         command: metadata.command,
+        ...(metadata.description ? { description: metadata.description } : {}),
         shell: "bash" as const,
         isBash: true as const,
       }

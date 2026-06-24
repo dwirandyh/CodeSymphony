@@ -44,13 +44,12 @@ export const MOBILE_KEYBOARD_OFFSET_CSS_VAR = "--cs-mobile-keyboard-offset";
 const MOBILE_COMPOSER_SCROLL_PADDING = "var(--cs-mobile-composer-scroll-padding, 7.5rem)";
 const MOBILE_KEYBOARD_OFFSET = `var(${MOBILE_KEYBOARD_OFFSET_CSS_VAR}, 0px)`;
 
-/** Bottom inset for the bounded chat viewport (composer reserve + keyboard shrink). */
+/** Bottom inset for the bounded chat viewport (composer/gate reserve + keyboard shrink). */
 export function resolveMobileChatViewportInset(args: {
   mobileComposerPinned: boolean;
   mobileBottomOffset: number;
-  isWaitingForUserGate?: boolean;
 }): string | undefined {
-  if (!args.mobileComposerPinned || args.isWaitingForUserGate) {
+  if (!args.mobileComposerPinned) {
     return undefined;
   }
 

@@ -33,6 +33,7 @@ import { resetGitStatusCollectionRegistryForTest } from "../../collections/gitSt
 import {
   refetchRepositoriesCollection,
   refreshRepositoriesCollectionFromServer,
+  removeWorktreeFromCollection,
   resetRepositoriesCollectionRegistryForTest,
   upsertRepositoryInCollection,
 } from "../../collections/repositories";
@@ -497,12 +498,123 @@ describe("query hooks", () => {
     expect(container.textContent).toContain("status:active");
   });
 
+  it("refreshRepositoriesCollectionFromServer removes a deleted worktree from the live repository list", async () => {
+    vi.mocked(api.listRepositories)
+      .mockResolvedValueOnce(withExtraWorktree("deleting"))
+      .mockResolvedValueOnce(repoFixture)
+      .mockResolvedValueOnce(repoFixture);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorktreeStatusHarness worktreeId="wt-2" />
+        </QueryClientProvider>
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("status:deleting");
+
+    await act(async () => {
+      await refreshRepositoriesCollectionFromServer(queryClient);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("status:missing");
+  });
+
+  it("refreshRepositoriesCollectionFromServer removes an optimistic deleting worktree when the server no longer has it", async () => {
+    const deletingRepositories = withExtraWorktree("deleting");
+
+    vi.mocked(api.listRepositories)
+      .mockResolvedValueOnce(repoFixture)
+      .mockResolvedValueOnce(repoFixture)
+      .mockResolvedValueOnce(repoFixture);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorktreeStatusHarness worktreeId="wt-2" />
+        </QueryClientProvider>
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("status:missing");
+
+    await act(async () => {
+      upsertRepositoryInCollection(queryClient, deletingRepositories[0]!);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("status:deleting");
+
+    await act(async () => {
+      await refreshRepositoriesCollectionFromServer(queryClient);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("status:missing");
+  });
+
+  it("removeWorktreeFromCollection drops an optimistic deleting worktree from the live repository list", async () => {
+    const deletingRepositories = withExtraWorktree("deleting");
+
+    vi.mocked(api.listRepositories).mockResolvedValueOnce(repoFixture);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorktreeStatusHarness worktreeId="wt-2" />
+        </QueryClientProvider>
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      upsertRepositoryInCollection(queryClient, deletingRepositories[0]!);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("status:deleting");
+
+    await act(async () => {
+      removeWorktreeFromCollection(queryClient, "wt-2");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("status:missing");
+  });
+
   it("refreshRepositoriesCollectionFromServer updates a pending worktree from the authoritative repository list", async () => {
     const creatingRepositories = withExtraWorktree("creating");
     const activeRepositories = withExtraWorktree("active");
 
     vi.mocked(api.listRepositories)
       .mockResolvedValueOnce(repoFixture)
+      .mockResolvedValueOnce(activeRepositories)
       .mockResolvedValueOnce(activeRepositories);
 
     act(() => {
@@ -531,9 +643,10 @@ describe("query hooks", () => {
       await refreshRepositoriesCollectionFromServer(queryClient);
       await Promise.resolve();
       await Promise.resolve();
+      await Promise.resolve();
     });
 
-    expect(vi.mocked(api.listRepositories)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.listRepositories)).toHaveBeenCalledTimes(3);
     expect(container.textContent).toContain("status:active");
   });
 

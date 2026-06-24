@@ -16,6 +16,11 @@ import {
 } from "../eventUtils.js";
 import { extractBashRuns } from "../bashUtils.js";
 import { extractEditedRuns } from "../editUtils.js";
+import {
+  isReadLintsToolName,
+  resolveReadLintsSummary,
+  shouldSuppressReadLintsOutput,
+} from "../readLintsUtils.js";
 import { pushRenderDebug } from "../debug.js";
 import { logTimelineWarning } from "../logger.js";
 import type { AskUserQuestionGroup } from "../types.js";
@@ -278,18 +283,23 @@ export function extractGenericToolRuns(
       : hasFinishedEvent
         ? "success"
         : "running";
+    const toolName = payloadStringOrNull(primaryEvent.payload.toolName);
+    const isReadLintsTool = isReadLintsToolName(toolName);
+    const rawOutput = outputEvent && typeof outputEvent.payload.output === "string" ? outputEvent.payload.output : null;
 
     runs.push({
       id: runId,
       toolUseId: runId,
       startIdx: firstEvent.idx,
       anchorIdx: firstEvent.idx,
-      toolName: payloadStringOrNull(primaryEvent.payload.toolName),
+      toolName,
       summary:
-        payloadStringOrNull(primaryEvent.payload.toolName)?.toLowerCase() === "skill"
+        toolName?.toLowerCase() === "skill"
           ? resolveSkillSummary(sortedEvents, primaryEvent)
-          : payloadStringOrNull(primaryEvent.payload.summary),
-      output: outputEvent && typeof outputEvent.payload.output === "string" ? outputEvent.payload.output : null,
+          : isReadLintsTool
+            ? resolveReadLintsSummary(primaryEvent)
+            : payloadStringOrNull(primaryEvent.payload.summary),
+      output: isReadLintsTool && shouldSuppressReadLintsOutput(rawOutput) ? null : rawOutput,
       error: resolvedError,
       truncated: (outputEvent?.payload.truncated === true) || (errorEvent?.payload.truncated === true),
       durationSeconds: durationEvent && typeof durationEvent.payload.elapsedTimeSeconds === "number" ? durationEvent.payload.elapsedTimeSeconds : null,

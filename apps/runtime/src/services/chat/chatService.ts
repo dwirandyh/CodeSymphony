@@ -88,7 +88,12 @@ import {
   persistAlwaysAllowRule,
   inferPlanDetectionSource,
 } from "./chatAttachmentUtils.js";
-import { listCodexSkills, normalizeCodexSkillSlashCommandsForPrompt } from "./codexSkills.js";
+import {
+  ensureProjectClaudeSkillLinks,
+  listClaudeSkills,
+  listCodexSkills,
+  normalizeSkillSlashCommandsForPrompt,
+} from "./codexSkills.js";
 import { createSlashCommandCatalogCacheManager } from "./slashCommandCatalogCache.js";
 import {
   ensureThreadPermissionMap,
@@ -123,6 +128,7 @@ import {
 import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../claude/toolClassification.js";
 import { buildCodexCliProviderHint } from "../../codex/config.js";
 import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
+import { CURSOR_SDK_QUESTION_TOOL_NAME } from "../../cursor/sdk/questionTool.js";
 import { listCursorSlashCommands } from "../../cursor/sessionRunner.js";
 import { resolveCursorCatalogHintsForModel } from "../../cursor/resolveCursorCatalogHints.js";
 import { appendRuntimeDebugLog } from "../../routes/debug.js";
@@ -599,6 +605,10 @@ async function resolveSkillsForPromptNormalization(
     } catch {
       return localSkills;
     }
+  }
+
+  if (agent === "claude") {
+    return listClaudeSkills(worktreePath);
   }
 
   return null;
@@ -1433,9 +1443,17 @@ export function createChatService(deps: RuntimeDeps) {
       thread.agent,
       thread.worktree.path,
     );
-    const normalizedContent = skillsForNormalization
-      ? normalizeCodexSkillSlashCommandsForPrompt(params.content, skillsForNormalization)
-      : params.content;
+    const normalizedPrompt = skillsForNormalization
+      ? normalizeSkillSlashCommandsForPrompt(params.content, skillsForNormalization)
+      : { content: params.content, referencedSkills: [] };
+    if (
+      thread.agent === "claude"
+      && thread.modelProviderId
+      && normalizedPrompt.referencedSkills.length > 0
+    ) {
+      ensureProjectClaudeSkillLinks(thread.worktree.path, normalizedPrompt.referencedSkills);
+    }
+    const normalizedContent = normalizedPrompt.content;
     const imageAttachments = attachmentRecords.filter((attachment) => isImageMimeType(attachment.mimeType));
     const promptWithAttachments = buildPromptWithAttachments(normalizedContent, attachmentRecords, {
       workspaceRoot: thread.worktree.path,
@@ -2139,7 +2157,14 @@ export function createChatService(deps: RuntimeDeps) {
             messageId: assistantMessage.id,
           });
           await maybeEmitIncrementalWorktreeDiff(payload);
-          await maybeRequestQueuedHandoff(threadId);
+          const toolName = "toolName" in payload && typeof payload.toolName === "string"
+            ? payload.toolName
+            : "";
+          const isCursorQuestionTool = toolName === CURSOR_SDK_QUESTION_TOOL_NAME
+            || toolName.toLowerCase().includes("ask_user_question");
+          if (!isCursorQuestionTool) {
+            await maybeRequestQueuedHandoff(threadId);
+          }
         },
         onSubagentStarted: async (payload) => {
           recordFirstRunnerSignal("subagent.started", {

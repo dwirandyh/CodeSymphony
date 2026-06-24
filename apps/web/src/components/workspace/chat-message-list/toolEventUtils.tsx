@@ -1,4 +1,8 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
+import {
+  isReadLintsToolName,
+  resolveReadLintsSubtitle,
+} from "@codesymphony/chat-timeline-core";
 import type { ChatTimelineItem } from "./ChatMessageList.types";
 
 const WHITESPACE_REGEX = /\s/;
@@ -177,6 +181,10 @@ export function toolTitle(event: ChatEvent): string {
     return "Explored";
   }
 
+  if (isReadLintsToolName(toolNameFromEvent(event))) {
+    return "Checked lints";
+  }
+
   if (event.type === "tool.started") {
     return "Running";
   }
@@ -240,6 +248,9 @@ export function toolSubtitle(event: ChatEvent): string {
   }
 
   if (event.type === "tool.finished") {
+    if (isReadLintsToolName(toolNameFromEvent(event))) {
+      return resolveReadLintsSubtitle(event);
+    }
     return String(event.payload.summary ?? "Tool finished");
   }
 

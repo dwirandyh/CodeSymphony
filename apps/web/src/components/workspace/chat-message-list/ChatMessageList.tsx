@@ -1287,7 +1287,8 @@ export const ChatMessageList = memo(function ChatMessageList({
       {displayItems.length === 0 ? (
         <div
           className={cn(
-            mobileComposerPinned && "min-h-0 flex-1 overflow-y-auto overscroll-y-contain",
+            "h-full min-h-0",
+            mobileComposerPinned && "flex-1 overflow-y-auto overscroll-y-contain",
           )}
           style={contentScrollPadding ? { paddingBottom: contentScrollPadding } : undefined}
         >

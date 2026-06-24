@@ -1,6 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MOBILE_CONTEXT_Z_CLASS } from "../../../lib/mobileStacking";
 import { AgentModelSelector, calculateAgentModelPopoverPosition } from "./AgentModelSelector";
 
 describe("calculateAgentModelPopoverPosition", () => {
@@ -206,5 +207,54 @@ describe("AgentModelSelector", () => {
       model: "gpt-5-custom",
       modelProviderId: "provider-codex",
     });
+  });
+
+  it("portals the desktop popover to document.body with fixed viewport stacking", () => {
+    const onSelectionChange = vi.fn();
+    const popoverHost = document.createElement("div");
+    popoverHost.setAttribute("data-test-popover-host", "true");
+    container.appendChild(popoverHost);
+
+    act(() => {
+      root.render(
+        createElement(AgentModelSelector, {
+          selection: {
+            agent: "claude",
+            model: "claude-sonnet-4-6",
+            modelProviderId: null,
+          },
+          providers: [],
+          claudeModels: [{
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            description: "Built-in Claude model.",
+          }],
+          opencodeModels: [],
+          showAgentList: true,
+          popoverContainer: popoverHost,
+          onSelectionChange,
+        }),
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Select CLI agent and model"]');
+    if (!trigger) {
+      throw new Error("Model selector trigger not found");
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const agentPanel = document.body.querySelector('[data-agent-model-panel="agent"]');
+    const overlayPanel = document.body.querySelector('[data-agent-model-panel="overlay"]');
+    expect(agentPanel).not.toBeNull();
+    expect(overlayPanel).not.toBeNull();
+    expect(popoverHost.querySelector('[data-agent-model-panel="agent"]')).toBeNull();
+    expect(popoverHost.querySelector('[data-agent-model-panel="overlay"]')).toBeNull();
+
+    const portaledWrapper = agentPanel?.parentElement;
+    expect(portaledWrapper?.classList.contains("fixed")).toBe(true);
+    expect(portaledWrapper?.classList.contains(MOBILE_CONTEXT_Z_CLASS)).toBe(true);
   });
 });

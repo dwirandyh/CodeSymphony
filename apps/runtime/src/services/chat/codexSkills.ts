@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { SlashCommand } from "@codesymphony/shared-types";
@@ -20,6 +20,14 @@ function getCodexSkillCandidateRoots(worktreePath: string): string[] {
   ];
 }
 
+function getClaudeSkillCandidateRoots(worktreePath: string): string[] {
+  return [
+    join(worktreePath, ".claude/skills"),
+    join(homedir(), ".claude/skills"),
+    ...getCodexSkillCandidateRoots(worktreePath),
+  ];
+}
+
 function parseFrontmatterValue(frontmatter: string, key: string): string | null {
   const match = frontmatter.match(new RegExp(`^${key}:\\s*(.+)$`, "im"));
   if (!match?.[1]) {
@@ -29,7 +37,7 @@ function parseFrontmatterValue(frontmatter: string, key: string): string | null 
   return match[1].trim().replace(/^['"]|['"]$/g, "");
 }
 
-function extractSkillMetadata(skillFilePath: string): CodexSkill | null {
+function extractSkillMetadata(skillFilePath: string): Omit<CodexSkill, "sortPriority"> | null {
   try {
     const raw = readFileSync(skillFilePath, "utf8");
     const frontmatterMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
@@ -52,7 +60,6 @@ function extractSkillMetadata(skillFilePath: string): CodexSkill | null {
       name: skillName.trim(),
       description,
       argumentHint: "",
-      sortPriority: skillFilePath.includes("/.agents/skills/") ? 0 : 1,
     };
   } catch {
     return null;
@@ -90,29 +97,39 @@ function collectSkillFiles(rootPath: string, depth = 0): string[] {
   return entries.flatMap((entry) => collectSkillFiles(join(rootPath, entry), depth + 1));
 }
 
-export function listCodexSkills(worktreePath: string): SlashCommand[] {
-  const candidateRoots = getCodexSkillCandidateRoots(worktreePath);
-
+function listSkillsFromRoots(candidateRoots: string[]): SlashCommand[] {
   const deduped = new Map<string, CodexSkill>();
 
-  for (const rootPath of candidateRoots) {
+  candidateRoots.forEach((rootPath, rootIndex) => {
     for (const skillFilePath of collectSkillFiles(rootPath)) {
       const skill = extractSkillMetadata(skillFilePath);
       if (!skill) {
         continue;
       }
 
-      const key = skill.name.toLowerCase();
+      const entry: CodexSkill = {
+        ...skill,
+        sortPriority: rootIndex,
+      };
+      const key = entry.name.toLowerCase();
       const existing = deduped.get(key);
-      if (!existing || skill.sortPriority < existing.sortPriority) {
-        deduped.set(key, skill);
+      if (!existing || entry.sortPriority < existing.sortPriority) {
+        deduped.set(key, entry);
       }
     }
-  }
+  });
 
   return Array.from(deduped.values())
     .sort((left, right) => left.name.localeCompare(right.name))
     .map(({ name, description, argumentHint }) => ({ name, description, argumentHint }));
+}
+
+export function listCodexSkills(worktreePath: string): SlashCommand[] {
+  return listSkillsFromRoots(getCodexSkillCandidateRoots(worktreePath));
+}
+
+export function listClaudeSkills(worktreePath: string): SlashCommand[] {
+  return listSkillsFromRoots(getClaudeSkillCandidateRoots(worktreePath));
 }
 
 export function resolveCodexSkillCatalogCacheVersion(worktreePath: string): string {
@@ -144,9 +161,14 @@ export function resolveCodexSkillCatalogCacheVersion(worktreePath: string): stri
   return hash.digest("hex");
 }
 
-export function normalizeCodexSkillSlashCommandsForPrompt(content: string, skills: SlashCommand[]): string {
+export type NormalizedSkillPrompt = {
+  content: string;
+  referencedSkills: string[];
+};
+
+export function normalizeSkillSlashCommandsForPrompt(content: string, skills: SlashCommand[]): NormalizedSkillPrompt {
   if (!content.trim()) {
-    return content;
+    return { content, referencedSkills: [] };
   }
 
   const skillNamesByLowercase = new Map(
@@ -167,7 +189,7 @@ export function normalizeCodexSkillSlashCommandsForPrompt(content: string, skill
   });
 
   if (referencedSkills.length === 0) {
-    return content;
+    return { content, referencedSkills: [] };
   }
 
   const instruction = referencedSkills.length === 1
@@ -178,5 +200,54 @@ export function normalizeCodexSkillSlashCommandsForPrompt(content: string, skill
     .replace(/\s+([.,!?;:])/g, "$1")
     .trim();
 
-  return cleanedContent.length > 0 ? `${instruction}\n\n${cleanedContent}` : instruction;
+  return {
+    content: cleanedContent.length > 0 ? `${instruction}\n\n${cleanedContent}` : instruction,
+    referencedSkills,
+  };
+}
+
+export function normalizeCodexSkillSlashCommandsForPrompt(content: string, skills: SlashCommand[]): string {
+  return normalizeSkillSlashCommandsForPrompt(content, skills).content;
+}
+
+export function resolveClaudeSkillDirectory(worktreePath: string, skillName: string): string | null {
+  const normalizedName = skillName.trim().toLowerCase();
+  if (!normalizedName) {
+    return null;
+  }
+
+  for (const rootPath of getClaudeSkillCandidateRoots(worktreePath)) {
+    for (const skillFilePath of collectSkillFiles(rootPath)) {
+      const skill = extractSkillMetadata(skillFilePath);
+      if (skill?.name.trim().toLowerCase() === normalizedName) {
+        return dirname(skillFilePath);
+      }
+    }
+  }
+
+  return null;
+}
+
+export function ensureProjectClaudeSkillLinks(worktreePath: string, skillNames: string[]): void {
+  if (skillNames.length === 0) {
+    return;
+  }
+
+  const projectSkillsDir = join(worktreePath, ".claude", "skills");
+  mkdirSync(projectSkillsDir, { recursive: true });
+
+  for (const skillName of skillNames) {
+    const sourceDir = resolveClaudeSkillDirectory(worktreePath, skillName);
+    if (!sourceDir) {
+      continue;
+    }
+
+    const linkName = basename(sourceDir);
+    const linkPath = join(projectSkillsDir, linkName);
+    if (existsSync(linkPath)) {
+      continue;
+    }
+
+    symlinkSync(sourceDir, linkPath);
+  }
 }

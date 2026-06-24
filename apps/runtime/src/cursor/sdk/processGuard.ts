@@ -7,6 +7,19 @@ type ProcessErrorLogger = (message: string, data: Record<string, unknown>) => vo
 
 let activeLogger: ProcessErrorLogger | null = null;
 
+function isBenignCursorSdkAsyncError(error: unknown): boolean {
+  if (isCursorSdkHttp2TransportError(error)) {
+    return true;
+  }
+
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.name === "AbortError"
+    || /abort|cancel/i.test(error.message);
+}
+
 function summarize(error: unknown): Record<string, unknown> {
   if (error instanceof Error) {
     return {
@@ -44,7 +57,7 @@ export function installCursorSdkProcessGuard(options?: { logger?: ProcessErrorLo
   installed = true;
 
   const handle = (kind: "unhandledRejection" | "uncaughtException", error: unknown): boolean => {
-    if (!isCursorSdkHttp2TransportError(error)) {
+    if (!isBenignCursorSdkAsyncError(error)) {
       return false;
     }
 
@@ -53,7 +66,7 @@ export function installCursorSdkProcessGuard(options?: { logger?: ProcessErrorLo
       message: kind,
       data: summarize(error),
     });
-    activeLogger?.("Suppressed benign Cursor SDK HTTP/2 transport error", {
+    activeLogger?.("Suppressed benign Cursor SDK async error", {
       kind,
       ...summarize(error),
     });

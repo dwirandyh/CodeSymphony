@@ -90,12 +90,106 @@ describe("Cursor SDK event bridge", () => {
       toolName: "shell",
       toolUseId: "tool1",
       parentToolUseId: null,
+      command: "pwd",
+      shell: "bash",
+      isBash: true,
     }));
     expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
       toolName: "shell",
       precedingToolUseIds: ["tool1"],
       command: "pwd",
+      summary: "Ran pwd",
       output: "/tmp/project\n",
+    }));
+  });
+
+  it("emits human-readable summaries for Cursor read and grep tools", async () => {
+    const onToolFinished = vi.fn();
+    const { bridgeCursorSdkRunStream } = await import("../src/cursor/sdk/eventBridge");
+
+    await bridgeCursorSdkRunStream({
+      stream: messages([
+        {
+          type: "tool_call",
+          agent_id: "agent-1",
+          run_id: "run-1",
+          call_id: "read-1",
+          name: "read",
+          status: "completed",
+          args: { path: "/tmp/TerminalView.swift" },
+          result: { content: "import SwiftUI" },
+        },
+        {
+          type: "tool_call",
+          agent_id: "agent-1",
+          run_id: "run-1",
+          call_id: "grep-1",
+          name: "grep",
+          status: "completed",
+          args: { pattern: "toolbar", glob: "**/*.swift" },
+          result: { files: ["TerminalView.swift"] },
+        },
+      ]),
+      onText: vi.fn(),
+      onToolStarted: vi.fn(),
+      onToolOutput: vi.fn(),
+      onToolFinished,
+    });
+
+    expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "read",
+      summary: "Read /tmp/TerminalView.swift",
+      toolInput: { path: "/tmp/TerminalView.swift" },
+    }));
+    expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "grep",
+      summary: "Completed grep (pattern=toolbar, glob=**/*.swift)",
+      searchParams: "pattern=toolbar, glob=**/*.swift",
+    }));
+  });
+
+  it("emits human-readable summaries for Cursor readLints tools with paths[] args", async () => {
+    const onToolFinished = vi.fn();
+    const { bridgeCursorSdkRunStream } = await import("../src/cursor/sdk/eventBridge");
+
+    await bridgeCursorSdkRunStream({
+      stream: messages([
+        {
+          type: "tool_call",
+          agent_id: "agent-1",
+          run_id: "run-1",
+          call_id: "lints-1",
+          name: "readLints",
+          status: "completed",
+          args: {
+            paths: ["/tmp/termlite/Components/TerminalKeyboardChrome.swift"],
+          },
+          result: {
+            status: "success",
+            value: {
+              fileDiagnostics: [{
+                path: "/tmp/termlite/Components/TerminalKeyboardChrome.swift",
+                diagnostics: [],
+                diagnosticsCount: 0,
+              }],
+              totalFiles: 1,
+              totalDiagnostics: 0,
+            },
+          },
+        },
+      ]),
+      onText: vi.fn(),
+      onToolStarted: vi.fn(),
+      onToolOutput: vi.fn(),
+      onToolFinished,
+    });
+
+    expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "readLints",
+      summary: "Checked lints TerminalKeyboardChrome.swift (0 issues)",
+      toolInput: {
+        paths: ["/tmp/termlite/Components/TerminalKeyboardChrome.swift"],
+      },
     }));
   });
 
