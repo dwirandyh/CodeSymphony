@@ -200,6 +200,15 @@ bun build "${WORKSPACE_ROOT}/apps/runtime/src/index.ts" \
 # to the bundled entry — ptyBackend resolves it relative to import.meta.url.
 cp "${WORKSPACE_ROOT}/apps/runtime/src/services/ptyHost.mjs" "${BUNDLE_DIR}/dist/ptyHost.mjs"
 
+# Cursor SDK cannot run in-process under Bun. Delegate turns to a standalone
+# Node host, similar to the PTY sidecar above.
+bun build "${WORKSPACE_ROOT}/apps/runtime/src/cursor/sdk/nodeTurnHost.ts" \
+  --target=node \
+  --format=esm \
+  --minify \
+  --packages=external \
+  --outfile="${BUNDLE_DIR}/dist/nodeTurnHost.js"
+
 echo "=== Copying terminal zsh bootstrap ==="
 rm -rf "${BUNDLE_DIR}/terminal-zsh"
 mkdir -p "${BUNDLE_DIR}/terminal-zsh"

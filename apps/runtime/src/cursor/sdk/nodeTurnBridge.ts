@@ -47,10 +47,11 @@ import type { ChatAgentRunnerResult } from "../../types.js";
 import type { RunCursorSdkTurnParams } from "./runTurn.js";
 import { withCursorSdkSetupHint } from "./auth.js";
 
-function resolveNodeTurnHostScript(): string {
-  const moduleDir = dirname(fileURLToPath(import.meta.url));
+export function resolveNodeTurnHostScript(moduleUrl: string = import.meta.url): string {
+  const moduleDir = dirname(fileURLToPath(moduleUrl));
   const candidates = [
     join(moduleDir, "nodeTurnHost.js"),
+    join(moduleDir, "cursor/sdk/nodeTurnHost.js"),
     join(moduleDir, "../../../dist/cursor/sdk/nodeTurnHost.js"),
   ];
   for (const candidate of candidates) {
@@ -58,7 +59,7 @@ function resolveNodeTurnHostScript(): string {
       return candidate;
     }
   }
-  return candidates[1];
+  return candidates[0];
 }
 
 function serializeTurnRequest(params: RunCursorSdkTurnParams): CursorSdkNodeTurnRequest {
