@@ -449,38 +449,49 @@ function WorktreeRowContent({
   const hasMetaRow = detailBadge != null || review != null || insertions > 0 || deletions > 0;
 
   return (
-    <div className="flex min-w-0 flex-1 items-center justify-between gap-2" data-testid={`${testId}-content`}>
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-          {icon}
+    <div
+      className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-x-2"
+      data-testid={`${testId}-content`}
+    >
+      <div className="col-start-1 row-start-1 flex w-full min-w-0 items-center gap-1.5 overflow-hidden">
+        {icon}
+        <div className="min-w-0 flex-1 overflow-hidden">
           {branchContent}
         </div>
-        {hasMetaRow ? (
-          <div
-            className={cn("flex min-w-0 items-center gap-1.5 pt-0.5", metaIndentClass)}
-            data-testid={`${testId}-meta`}
-          >
-            <WorktreeMetaSlot>
-              {detailBadge}
-            </WorktreeMetaSlot>
-            <WorktreeMetaSlot>
-              <WorktreeReviewBadge
-                review={review}
-                kind={reviewKind}
-                testId={testId}
-              />
-            </WorktreeMetaSlot>
-            <WorktreeMetaSlot>
-              <WorktreeDiffSummary
-                insertions={insertions}
-                deletions={deletions}
-                testId={testId}
-              />
-            </WorktreeMetaSlot>
-          </div>
-        ) : null}
       </div>
-      <div className="relative shrink-0">
+      {hasMetaRow ? (
+        <div
+          className={cn(
+            "col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 overflow-hidden pt-0.5",
+            metaIndentClass,
+          )}
+          data-testid={`${testId}-meta`}
+        >
+          <WorktreeMetaSlot>
+            {detailBadge}
+          </WorktreeMetaSlot>
+          <WorktreeMetaSlot>
+            <WorktreeReviewBadge
+              review={review}
+              kind={reviewKind}
+              testId={testId}
+            />
+          </WorktreeMetaSlot>
+          <WorktreeMetaSlot>
+            <WorktreeDiffSummary
+              insertions={insertions}
+              deletions={deletions}
+              testId={testId}
+            />
+          </WorktreeMetaSlot>
+        </div>
+      ) : null}
+      <div
+        className={cn(
+          "relative col-start-2 row-start-1 flex shrink-0 items-center justify-end",
+          hasMetaRow && "row-span-2 self-center",
+        )}
+      >
         <WorktreeMetaSlot hiddenOnHover={hideStatusOnHover}>
           <WorktreeStatusBadge status={status} />
         </WorktreeMetaSlot>
@@ -1466,7 +1477,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                 </span>
                               }
                               branchContent={
-                                <span className="min-w-0 flex-1 truncate text-xs">
+                                <span className="block min-w-0 truncate text-xs">
                                   {rootWorkspace.branch}
                                 </span>
                               }
@@ -1588,7 +1599,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                       <input
                                         type="text"
                                         aria-label={`Rename branch ${worktree.branch}`}
-                                        className="min-w-0 flex-1 rounded border border-input bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
+                                        className="block min-w-0 w-full rounded border border-input bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
                                         value={editingBranchValue}
                                         autoFocus
                                         onChange={(e) =>
@@ -1631,7 +1642,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                       />
                                     ) : (
                                       <span
-                                        className="min-w-0 flex-1 truncate text-xs"
+                                        className="block min-w-0 truncate text-xs"
                                         onDoubleClick={(e) => {
                                           e.stopPropagation();
                                           setEditingWorktreeId(worktree.id);

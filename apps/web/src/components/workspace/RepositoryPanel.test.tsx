@@ -1547,8 +1547,8 @@ describe("RepositoryPanel", () => {
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.parentElement?.parentElement?.className).toContain("pl-[14px]");
   });
 
-  it("keeps worktree status visible while long branch labels shrink with ellipsis", async () => {
-    const longBranch = "feature/very-long-worktree-branch-name-that-should-truncate";
+  it("reserves a fixed status column while long branch labels truncate", async () => {
+    const longBranch = "feat/leaderboard/global-paging-meta-data";
 
     listThreadsMock.mockImplementation(async (worktreeId: string) => {
       if (worktreeId === "r1-wt-feat") {
@@ -1607,11 +1607,75 @@ describe("RepositoryPanel", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
+    const content = container.querySelector('[data-testid="worktree-r1-wt-feat-content"]');
+    expect(content?.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
+
     const branchLabel = container.querySelector('[data-testid="worktree-r1-wt-feat-content"] .truncate');
     expect(branchLabel?.className).toContain("min-w-0");
-    expect(branchLabel?.className).toContain("flex-1");
+    expect(branchLabel?.className).toContain("truncate");
     expect(container.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
     expect(container.textContent).toContain(longBranch);
+  });
+
+  it("keeps review metadata visible while long branch labels truncate", async () => {
+    const longBranch = "feat/leaderboard/global-paging-meta-data";
+
+    getRepositoryReviewsMock.mockResolvedValue({
+      provider: "github",
+      kind: "pr",
+      available: true,
+      reviewsByBranch: {
+        [longBranch]: { number: 295, display: "!295", url: "https://example.com/pr/295", state: "open" },
+      },
+    });
+
+    container.style.width = "160px";
+
+    renderPanel({
+      repositories: [
+        makeRepo({
+          worktrees: [
+            {
+              id: "r1-wt-root",
+              repositoryId: "r1",
+              branch: "main",
+              path: "/home/user/test-repo",
+              baseBranch: "main",
+              isAutomation: false,
+              status: "active",
+              branchRenamed: false,
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+            },
+            {
+              id: "r1-wt-feat",
+              repositoryId: "r1",
+              branch: longBranch,
+              path: "/home/user/.cs/worktrees/test-repo/feature",
+              baseBranch: "main",
+              isAutomation: false,
+              status: "active",
+              branchRenamed: false,
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+            },
+          ],
+        }),
+      ],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+      expandedByRepo: { r1: true },
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.textContent).toContain("!295");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-meta"]')?.className).toContain("min-w-0");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-content"] .truncate')?.className).toContain("truncate");
   });
 
   it("renders root and branch status badges", async () => {
@@ -1649,7 +1713,7 @@ describe("RepositoryPanel", () => {
     const runningStatus = container.querySelector('[data-testid="worktree-status-running"]');
     expect(runningStatus).toBeTruthy();
     expect(runningStatus?.querySelector("span[aria-hidden='true']")?.className).toContain("text-primary");
-    expect(container.querySelector('[data-testid="worktree-r1-wt-root-content"]')?.className).toContain("items-center");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-content"]')?.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
     expect(container.querySelector('[data-testid="worktree-r1-wt-root-meta"]')).toBeNull();
     expect(container.textContent).not.toContain("Running");
     expect(container.textContent).not.toContain("Idle");
