@@ -22,6 +22,9 @@ import {
   resolveToolPresentationContext,
   skillNameFromUnknownToolInput,
   todoItemsFromUnknownToolInput,
+  isTaskTool,
+  taskMutationFromToolInput,
+  taskIdFromResultText,
   type ToolMetadata,
 } from "./toolClassification.js";
 import { completionSummaryFromMetadata, failureSummaryFromMetadata } from "./toolSummary.js";
@@ -646,11 +649,19 @@ export type HookCallbacks = {
   }) => Promise<void> | void;
 };
 
+export type SessionTaskItem = {
+  id: string;
+  content: string;
+  status: import("@codesymphony/shared-types").AgentTodoItem["status"];
+};
+
 export type SessionState = {
   finalOutput: string;
   planFileDetected: boolean;
   todoGroupId: string | null;
   emittedTodoToolUseIds: Set<string>;
+  taskItems: Map<string, SessionTaskItem>;
+  taskCreateCount?: number;
   queryStartTimestamp: number;
   promptSuggestions: string[];
   recentDiagnostics: string[];
@@ -785,6 +796,73 @@ async function maybeEmitTodoUpdate(
 
   state.emittedTodoToolUseIds.add(toolUseId);
   state.todoGroupId ??= toolUseId;
+  try {
+    await callbacks.onTodoUpdate?.({
+      agent: "claude",
+      groupId: `claude:${state.queryStartTimestamp}:${state.todoGroupId}`,
+      explanation: null,
+      items,
+    });
+  } catch (error) {
+    state.emittedTodoToolUseIds.delete(toolUseId);
+    throw error;
+  }
+}
+
+// Accumulates incremental Claude task-list tool calls (TaskCreate/TaskUpdate) into a per-session
+// ordered store and emits a full todo.updated snapshot after each mutation. The id is read from
+// the TaskCreate result text ("Task #N created successfully: ...") when available, falling back to
+// 1-indexed creation order. All snapshots reuse a single coalesced groupId so the timeline renders
+// one to-do list. Read-only TaskList/TaskGet and non-task tools are ignored.
+export async function maybeEmitTaskTodoUpdate(
+  callbacks: HookCallbacks,
+  state: SessionState,
+  toolName: string,
+  input: unknown,
+  resultText: string | undefined,
+  toolUseId: string,
+): Promise<void> {
+  if (!isTaskTool(toolName)) {
+    return;
+  }
+  if (state.emittedTodoToolUseIds.has(toolUseId)) {
+    return;
+  }
+
+  const mutation = taskMutationFromToolInput(toolName, input);
+  if (!mutation || mutation.kind === "noop") {
+    return;
+  }
+
+  if (mutation.kind === "create") {
+    state.taskCreateCount = (state.taskCreateCount ?? 0) + 1;
+    const assignedId = taskIdFromResultText(resultText) ?? state.taskCreateCount;
+    const id = String(assignedId);
+    state.taskItems.set(id, { id, content: mutation.subject, status: "pending" });
+  } else {
+    const existing = state.taskItems.get(mutation.taskId);
+    if (mutation.status === "deleted") {
+      if (!existing) {
+        return;
+      }
+      state.taskItems.delete(mutation.taskId);
+    } else {
+      if (!existing) {
+        return;
+      }
+      state.taskItems.set(mutation.taskId, { ...existing, status: mutation.status });
+    }
+  }
+
+  state.emittedTodoToolUseIds.add(toolUseId);
+  state.todoGroupId ??= toolUseId;
+
+  const items = Array.from(state.taskItems.values()).map((item) => ({
+    id: item.id,
+    content: item.content,
+    status: item.status,
+  }));
+
   try {
     await callbacks.onTodoUpdate?.({
       agent: "claude",
@@ -1181,6 +1259,7 @@ export function createPostToolUseHook(
   emitInstrumentation: (event: ClaudeToolInstrumentationEvent) => Promise<void>,
   maps: SessionMaps,
   instrumentContext: InstrumentContext,
+  state: SessionState,
 ) {
   return async (hookInput: Record<string, unknown>, toolUseID?: string) => {
     if (hookInput.hook_event_name !== "PostToolUse") {
@@ -1190,6 +1269,18 @@ export function createPostToolUseHook(
     const hookToolUseId = (hookInput.tool_use_id as string) || toolUseID;
     if (!hookToolUseId) {
       return { continue: true };
+    }
+
+    const postToolName = hookInput.tool_name as string;
+    if (isTaskTool(postToolName)) {
+      await maybeEmitTaskTodoUpdate(
+        callbacks,
+        state,
+        postToolName,
+        hookInput.tool_input,
+        extractSubagentResponse(hookInput.tool_response),
+        hookToolUseId,
+      );
     }
 
     const metadata = buildMetadataFromHookInput(hookInput, hookToolUseId, maps.toolMetadataByUseId);

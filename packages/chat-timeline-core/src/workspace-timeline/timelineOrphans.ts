@@ -8,7 +8,7 @@ import {
   isBashToolEvent,
   isMetadataToolEvent,
   isPlanModeToolEvent,
-  isTodoWriteToolEvent,
+  isTodoSnapshotToolEvent,
   isWorktreeDiffEvent,
   parseTimestamp,
   payloadStringArray,
@@ -519,7 +519,7 @@ export function processOrphanToolEvents(
   const orphanToolEvents = inlineToolEvents
     .filter((event) => !assignedToolEventIds.has(event.id))
     .filter((event) => !isSubagentLeakCandidate(event))
-    .filter((event) => !isTodoWriteToolEvent(event))
+    .filter((event) => !isTodoSnapshotToolEvent(event))
     .filter((event) =>
       event.type !== "permission.requested"
       && event.type !== "permission.resolved"

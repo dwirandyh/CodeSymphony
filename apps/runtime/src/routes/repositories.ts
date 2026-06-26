@@ -11,7 +11,7 @@ import {
   UpdateWorktreeFileContentInputSchema,
 } from "@codesymphony/shared-types";
 import { z } from "zod";
-import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHeadBuffer, gitCommitAll, discardGitChange, syncCurrentBranch } from "../services/git.js";
+import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHeadBuffer, gitCommitAll, discardGitChange, syncCurrentBranch, rebaseWorktreeOntoBaseBranch } from "../services/git.js";
 import { detectMimeType, isImageMimeType } from "../services/filesystemService.js";
 import {
   getUnavailableWorktreeErrorMessage,
@@ -1007,7 +1007,12 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const summary = await getCachedWorktreeGitBranchDiffSummary(worktree.id, worktree.path, worktree.baseBranch);
+      const summary = await getCachedWorktreeGitBranchDiffSummary(
+        worktree.id,
+        worktree.path,
+        worktree.baseBranch,
+        worktree.branch,
+      );
       const durationMs = Date.now() - startedAt;
       if (durationMs >= 500) {
         appendRuntimeDebugLog({
@@ -1154,6 +1159,34 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return { data: result };
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Sync failed";
+      return reply.code(400).send({ error: msg });
+    }
+  });
+
+  app.post("/worktrees/:id/git/rebase-base", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Rebase failed";
+      return reply.code(409).send({ error: message });
+    }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+    if (!worktree.baseBranch) {
+      return reply.code(400).send({ error: "Worktree has no base branch configured" });
+    }
+
+    try {
+      const result = await rebaseWorktreeOntoBaseBranch(worktree.path, worktree.baseBranch);
+      publishWorktreeActivity({
+        workspaceEventHub: app.workspaceEventHub,
+        worktree,
+        activity: WORKTREE_ACTIVITY.GIT_SYNCED,
+      });
+      return { data: result };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Rebase failed";
       return reply.code(400).send({ error: msg });
     }
   });

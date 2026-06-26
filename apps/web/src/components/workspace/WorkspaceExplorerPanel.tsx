@@ -1172,9 +1172,11 @@ function WorkspaceExplorerFlatContent({
   }, [entries, searchTerm]);
 
   function toggleDirectory(path: string) {
-    startTransition(() => {
-      setExpandedPaths((current) => toggleExpandedPath(current, path));
-    });
+    // Direct user interaction: expand/collapse must commit immediately.
+    // Wrapping this in startTransition lets concurrent urgent updates
+    // (SSE streaming, git polling) starve the deferred update, leaving a
+    // tapped folder visually un-expanded. Keep it urgent.
+    setExpandedPaths((current) => toggleExpandedPath(current, path));
   }
 
   function renderNode(node: ExplorerNode, depth: number) {
@@ -1299,9 +1301,7 @@ function WorkspaceExplorerFlatContent({
         onClick={() => {
           if (isDirectory) {
             setSearchTerm("");
-            startTransition(() => {
-              setExpandedPaths((current) => mergeExpandedPaths(current, [entry.path]));
-            });
+            setExpandedPaths((current) => mergeExpandedPaths(current, [entry.path]));
             return;
           }
           onOpenFile(entry.path);
@@ -1336,7 +1336,7 @@ function WorkspaceExplorerFlatContent({
               setSearchTerm("");
               actions.beginCreateDirectory("", 0);
             }}
-            onCollapseAll={() => startTransition(() => setExpandedPaths(new Set()))}
+            onCollapseAll={() => setExpandedPaths(new Set())}
             onRefresh={actions.refresh}
             error={actions.error}
             busy={actions.busy}
@@ -1391,7 +1391,6 @@ function WorkspaceExplorerFlatContent({
       </WorkspaceExplorerShell>
       <ExplorerContextMenu menu={actions.menu} actions={actions} canMutate={canMutate} onTreeMutationStart={() => setSearchTerm("")} />
       <ExplorerDeleteDialog actions={actions} />
-      <ExplorerOverwriteDialog actions={actions} />
       <ExplorerOverwriteDialog actions={actions} />
     </>
   );
@@ -1526,9 +1525,11 @@ function WorkspaceExplorerPanelBridge({
   }, [pending, rootEntries, rootLoading, setExpandedPaths, worktreeId]);
 
   function toggleDirectory(path: string) {
-    startTransition(() => {
-      setExpandedPaths((current) => toggleExpandedPath(current, path));
-    });
+    // Direct user interaction: expand/collapse must commit immediately.
+    // Wrapping this in startTransition lets concurrent urgent updates
+    // (SSE streaming, git polling) starve the deferred update, leaving a
+    // tapped folder visually un-expanded. Keep it urgent.
+    setExpandedPaths((current) => toggleExpandedPath(current, path));
   }
 
   function renderNode(entry: ExplorerFileEntry, depth: number) {
@@ -1682,9 +1683,7 @@ function WorkspaceExplorerPanelBridge({
         onClick={() => {
           if (isDirectory) {
             setSearchTerm("");
-            startTransition(() => {
-              setExpandedPaths((current) => mergeExpandedPaths(current, parentDirectoryPaths(entry.path).concat(entry.path)));
-            });
+            setExpandedPaths((current) => mergeExpandedPaths(current, parentDirectoryPaths(entry.path).concat(entry.path)));
             return;
           }
           onOpenFile(entry.path);
@@ -1721,7 +1720,7 @@ function WorkspaceExplorerPanelBridge({
               setSearchTerm("");
               actions.beginCreateDirectory("", 0);
             }}
-            onCollapseAll={() => startTransition(() => setExpandedPaths(new Set()))}
+            onCollapseAll={() => setExpandedPaths(new Set())}
             onRefresh={actions.refresh}
             error={actions.error}
             busy={actions.busy}

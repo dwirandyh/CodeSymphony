@@ -4,6 +4,8 @@ import {
   isExploreLikeBashCommand,
   isExploreLikeBashEvent,
   isReadLikeBashEvent,
+  isTaskListToolEvent,
+  isTodoSnapshotToolEvent,
 } from "./eventUtils.js";
 
 function makeBashEvent(command: string): ChatEvent {
@@ -64,5 +66,32 @@ describe("explore-like bash classification", () => {
 
   it("keeps direct rtk ls commands as regular tool runs", () => {
     expect(isExploreLikeBashCommand("rtk ls -la")).toBe(false);
+  });
+});
+
+function makeToolEvent(toolName: string): ChatEvent {
+  return {
+    id: `evt-${toolName}`,
+    threadId: "thread-1",
+    idx: 1,
+    type: "tool.started",
+    payload: { toolName, toolUseId: `tu-${toolName}` },
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+describe("task-list todo snapshot classification", () => {
+  it("treats Task* tools as todo snapshots", () => {
+    for (const name of ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]) {
+      expect(isTaskListToolEvent(makeToolEvent(name))).toBe(true);
+      expect(isTodoSnapshotToolEvent(makeToolEvent(name))).toBe(true);
+    }
+  });
+
+  it("does NOT treat the Task/Agent subagent launcher as a todo snapshot (collision guard)", () => {
+    expect(isTaskListToolEvent(makeToolEvent("Task"))).toBe(false);
+    expect(isTaskListToolEvent(makeToolEvent("Agent"))).toBe(false);
+    expect(isTodoSnapshotToolEvent(makeToolEvent("Task"))).toBe(false);
+    expect(isTodoSnapshotToolEvent(makeToolEvent("Agent"))).toBe(false);
   });
 });

@@ -1140,6 +1140,9 @@ function ComposerContent({
       }
 
       const tappedEditor = target === editor || editor.contains(target);
+      const tappedInteractiveControl = target.closest(
+        "button, a[href], input, textarea, select, [role='button']",
+      ) !== null;
       const focusEditor = () => {
         editor.focus({ preventScroll: true });
       };
@@ -1156,11 +1159,11 @@ function ComposerContent({
         } else {
           window.requestAnimationFrame(focusEditor);
         }
-      } else {
+      } else if (!tappedInteractiveControl) {
         window.requestAnimationFrame(focusEditor);
       }
 
-      if (!(isMobile && tappedEditor)) {
+      if (!tappedInteractiveControl && !(isMobile && tappedEditor)) {
         onFocusPane?.();
       }
     },

@@ -1217,8 +1217,18 @@ export const GitBranchDiffSummarySchema = z.object({
   filesChanged: z.number().int().nonnegative(),
   available: z.boolean(),
   unavailableReason: z.string().optional(),
+  ahead: z.number().int().nonnegative().default(0),
+  behind: z.number().int().nonnegative().default(0),
 });
 export type GitBranchDiffSummary = z.infer<typeof GitBranchDiffSummarySchema>;
+
+export const WorktreeGitRebaseBaseResultSchema = z.object({
+  result: z.string(),
+  baseBranch: z.string(),
+  ahead: z.number().int().nonnegative(),
+  behind: z.number().int().nonnegative(),
+});
+export type WorktreeGitRebaseBaseResult = z.infer<typeof WorktreeGitRebaseBaseResultSchema>;
 
 export const GitCommitInputSchema = z.object({
   message: z.string().trim().optional().default(""),

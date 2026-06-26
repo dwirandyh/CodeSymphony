@@ -480,6 +480,68 @@ describe("Composer", () => {
     expect(onFocusPane).not.toHaveBeenCalled();
   });
 
+  it("does not focus the editor when tapping mobile session settings on pointerdown", async () => {
+    setMobileViewport(true);
+    const onFocusPane = vi.fn();
+    renderComposer({ onFocusPane });
+    const editor = getEditor();
+    editor.blur();
+    const sessionButton = getSessionSettingsButton();
+    const focusSpy = vi.spyOn(editor, "focus");
+
+    if (typeof globalThis.PointerEvent === "undefined") {
+      globalThis.PointerEvent = class extends MouseEvent {
+        constructor(type: string, init?: PointerEventInit) {
+          super(type, init);
+        }
+      } as typeof PointerEvent;
+    }
+
+    await act(async () => {
+      sessionButton.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, cancelable: true }),
+      );
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
+
+    expect(onFocusPane).not.toHaveBeenCalled();
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(editor);
+    focusSpy.mockRestore();
+  });
+
+  it("does not focus the editor when tapping plan/execute toggle on pointerdown", async () => {
+    setMobileViewport(true);
+    const onFocusPane = vi.fn();
+    renderComposer({ onFocusPane });
+    const editor = getEditor();
+    editor.blur();
+    const modeButton = getComposerRoot().querySelector<HTMLButtonElement>(
+      'button[aria-label="Switch to plan mode"], button[aria-label="Switch to execute mode"]',
+    );
+    expect(modeButton).not.toBeNull();
+    const focusSpy = vi.spyOn(editor, "focus");
+
+    if (typeof globalThis.PointerEvent === "undefined") {
+      globalThis.PointerEvent = class extends MouseEvent {
+        constructor(type: string, init?: PointerEventInit) {
+          super(type, init);
+        }
+      } as typeof PointerEvent;
+    }
+
+    await act(async () => {
+      modeButton!.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, cancelable: true }),
+      );
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
+
+    expect(onFocusPane).not.toHaveBeenCalled();
+    expect(focusSpy).not.toHaveBeenCalled();
+    focusSpy.mockRestore();
+  });
+
   it("pins the composer portal on mobile before the keyboard opens", () => {
     setMobileViewport(true);
     renderComposer({ mobileBottomOffset: 0 });

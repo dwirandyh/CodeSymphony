@@ -22,7 +22,7 @@ import {
   isPlanFilePath,
   isPlanModeToolEvent,
   isReadToolEvent,
-  isTodoWriteToolEvent,
+  isTodoSnapshotToolEvent,
   normalizePlanCreatedEvent,
   parseTimestamp,
   payloadStringOrNull,
@@ -508,7 +508,7 @@ export function buildTimelineFromSeed(params: {
       continue;
     }
 
-    const isTodoWriteEvent = isTodoWriteToolEvent(event);
+    const isTodoWriteEvent = isTodoSnapshotToolEvent(event);
     const isInlineToolEvent = INLINE_TOOL_EVENT_TYPES.has(event.type) && !isTodoWriteEvent;
 
     if (isInlineToolEvent) {

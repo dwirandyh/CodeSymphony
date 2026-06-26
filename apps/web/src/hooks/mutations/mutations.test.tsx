@@ -19,6 +19,7 @@ import { useStopRun } from "./useStopRun";
 import { useGitCommit } from "./useGitCommit";
 import { useDiscardGitChange } from "./useDiscardGitChange";
 import { useGitSync } from "./useGitSync";
+import { useGitRebaseBase } from "./useGitRebaseBase";
 import { useRenameWorktreeBranch } from "./useRenameWorktreeBranch";
 
 vi.mock("../../lib/api", () => ({
@@ -38,6 +39,7 @@ vi.mock("../../lib/api", () => ({
     stopRun: vi.fn().mockResolvedValue(undefined),
     gitCommit: vi.fn().mockResolvedValue(undefined),
     gitSync: vi.fn().mockResolvedValue(undefined),
+    gitRebaseBase: vi.fn().mockResolvedValue({ result: "Rebased onto main", baseBranch: "main", ahead: 1, behind: 0 }),
     discardGitChange: vi.fn().mockResolvedValue(undefined),
     renameWorktreeBranch: vi.fn().mockResolvedValue({ id: "w1", branch: "new-name" }),
   },
@@ -150,6 +152,51 @@ describe("mutation hooks", () => {
   it("useGitSync renders", () => {
     renderHook(useGitSync as (...args: unknown[]) => unknown, ["wt-1"]);
     expect(container.textContent).toBe("ok");
+  });
+
+  it("useGitRebaseBase renders", () => {
+    renderHook(useGitRebaseBase as (...args: unknown[]) => unknown, ["wt-1"]);
+    expect(container.textContent).toBe("ok");
+  });
+
+  it("useGitRebaseBase patches branch diff summary immediately after success", async () => {
+    queryClient.setQueryData(
+      ["worktrees", "wt-1", "gitBranchDiffSummary", "master"],
+      {
+        branch: "feature-x",
+        baseBranch: "master",
+        insertions: 100,
+        deletions: 10,
+        filesChanged: 5,
+        available: true,
+        ahead: 2,
+        behind: 39,
+      },
+    );
+
+    let mutationResult: ReturnType<typeof useGitRebaseBase> | null = null;
+    function CaptureHook() {
+      mutationResult = useGitRebaseBase("wt-1");
+      return <div data-testid="result">ok</div>;
+    }
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CaptureHook />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      await mutationResult!.mutateAsync();
+    });
+
+    expect(queryClient.getQueryData(["worktrees", "wt-1", "gitBranchDiffSummary", "master"])).toMatchObject({
+      ahead: 1,
+      behind: 0,
+      baseBranch: "main",
+    });
   });
 
   it("useDiscardGitChange renders", () => {

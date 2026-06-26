@@ -1,9 +1,8 @@
 import { useMemo, useRef } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import type { ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
-import { isOptimisticThreadId } from "../../lib/threadIds";
 import {
   aggregateWorktreeStatus,
   type WorktreeStatusSummary,
@@ -11,44 +10,14 @@ import {
 } from "../../pages/workspace/hooks/worktreeThreadStatus";
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
 import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "./useThreads";
-
-// Repository sidebar only needs a small set of candidate threads per worktree
-// to render a useful status chip. Fetching every historical thread snapshot
-// creates a large request fan-out on refresh.
-const MAX_INACTIVE_STATUS_SNAPSHOTS_PER_WORKTREE = 2;
-
-function compareThreadRecency(left: ChatThread, right: ChatThread) {
-  return (
-    right.updatedAt.localeCompare(left.updatedAt)
-    || right.createdAt.localeCompare(left.createdAt)
-    || right.id.localeCompare(left.id)
-  );
-}
-
-function pickStatusSnapshotCandidateIds(threadsByWorktreeId: Record<string, ChatThread[]>): string[] {
-  const candidateIds: string[] = [];
-
-  for (const threads of Object.values(threadsByWorktreeId)) {
-    const activeThreadIds = threads
-      .filter((thread) => thread.active && !isOptimisticThreadId(thread.id))
-      .map((thread) => thread.id);
-    const inactiveThreadIds = threads
-      .filter((thread) => !thread.active && !isOptimisticThreadId(thread.id))
-      .sort(compareThreadRecency)
-      .slice(0, MAX_INACTIVE_STATUS_SNAPSHOTS_PER_WORKTREE)
-      .map((thread) => thread.id);
-
-    candidateIds.push(...activeThreadIds, ...inactiveThreadIds);
-  }
-
-  return [...new Set(candidateIds)];
-}
+import { pickStatusSnapshotCandidateIds } from "./worktreeStatusSnapshotCandidates";
 
 export function useWorktreeStatuses(
   repositories: Repository[],
   enabled = true,
   threadSnapshot?: ThreadsByWorktreeSnapshot,
 ) {
+  const queryClient = useQueryClient();
   const activeWorktreeIds = useMemo(
     () => buildRepositoryWorktreeIndex(repositories).activeWorktreeIds,
     [repositories],
@@ -68,10 +37,17 @@ export function useWorktreeStatuses(
     return threadIds;
   }, [threadIds]);
 
-  const statusSnapshotCandidateIds = useMemo(
-    () => pickStatusSnapshotCandidateIds(threadsByWorktreeId),
-    [threadsByWorktreeId],
-  );
+  const statusSnapshotCandidateIds = useMemo(() => {
+    const snapshotsByThreadId: Record<string, ChatThreadStatusSnapshot | null> = {};
+    for (const threads of Object.values(threadsByWorktreeId)) {
+      for (const thread of threads) {
+        snapshotsByThreadId[thread.id] = queryClient.getQueryData<ChatThreadStatusSnapshot>(
+          queryKeys.threads.statusSnapshot(thread.id),
+        ) ?? null;
+      }
+    }
+    return pickStatusSnapshotCandidateIds(threadsByWorktreeId, snapshotsByThreadId);
+  }, [queryClient, threadsByWorktreeId]);
 
   const prevStatusSnapshotCandidateIdsRef = useRef<string[]>([]);
   const stableStatusSnapshotCandidateIds = useMemo(() => {

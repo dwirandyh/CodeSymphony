@@ -26,6 +26,7 @@ const { apiMock } = vi.hoisted(() => ({
     deleteQueuedMessage: vi.fn(),
     requestQueuedMessageDispatch: vi.fn(),
     cancelQueuedMessageDispatch: vi.fn(),
+    approvePlan: vi.fn(),
   },
 }));
 
@@ -70,6 +71,7 @@ const onSetThreadModeMock = vi.fn<(threadId: string, mode: string) => Promise<vo
 const onSetThreadAgentSelectionMock = vi.fn<(threadId: string, selection: unknown) => Promise<void>>();
 const onSetThreadPermissionModeMock = vi.fn<(threadId: string, mode: string) => Promise<void>>();
 const onStopAssistantRunMock = vi.fn<(threadId: string) => Promise<void>>();
+const onPlanApprovedMock = vi.fn();
 
 function makeThread(id: string, overrides?: Partial<ChatThread>): ChatThread {
   return {
@@ -108,6 +110,7 @@ function HookHarness({ threadId, thread }: { threadId: string; thread: ChatThrea
     onSetThreadPermissionMode: onSetThreadPermissionModeMock,
     onStopAssistantRun: onStopAssistantRunMock,
     onError: vi.fn(),
+    onPlanApproved: onPlanApprovedMock,
   });
   return null;
 }
@@ -139,6 +142,9 @@ beforeEach(() => {
   onSetThreadPermissionModeMock.mockResolvedValue(undefined);
   onStopAssistantRunMock.mockReset();
   onStopAssistantRunMock.mockResolvedValue(undefined);
+  onPlanApprovedMock.mockReset();
+  apiMock.approvePlan.mockReset();
+  apiMock.approvePlan.mockResolvedValue({ executionKind: "inline" });
   apiMock.listQueuedMessages.mockReset();
   apiMock.listQueuedMessages.mockResolvedValue([]);
   apiMock.queueMessage.mockReset();
@@ -323,6 +329,52 @@ describe("useThreadPaneSession", () => {
     expect(hookResult.queuedMessages).toEqual([
       { id: "q-1", threadId: "thread-q", content: "queued for q", status: "queued" },
     ]);
+  });
+
+  it("forwards handoff plan-approval results so the parent can switch atomically", async () => {
+    const handoffResult = {
+      executionKind: "handoff" as const,
+      sourceThreadId: "thread-handoff",
+      executionThreadId: "thread-exec",
+    };
+    apiMock.approvePlan.mockResolvedValue(handoffResult);
+
+    // A plan awaiting decision: plan.created followed by chat.completed (review ready).
+    getThreadCollections("thread-handoff").eventsCollection.insert({
+      id: "ev-plan",
+      threadId: "thread-handoff",
+      idx: 1,
+      type: "plan.created",
+      payload: { filePath: ".claude/plans/feature.md", content: "1. Do the thing\n2. Verify it", source: "claude_plan_file", messageId: "asst-plan" },
+      createdAt: "2026-01-01T00:00:01Z",
+    } as ChatEvent);
+    getThreadCollections("thread-handoff").eventsCollection.insert({
+      id: "ev-plan-done",
+      threadId: "thread-handoff",
+      idx: 2,
+      type: "chat.completed",
+      payload: { messageId: "asst-plan" },
+      createdAt: "2026-01-01T00:00:02Z",
+    } as ChatEvent);
+
+    renderHook("thread-handoff", makeThread("thread-handoff"));
+
+    await act(async () => {
+      await (hookResult.gates.handleApprovePlan as unknown as (input: {
+        agent: string;
+        model: string;
+        modelProviderId: string | null;
+      }) => Promise<void>)({
+        agent: "claude",
+        model: "claude-sonnet-4-6",
+        modelProviderId: null,
+      });
+    });
+
+    expect(apiMock.approvePlan).toHaveBeenCalledWith("thread-handoff", expect.objectContaining({ agent: "claude" }));
+    // The pane must forward the handoff result so the parent can register the
+    // optimistic exec-thread shell + switch atomically (before content seeds).
+    expect(onPlanApprovedMock).toHaveBeenCalledWith(handoffResult);
   });
 
   it("binds queued-draft mutations to its own threadId", async () => {

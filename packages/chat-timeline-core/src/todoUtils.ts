@@ -1,5 +1,5 @@
 import type { ChatEvent, CliAgent } from "@codesymphony/shared-types";
-import { isRecord, isTodoWriteToolEvent, payloadStringOrNull } from "./eventUtils.js";
+import { isRecord, isTodoSnapshotToolEvent, payloadStringOrNull } from "./eventUtils.js";
 import type { TimelineTodoItem, TimelineTodoStatus, TodoListGroup, TodoProgressGroup } from "./types.js";
 
 function normalizeTodoStatus(value: unknown): TimelineTodoStatus | null {
@@ -108,7 +108,7 @@ function buildLateTodoProgressAnchorByEventId(events: ChatEvent[]): Map<string, 
   const lateTodoUpdates: Array<{ eventId: string; idx: number }> = [];
 
   for (const event of events) {
-    if (event.type === "tool.started" && isTodoWriteToolEvent(event)) {
+    if (event.type === "tool.started" && isTodoSnapshotToolEvent(event)) {
       const toolUseId = payloadStringOrNull(event.payload.toolUseId)?.trim();
       if (toolUseId) {
         todoWriteToolStarts.push({ idx: event.idx, toolUseId });

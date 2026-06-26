@@ -17,6 +17,11 @@ import type { ThreadCompletionAttentionEvent } from "./useCompletionAttention";
 import { markWorktreeGitStatusChanged } from "../../../hooks/queries/useGitStatus";
 import { requestRepositoryReviewsLiveRefresh } from "../../../hooks/queries/useRepositoryReviews";
 
+const GATE_STATUS_SNAPSHOTS = new Set<ChatThreadStatusSnapshot["status"]>([
+  "waiting_approval",
+  "review_plan",
+]);
+
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
   "tool.started",
@@ -144,12 +149,21 @@ export function useBackgroundWorktreeStatusStream(
   );
 
   const subscribedThreads = useMemo(
-    () => threadEntries.filter(({ thread }) => (
-      thread.active
-      && thread.id !== selectedThreadId
-      && !isOptimisticThreadId(thread.id)
-    )),
-    [selectedThreadId, threadEntries],
+    () => threadEntries.filter(({ thread }) => {
+      if (thread.id === selectedThreadId || isOptimisticThreadId(thread.id)) {
+        return false;
+      }
+
+      if (thread.active) {
+        return true;
+      }
+
+      const cachedStatus = queryClient.getQueryData<ChatThreadStatusSnapshot>(
+        queryKeys.threads.statusSnapshot(thread.id),
+      )?.status;
+      return cachedStatus != null && GATE_STATUS_SNAPSHOTS.has(cachedStatus);
+    }),
+    [queryClient, selectedThreadId, threadEntries],
   );
 
   useEffect(() => {

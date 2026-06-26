@@ -68,6 +68,7 @@ vi.mock("../src/services/git.js", () => ({
   getFileAtHeadBuffer: vi.fn().mockResolvedValue(Buffer.from("old content")),
   gitCommitAll: vi.fn().mockResolvedValue("abc123"),
   syncCurrentBranch: vi.fn().mockResolvedValue({ result: "Synced with origin/main" }),
+  rebaseWorktreeOntoBaseBranch: vi.fn().mockResolvedValue({ result: "Rebased onto main", baseBranch: "main", ahead: 1, behind: 0 }),
   discardGitChange: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -604,6 +605,40 @@ describe("repository routes", () => {
       const res = await app.inject({
         method: "POST",
         url: "/api/worktrees/xxx/git/sync",
+      });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("POST /api/worktrees/:id/git/rebase-base", () => {
+    it("rebases the branch onto its base branch", async () => {
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/worktrees/w1/git/rebase-base",
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data).toMatchObject({ baseBranch: "main", behind: 0 });
+      expect(mockWorkspaceEventHub.emit).toHaveBeenCalledWith("worktree.updated", {
+        repositoryId: "r1",
+        worktreeId: "w1",
+      });
+    });
+
+    it("returns 400 when the worktree has no baseBranch", async () => {
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree({ baseBranch: "" }));
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/worktrees/w1/git/rebase-base",
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("returns 404 when worktree not found", async () => {
+      mockWorktreeService.getById.mockResolvedValue(null);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/worktrees/xxx/git/rebase-base",
       });
       expect(res.statusCode).toBe(404);
     });

@@ -1,5 +1,6 @@
 import { Suspense, lazy, useMemo, useRef } from "react";
 import type {
+  ApprovePlanResult,
   AttachmentInput,
   ChatMode,
   ChatThread,
@@ -93,6 +94,8 @@ export interface ChatPaneProps {
   onStopAssistantRun: (threadId: string) => Promise<void>;
   onError: (msg: string | null) => void;
   onBranchRenamed?: (worktreeId: string, newBranch: string) => void;
+  /** Forwarded to the session so the parent can switch to a handoff exec-thread atomically. */
+  onPlanApproved?: (result: ApprovePlanResult) => void;
   onOpenReadFile?: (path: string) => void | Promise<void>;
   onAgentModelSelectorOpen?: () => void;
 }
@@ -132,6 +135,7 @@ export function ChatPane({
   onStopAssistantRun,
   onError,
   onBranchRenamed,
+  onPlanApproved,
   onOpenReadFile,
   onAgentModelSelectorOpen,
 }: ChatPaneProps) {
@@ -148,6 +152,7 @@ export function ChatPane({
     onStopAssistantRun,
     onError,
     onBranchRenamed,
+    onPlanApproved,
   });
 
   const { gates } = session;

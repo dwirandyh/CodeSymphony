@@ -497,6 +497,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       planFileDetected: false,
       todoGroupId: null,
       emittedTodoToolUseIds: new Set<string>(),
+      taskItems: new Map(),
       queryStartTimestamp,
       promptSuggestions: [],
       recentDiagnostics: [],
@@ -593,7 +594,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             ],
             PostToolUse: [
               {
-                hooks: [createPostToolUseHook(callbacks, emitInstrumentation, maps, instrumentContext)],
+                hooks: [createPostToolUseHook(callbacks, emitInstrumentation, maps, instrumentContext, state)],
               },
             ],
             PostToolUseFailure: [

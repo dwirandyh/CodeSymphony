@@ -342,12 +342,91 @@ export async function getCurrentBranch(cwd: string): Promise<string | null> {
   }
 }
 
+async function resolveGitDir(cwd: string): Promise<string> {
+  const gitDir = await runGit(["rev-parse", "--git-dir"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS });
+  return path.isAbsolute(gitDir) ? gitDir : path.resolve(cwd, gitDir);
+}
+
+async function readRebaseHeadName(gitDir: string): Promise<string | null> {
+  for (const subdir of ["rebase-merge", "rebase-apply"]) {
+    try {
+      const raw = await readFile(path.join(gitDir, subdir, "head-name"), "utf8");
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      return trimmed.replace(/^refs\/heads\//, "");
+    } catch {
+      // Not in this rebase state.
+    }
+  }
+
+  return null;
+}
+
+async function resolveWorktreeBranchName(cwd: string, branchFallback?: string): Promise<string> {
+  const currentBranch = await getCurrentBranch(cwd);
+  if (currentBranch) {
+    return currentBranch;
+  }
+
+  const gitDir = await resolveGitDir(cwd);
+  const rebasingBranch = await readRebaseHeadName(gitDir);
+  if (rebasingBranch) {
+    return rebasingBranch;
+  }
+
+  const fallback = branchFallback?.trim();
+  if (fallback) {
+    return fallback;
+  }
+
+  return "HEAD";
+}
+
+async function assertNoRebaseInProgress(cwd: string): Promise<void> {
+  const gitDir = await resolveGitDir(cwd);
+  for (const subdir of ["rebase-merge", "rebase-apply"]) {
+    if (existsSync(path.join(gitDir, subdir))) {
+      throw new Error(
+        "A rebase is already in progress. Resolve conflicts or run `git rebase --abort` in the terminal first.",
+      );
+    }
+  }
+}
+
+async function resolveWorktreeBranchRef(cwd: string, branchFallback?: string): Promise<string> {
+  const branchName = await resolveWorktreeBranchName(cwd, branchFallback);
+  if (branchName === "HEAD") {
+    return "HEAD";
+  }
+
+  const resolved = await runGit(["rev-parse", "--verify", branchName], cwd, {
+    timeoutMs: STATUS_GIT_TIMEOUT_MS,
+    allowedExitCodes: [128],
+  }).catch(() => "");
+  return resolved.trim().length > 0 ? branchName : "HEAD";
+}
+
 export async function createGitWorktree(args: {
   repositoryPath: string;
   worktreePath: string;
   branch: string;
   baseBranch: string;
 }): Promise<void> {
+  // Fetch latest base branch from origin so worktree is based on the
+  // freshest remote state. Fall back to the local branch if fetching fails
+  // (e.g. offline, no remote, or auth issues).
+  let effectiveBase = args.baseBranch;
+  try {
+    await runGit(["fetch", "origin", args.baseBranch], args.repositoryPath, {
+      timeoutMs: 15_000,
+    });
+    effectiveBase = `origin/${args.baseBranch}`;
+  } catch {
+    // Fetch failed; use local base branch as fallback.
+  }
+
   await runGit([
     "-C",
     args.repositoryPath,
@@ -356,8 +435,9 @@ export async function createGitWorktree(args: {
     "-b",
     args.branch,
     args.worktreePath,
-    args.baseBranch,
+    effectiveBase,
   ]);
+
 }
 
 export async function removeGitWorktree(args: { repositoryPath: string; worktreePath: string }): Promise<void> {
@@ -509,6 +589,53 @@ function parseAheadBehindCounts(output: string): { ahead: number; behind: number
     ahead: Number.isFinite(ahead) && ahead >= 0 ? ahead : 0,
     behind: Number.isFinite(behind) && behind >= 0 ? behind : 0,
   };
+}
+
+function parseBaseAheadBehindCounts(output: string): { ahead: number; behind: number } {
+  const [behindRaw = "0", aheadRaw = "0"] = output.trim().split(/\s+/);
+  const ahead = Number.parseInt(aheadRaw, 10);
+  const behind = Number.parseInt(behindRaw, 10);
+
+  return {
+    ahead: Number.isFinite(ahead) && ahead >= 0 ? ahead : 0,
+    behind: Number.isFinite(behind) && behind >= 0 ? behind : 0,
+  };
+}
+
+async function getAheadBehindAgainstBaseRef(
+  cwd: string,
+  baseRef: string,
+  headRef = "HEAD",
+): Promise<{ ahead: number; behind: number }> {
+  const countsOutput = await runGit(["rev-list", "--left-right", "--count", `${baseRef}...${headRef}`], cwd, {
+    timeoutMs: STATUS_GIT_TIMEOUT_MS,
+    allowedExitCodes: [128],
+  }).catch(() => "");
+
+  return parseBaseAheadBehindCounts(countsOutput);
+}
+
+async function resolveRebaseBaseRef(cwd: string, baseBranch: string): Promise<string> {
+  const resolvedBaseRef = await resolveBranchDiffBaseRef(cwd, baseBranch);
+  if (!resolvedBaseRef) {
+    throw new Error(`Base branch ${baseBranch} is not available locally or on origin`);
+  }
+
+  try {
+    await runGit(["fetch", "origin", baseBranch], cwd, { timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+    const originRef = `origin/${baseBranch}`;
+    const originResolved = await runGit(["rev-parse", "--verify", originRef], cwd, {
+      timeoutMs: STATUS_GIT_TIMEOUT_MS,
+      allowedExitCodes: [128],
+    }).catch(() => "");
+    if (originResolved.trim().length > 0) {
+      return originRef;
+    }
+  } catch {
+    // Fetch failed; rebase onto the best local ref we have.
+  }
+
+  return resolvedBaseRef;
 }
 
 async function getBranchSyncStatus(cwd: string): Promise<{ upstream: string | null; ahead: number; behind: number }> {
@@ -689,7 +816,10 @@ async function getUntrackedFileStats(cwd: string, filePath: string): Promise<{ i
 }
 
 async function resolveBranchDiffBaseRef(cwd: string, baseBranch: string): Promise<string | null> {
-  const candidates = Array.from(new Set([baseBranch, `origin/${baseBranch}`]));
+  // Prefer origin/<base> so branch diff matches worktree creation, which bases new
+  // branches on fetched origin when available. Stale local base refs otherwise
+  // make freshly created worktrees look dirty immediately.
+  const candidates = Array.from(new Set([`origin/${baseBranch}`, baseBranch]));
 
   for (const candidate of candidates) {
     const resolved = await runGit(["rev-parse", "--verify", candidate], cwd, {
@@ -788,7 +918,30 @@ export async function syncCurrentBranch(cwd: string): Promise<{ result: string }
   return { result: `Synced with ${upstream}` };
 }
 
-export async function getGitBranchDiffSummary(cwd: string, baseBranch: string): Promise<{
+export async function rebaseWorktreeOntoBaseBranch(
+  cwd: string,
+  baseBranch: string,
+): Promise<{ result: string; baseBranch: string; ahead: number; behind: number }> {
+  assertWorktreePathAvailable(cwd);
+  await assertNoRebaseInProgress(cwd);
+
+  const effectiveBaseRef = await resolveRebaseBaseRef(cwd, baseBranch);
+  await runGit(["rebase", "--autostash", effectiveBaseRef], cwd, { timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+  const { ahead, behind } = await getAheadBehindAgainstBaseRef(cwd, effectiveBaseRef);
+
+  return {
+    result: `Rebased onto ${baseBranch}`,
+    baseBranch,
+    ahead,
+    behind,
+  };
+}
+
+export async function getGitBranchDiffSummary(
+  cwd: string,
+  baseBranch: string,
+  options?: { branchFallback?: string },
+): Promise<{
   branch: string;
   baseBranch: string;
   insertions: number;
@@ -796,8 +949,11 @@ export async function getGitBranchDiffSummary(cwd: string, baseBranch: string): 
   filesChanged: number;
   available: boolean;
   unavailableReason?: string;
+  ahead: number;
+  behind: number;
 }> {
-  const branch = await runGit(["branch", "--show-current"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => "HEAD");
+  const branch = await resolveWorktreeBranchName(cwd, options?.branchFallback);
+  const branchRef = await resolveWorktreeBranchRef(cwd, options?.branchFallback);
 
   if (branch === baseBranch) {
     return {
@@ -807,6 +963,8 @@ export async function getGitBranchDiffSummary(cwd: string, baseBranch: string): 
       deletions: 0,
       filesChanged: 0,
       available: true,
+      ahead: 0,
+      behind: 0,
     };
   }
 
@@ -820,12 +978,17 @@ export async function getGitBranchDiffSummary(cwd: string, baseBranch: string): 
       filesChanged: 0,
       available: false,
       unavailableReason: `Base branch ${baseBranch} is not available locally or on origin`,
+      ahead: 0,
+      behind: 0,
     };
   }
 
-  const numstat = await runGit(["diff", "--numstat", `${resolvedBaseRef}...HEAD`], cwd, {
-    timeoutMs: STATUS_GIT_TIMEOUT_MS,
-  }).catch(() => "");
+  const [numstat, syncCounts] = await Promise.all([
+    runGit(["diff", "--numstat", `${resolvedBaseRef}...${branchRef}`], cwd, {
+      timeoutMs: STATUS_GIT_TIMEOUT_MS,
+    }).catch(() => ""),
+    getAheadBehindAgainstBaseRef(cwd, resolvedBaseRef, branchRef),
+  ]);
   const statsMap = parseNumstatOutput(numstat);
 
   let insertions = 0;
@@ -842,6 +1005,8 @@ export async function getGitBranchDiffSummary(cwd: string, baseBranch: string): 
     deletions,
     filesChanged: statsMap.size,
     available: true,
+    ahead: syncCounts.ahead,
+    behind: syncCounts.behind,
   };
 }
 

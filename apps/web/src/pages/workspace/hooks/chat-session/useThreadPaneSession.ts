@@ -7,6 +7,7 @@ import { logWorkspaceEmptyStateResolution } from "../../../../lib/workspaceUiDia
 import { useLiveQuery } from "@tanstack/react-db";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  ApprovePlanResult,
   AttachmentInput,
   ChatEvent,
   ChatMessage,
@@ -108,6 +109,13 @@ export interface UseThreadPaneSessionDeps {
   onStopAssistantRun: (threadId: string) => Promise<void>;
   onError: (msg: string | null) => void;
   onBranchRenamed?: (worktreeId: string, newBranch: string) => void;
+  /**
+   * Fired with the runtime's ApprovePlanResult right after a plan is approved.
+   * For executionKind "handoff" the parent uses this to register the optimistic
+   * execution-thread shell + switch the active tab atomically, BEFORE the seeded
+   * plan / first assistant activity stream in — avoiding the empty-tab race.
+   */
+  onPlanApproved?: (result: ApprovePlanResult) => void;
 }
 
 export interface ThreadPaneSession {
@@ -168,6 +176,7 @@ export function useThreadPaneSession(
     onStopAssistantRun,
     onError,
     onBranchRenamed,
+    onPlanApproved,
   } = deps;
 
   const isOptimistic = isOptimisticThreadId(threadId);
@@ -265,6 +274,7 @@ export function useThreadPaneSession(
     onError,
     startWaitingAssistant,
     clearWaitingAssistantForThread,
+    onPlanApproved,
   });
 
   // Clear the waiting-assistant marker once a real activity event lands.

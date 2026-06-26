@@ -16,6 +16,7 @@ import {
   discardGitChange,
   detectReviewProvider,
   syncCurrentBranch,
+  rebaseWorktreeOntoBaseBranch,
 } from "../src/services/git";
 
 let repoDir: string;
@@ -25,7 +26,7 @@ function git(args: string) {
 }
 
 function gitIn(cwd: string, args: string) {
-  execSync(`git ${args}`, { cwd, encoding: "utf8", stdio: "pipe" });
+  return execSync(`git ${args}`, { cwd, encoding: "utf8", stdio: "pipe" });
 }
 
 async function createRepoWithRemote() {
@@ -260,6 +261,204 @@ describe("git utilities", () => {
       const summary = await getGitBranchDiffSummary(repoDir, "missing-base");
       expect(summary.available).toBe(false);
       expect(summary.unavailableReason).toContain("missing-base");
+      expect(summary.ahead).toBe(0);
+      expect(summary.behind).toBe(0);
+    });
+
+    it("reports behind count when base has commits the branch lacks", async () => {
+      git("checkout -b behind-feat");
+      git("checkout main");
+      await writeFile(join(repoDir, "base-advance.txt"), "x\n");
+      git("add -A");
+      git('commit -m "base advance"');
+      git("checkout behind-feat");
+
+      const summary = await getGitBranchDiffSummary(repoDir, "main");
+      expect(summary.behind).toBe(1);
+      expect(summary.ahead).toBe(0);
+      expect(summary.available).toBe(true);
+
+      git("checkout main");
+      git("reset --hard HEAD~1");
+      git("branch -D behind-feat");
+    });
+
+    it("reports ahead count when branch has commits base lacks", async () => {
+      git("checkout -b ahead-feat");
+      await writeFile(join(repoDir, "feat-change.txt"), "y\n");
+      git("add -A");
+      git('commit -m "feat change"');
+
+      const summary = await getGitBranchDiffSummary(repoDir, "main");
+      expect(summary.ahead).toBe(1);
+      expect(summary.behind).toBe(0);
+      expect(summary.available).toBe(true);
+
+      git("checkout main");
+      git("branch -D ahead-feat");
+    });
+
+    it("uses branchFallback when HEAD is detached", async () => {
+      git("checkout -b detached-feat");
+      await writeFile(join(repoDir, "detached-change.txt"), "feature\n");
+      git("add detached-change.txt");
+      git('commit -m "detached feature"');
+      const tip = execSync("git rev-parse detached-feat", { cwd: repoDir, encoding: "utf8" }).trim();
+      git(`checkout ${tip}`);
+
+      const summary = await getGitBranchDiffSummary(repoDir, "main", { branchFallback: "detached-feat" });
+      expect(summary.branch).toBe("detached-feat");
+      expect(summary.insertions).toBeGreaterThan(0);
+      expect(summary.filesChanged).toBeGreaterThan(0);
+      expect(summary.ahead).toBe(1);
+
+      git("checkout main");
+      git("branch -D detached-feat");
+    });
+
+    it("returns zero summary for a branch created at origin base when local base is stale", async () => {
+      const { localRepo, remoteRepo } = await createRepoWithRemote();
+      try {
+        gitIn(localRepo, "checkout -b dev");
+        await writeFile(join(localRepo, "dev-only.txt"), "local dev\n");
+        gitIn(localRepo, "add dev-only.txt");
+        gitIn(localRepo, 'commit -m "local dev advance"');
+
+        gitIn(localRepo, "checkout main");
+        await writeFile(join(localRepo, "origin-only.txt"), "origin dev\n");
+        gitIn(localRepo, "add origin-only.txt");
+        gitIn(localRepo, 'commit -m "origin dev advance"');
+        gitIn(localRepo, "push origin HEAD:dev");
+
+        gitIn(localRepo, "fetch origin dev");
+        gitIn(localRepo, "branch -f fresh-worktree origin/dev");
+        gitIn(localRepo, "checkout fresh-worktree");
+
+        const summary = await getGitBranchDiffSummary(localRepo, "dev");
+        expect(summary).toMatchObject({
+          branch: "fresh-worktree",
+          baseBranch: "dev",
+          insertions: 0,
+          deletions: 0,
+          filesChanged: 0,
+          available: true,
+          ahead: 0,
+          behind: 0,
+        });
+      } finally {
+        await rm(localRepo, { recursive: true, force: true });
+        await rm(remoteRepo, { recursive: true, force: true });
+      }
+    });
+
+    it("uses rebasing branch ref when HEAD is detached during rebase", async () => {
+      git("checkout -b rebase-feat");
+      await writeFile(join(repoDir, "shared.txt"), "feature\n");
+      git("add shared.txt");
+      git('commit -m "feature change"');
+      git("checkout main");
+      await writeFile(join(repoDir, "shared.txt"), "main\n");
+      git("add shared.txt");
+      git('commit -m "base advance"');
+      git("checkout rebase-feat");
+
+      try {
+        git("rebase main");
+      } catch {
+        // Rebase stops on the conflict with a detached HEAD.
+      }
+
+      const summary = await getGitBranchDiffSummary(repoDir, "main");
+      expect(summary.branch).toBe("rebase-feat");
+      expect(summary.insertions).toBeGreaterThan(0);
+      expect(summary.filesChanged).toBeGreaterThan(0);
+
+      try {
+        git("rebase --abort");
+      } catch {
+        // Fall through to checkout main below.
+      }
+      git("checkout main");
+      git("branch -D rebase-feat");
+    });
+  });
+
+  describe("rebaseWorktreeOntoBaseBranch", () => {
+    it("replays branch commits onto the fetched base branch", async () => {
+      const { localRepo, remoteRepo } = await createRepoWithRemote();
+      try {
+        gitIn(localRepo, "checkout -b feature");
+        await writeFile(join(localRepo, "feature.txt"), "feature\n");
+        gitIn(localRepo, "add feature.txt");
+        gitIn(localRepo, 'commit -m "feature change"');
+
+        gitIn(localRepo, "checkout main");
+        await writeFile(join(localRepo, "base-new.txt"), "base\n");
+        gitIn(localRepo, "add base-new.txt");
+        gitIn(localRepo, 'commit -m "base advance"');
+        gitIn(localRepo, "push origin main");
+        gitIn(localRepo, "checkout feature");
+
+        const result = await rebaseWorktreeOntoBaseBranch(localRepo, "main");
+        expect(result.behind).toBe(0);
+        expect(result.ahead).toBe(1);
+        expect(result.baseBranch).toBe("main");
+
+        // After rebase, the feature commit sits on top of the advanced base:
+        // base advance must be reachable from HEAD (no longer behind).
+        const gitLog = gitIn(localRepo, "rev-list --count HEAD..origin/main");
+        expect(Number.parseInt(gitLog.trim(), 10)).toBe(0);
+      } finally {
+        await rm(localRepo, { recursive: true, force: true });
+        await rm(remoteRepo, { recursive: true, force: true });
+      }
+    });
+
+    it("throws when a rebase is already in progress", async () => {
+      git("checkout -b rebase-blocked");
+      await writeFile(join(repoDir, "blocked.txt"), "feature\n");
+      git("add blocked.txt");
+      git('commit -m "feature change"');
+      git("checkout main");
+      await writeFile(join(repoDir, "blocked.txt"), "main\n");
+      git("add blocked.txt");
+      git('commit -m "base advance"');
+      git("checkout rebase-blocked");
+
+      try {
+        git("rebase main");
+      } catch {
+        // Rebase stops on the conflict with a detached HEAD.
+      }
+
+      await expect(rebaseWorktreeOntoBaseBranch(repoDir, "main")).rejects.toThrow(
+        "A rebase is already in progress",
+      );
+
+      try {
+        git("rebase --abort");
+      } catch {
+        // Fall through to checkout main below.
+      }
+      git("checkout main");
+      git("branch -D rebase-blocked");
+    });
+
+    it("throws when the base branch is unavailable", async () => {
+      const tmpRepo = await mkdtemp(join(tmpdir(), "cs-git-rebase-none-"));
+      try {
+        gitIn(tmpRepo, "init --initial-branch=main");
+        gitIn(tmpRepo, 'config user.email "test@test.com"');
+        gitIn(tmpRepo, 'config user.name "Test"');
+        await writeFile(join(tmpRepo, "README.md"), "# Hello");
+        gitIn(tmpRepo, "add -A");
+        gitIn(tmpRepo, 'commit -m "init"');
+        gitIn(tmpRepo, "checkout -b feature");
+
+        await expect(rebaseWorktreeOntoBaseBranch(tmpRepo, "nonexistent")).rejects.toThrow();
+      } finally {
+        await rm(tmpRepo, { recursive: true, force: true });
+      }
     });
   });
 

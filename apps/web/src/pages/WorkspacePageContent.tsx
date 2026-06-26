@@ -1,6 +1,7 @@
 import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Bug, Menu, Settings, X } from "lucide-react";
 import {
+  type ApprovePlanResult,
   type ClaudeModelCatalogEntry,
   type ChatThread,
   type ReviewRef,
@@ -108,6 +109,7 @@ const loadWorkspaceAutomationsPanel = () =>
 const WorkspaceAutomationsPanel = lazy(loadWorkspaceAutomationsPanel);
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
+import { buildPlanHandoffSearchPatch } from "./workspace/planHandoffNavigation";
 import {
   pruneSettledWorktreeStatusOverrides,
   reconcileWorktreeStatusOverrides,
@@ -3836,6 +3838,27 @@ export function WorkspacePage() {
     [chat.selectedThreadId, chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, search.repoId, search.threadId, search.worktreeId, setWorkspaceLandingHold, updateSearch],
   );
 
+  // On plan approval with executionKind "handoff", switch to the new execution
+  // thread ATOMICALLY: register an optimistic exec-thread shell + mark it selected
+  // BEFORE its seeded plan / first assistant activity stream in. Without this we'd
+  // rely on the async "thread.created" event to surface the thread, switching the
+  // tab to empty/loading content (the race this guards against).
+  const handlePlanApproved = useCallback(
+    (result: ApprovePlanResult) => {
+      if (result.executionKind !== "handoff") {
+        return;
+      }
+      chat.registerPendingHandoffThread({
+        sourceThreadId: result.sourceThreadId,
+        executionThreadId: result.executionThreadId,
+      });
+      setUserIntentThreadId(result.executionThreadId);
+      chat.setSelectedThreadId(result.executionThreadId, { preserveWhileMissing: true });
+      updateSearch(buildPlanHandoffSearchPatch(result.executionThreadId));
+    },
+    [chat.registerPendingHandoffThread, chat.setSelectedThreadId, updateSearch],
+  );
+
   const handleSelectSessionShortcutTarget = useCallback((target: SessionShortcutTarget) => {
     if (target.kind === "thread") {
       handleSelectThread(target.id);
@@ -4809,6 +4832,7 @@ export function WorkspacePage() {
               chat.setThreadPermissionMode(targetThreadId, permissionMode)}
             onStopAssistantRun={(targetThreadId) => chat.stopAssistantRun(targetThreadId)}
             onError={setError}
+            onPlanApproved={handlePlanApproved}
             onOpenReadFile={openReadFile}
             focusSignal={focusSignal}
             onFocusPane={onFocusPane}
@@ -4829,6 +4853,7 @@ export function WorkspacePage() {
       generalSettings.autoConvertLongTextEnabled,
       generalSettings.sendMessagesWith,
       handleOpenAgentModelSelector,
+      handlePlanApproved,
       desktopLayout,
       mobileKeyboardOffset,
       modelCatalogReadyByAgent,

@@ -51,6 +51,14 @@ export function isTodoWriteTool(toolName: string): boolean {
     return toolName.trim().toLowerCase() === "todowrite";
 }
 
+const TASK_TOOL_NAME_PATTERN = /^(taskcreate|taskupdate|tasklist|taskget)$/;
+
+// Matches the incremental Claude task-list tools ONLY by full name. Never matches the
+// bare "task"/"agent" subagent launcher, so the to-do classifier and launcher never collide.
+export function isTaskTool(toolName: string): boolean {
+    return TASK_TOOL_NAME_PATTERN.test(toolName.trim().toLowerCase());
+}
+
 export function commandFromToolInput(input: Record<string, unknown>): string | undefined {
     const command = input.command;
     if (typeof command !== "string") {
@@ -600,4 +608,71 @@ export function todoItemsFromUnknownToolInput(toolName: string, input: unknown):
     });
 
     return items.length > 0 ? items : undefined;
+}
+
+export type TaskMutation =
+    | { kind: "create"; subject: string }
+    | { kind: "update"; taskId: string; status: AgentTodoItem["status"] | "deleted" }
+    | { kind: "noop" };
+
+// Parses the incremental Claude task-list tools. TaskCreate carries {subject}, TaskUpdate
+// carries {taskId,status}. Read-only TaskList/TaskGet resolve to noop. Returns undefined for
+// non-task tools so callers can fall through to other classifiers.
+export function taskMutationFromToolInput(toolName: string, input: unknown): TaskMutation | undefined {
+    if (!isTaskTool(toolName)) {
+        return undefined;
+    }
+
+    const normalized = toolName.trim().toLowerCase();
+    if (normalized === "tasklist" || normalized === "taskget") {
+        return { kind: "noop" };
+    }
+
+    const record = typeof input === "object" && input != null && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : undefined;
+    if (!record) {
+        return { kind: "noop" };
+    }
+
+    if (normalized === "taskcreate") {
+        const subject = typeof record.subject === "string" ? record.subject.trim() : "";
+        if (subject.length === 0) {
+            return { kind: "noop" };
+        }
+        return { kind: "create", subject };
+    }
+
+    // taskupdate
+    const taskId = typeof record.taskId === "string"
+        ? record.taskId.trim()
+        : typeof record.taskId === "number"
+            ? String(record.taskId)
+            : "";
+    if (taskId.length === 0) {
+        return { kind: "noop" };
+    }
+
+    const status = record.status;
+    if (status === "deleted") {
+        return { kind: "update", taskId, status: "deleted" };
+    }
+    if (isTodoStatus(status)) {
+        return { kind: "update", taskId, status };
+    }
+    return { kind: "noop" };
+}
+
+// Reads the server-assigned 1-indexed id from a TaskCreate result, e.g.
+// "Task #3 created successfully: ...". Returns null when absent (caller infers by order).
+export function taskIdFromResultText(resultText: string | undefined): number | null {
+    if (typeof resultText !== "string") {
+        return null;
+    }
+    const match = /Task #(\d+)/i.exec(resultText);
+    if (!match) {
+        return null;
+    }
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }

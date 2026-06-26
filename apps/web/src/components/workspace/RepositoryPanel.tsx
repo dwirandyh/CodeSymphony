@@ -37,12 +37,14 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { BrailleSpinner } from "./BrailleSpinner";
+import { WorktreeBranchSyncBadge } from "./WorktreeBranchSyncBadge";
 import { cn } from "../../lib/utils";
 import { isPendingWorktreeStatus, isRootWorktree, isSelectableWorktreeStatus } from "../../lib/worktree";
 import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBranchDiffSummary";
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { queryKeys } from "../../lib/queryKeys";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
+
 import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
 import { isDesktopShell } from "../../lib/openExternalUrl";
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
@@ -355,6 +357,33 @@ function WorktreeMetaSlot({
   );
 }
 
+function WorktreeBranchSyncBadgeContainer({
+  worktreeId,
+  ahead,
+  behind,
+  baseBranch,
+  enabled,
+}: {
+  worktreeId: string;
+  ahead: number;
+  behind: number;
+  baseBranch?: string;
+  enabled: boolean;
+}) {
+  if (!enabled) {
+    return null;
+  }
+
+  return (
+    <WorktreeBranchSyncBadge
+      ahead={ahead}
+      behind={behind}
+      baseBranch={baseBranch}
+      testId={`worktree-${worktreeId}`}
+    />
+  );
+}
+
 function isVisibleWorktreeStatus(status: Repository["worktrees"][number]["status"]): boolean {
   return status === "active"
     || status === "creating"
@@ -429,6 +458,7 @@ function WorktreeRowContent({
   reviewKind,
   insertions,
   deletions,
+  branchSync,
   testId,
   hideStatusOnHover = false,
 }: {
@@ -442,11 +472,12 @@ function WorktreeRowContent({
   reviewKind: ReviewKind | null | undefined;
   insertions: number;
   deletions: number;
+  branchSync?: ReactNode;
   testId: string;
   hideStatusOnHover?: boolean;
 }) {
   const metaIndentClass = review ? "pl-[20px]" : "pl-[14px]";
-  const hasMetaRow = detailBadge != null || review != null || insertions > 0 || deletions > 0;
+  const hasMetaRow = detailBadge != null || review != null || insertions > 0 || deletions > 0 || branchSync != null;
 
   return (
     <div
@@ -476,6 +507,9 @@ function WorktreeRowContent({
               kind={reviewKind}
               testId={testId}
             />
+          </WorktreeMetaSlot>
+          <WorktreeMetaSlot>
+            {branchSync}
           </WorktreeMetaSlot>
           <WorktreeMetaSlot>
             <WorktreeDiffSummary
@@ -1663,6 +1697,15 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                   reviewKind={repositoryReviewKind}
                                   insertions={showDiffSummary ? stats?.insertions ?? 0 : 0}
                                   deletions={showDiffSummary ? stats?.deletions ?? 0 : 0}
+                                  branchSync={
+                                    <WorktreeBranchSyncBadgeContainer
+                                      worktreeId={worktree.id}
+                                      ahead={showDiffSummary ? stats?.ahead ?? 0 : 0}
+                                      behind={showDiffSummary ? stats?.behind ?? 0 : 0}
+                                      baseBranch={worktree.baseBranch}
+                                      enabled={showDiffSummary}
+                                    />
+                                  }
                                   testId={`worktree-${worktree.id}`}
                                   hideStatusOnHover={true}
                                 />

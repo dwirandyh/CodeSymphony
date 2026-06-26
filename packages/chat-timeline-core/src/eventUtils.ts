@@ -234,6 +234,34 @@ export function isTodoWriteToolEvent(event: ChatEvent): boolean {
   return internalName === "todowrite" || internalName === "updatetodos";
 }
 
+// Claude's incremental task-list tools (TaskCreate/TaskUpdate/TaskList/TaskGet). The runtime
+// coalesces these into todo.updated snapshots, so the raw tool events must be filtered out of the
+// generic timeline exactly like TodoWrite. Matches FULL names only — never bare "task"/"agent" —
+// so this never collides with the subagent launcher.
+const TASK_LIST_TOOL_NAMES = new Set(["taskcreate", "taskupdate", "tasklist", "taskget"]);
+
+export function isTaskListToolEvent(event: ChatEvent): boolean {
+  if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
+    return false;
+  }
+
+  const normalizedToolName = normalizeTodoWriteToolName(payloadStringOrNull(event.payload.toolName));
+  if (TASK_LIST_TOOL_NAMES.has(normalizedToolName)) {
+    return true;
+  }
+
+  const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+  const internalName = normalizeTodoWriteToolName(payloadStringOrNull(toolInput?._toolName));
+  return TASK_LIST_TOOL_NAMES.has(internalName);
+}
+
+// True for any tool event the runtime turns into a todo.updated snapshot (TodoWrite or the
+// incremental Task* tools). Used at the timeline filter/anchor sites to keep these raw tool
+// events from rendering as duplicate generic rows.
+export function isTodoSnapshotToolEvent(event: ChatEvent): boolean {
+  return isTodoWriteToolEvent(event) || isTaskListToolEvent(event);
+}
+
 export function isBashPayload(payload: Record<string, unknown>): boolean {
   if (payload.isBash === true || payload.shell === "bash") {
     return true;

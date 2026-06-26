@@ -64,8 +64,9 @@ export async function getCachedWorktreeGitBranchDiffSummary(
   worktreeId: string,
   worktreePath: string,
   baseBranch: string,
+  branchFallback?: string,
 ): Promise<GitBranchDiffSummaryResult> {
-  const cacheKey = `${worktreeId}:${baseBranch}`;
+  const cacheKey = `${worktreeId}:${baseBranch}:${branchFallback ?? ""}`;
   const now = Date.now();
   const cached = cachedBranchDiffByWorktreeKey.get(cacheKey);
   if (cached && cached.expiresAt > now) {
@@ -77,7 +78,7 @@ export async function getCachedWorktreeGitBranchDiffSummary(
     return inFlight;
   }
 
-  const requestPromise = getGitBranchDiffSummary(worktreePath, baseBranch)
+  const requestPromise = getGitBranchDiffSummary(worktreePath, baseBranch, { branchFallback })
     .then((summary) => {
       cachedBranchDiffByWorktreeKey.set(cacheKey, {
         value: summary,
