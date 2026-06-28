@@ -14,6 +14,10 @@ describe("inferPlanDetectionSource", () => {
     expect(inferPlanDetectionSource(".opencode/plans/final-plan.md")).toBe("claude_plan_file");
   });
 
+  it("treats Cursor plan files as canonical plan files", () => {
+    expect(inferPlanDetectionSource(".cursor/plans/cursor-plan.md")).toBe("claude_plan_file");
+  });
+
   it("falls back to streaming_fallback for non-plan paths", () => {
     expect(inferPlanDetectionSource("streaming-plan")).toBe("streaming_fallback");
   });

@@ -51,4 +51,18 @@ describe("installGlobalErrorReporter", () => {
     expect((data as { stack?: string | null }).stack).toEqual(expect.any(String));
     expect((options as { force?: boolean }).force).toBe(true);
   });
+
+  it("ignores benign ResizeObserver loop warnings", () => {
+    dispose = installGlobalErrorReporter();
+
+    window.dispatchEvent(new ErrorEvent("error", {
+      message: "ResizeObserver loop completed with undelivered notifications.",
+    }));
+    window.dispatchEvent(new ErrorEvent("error", {
+      message: "ResizeObserver loop limit exceeded",
+    }));
+
+    const crashEntry = debugLogMock.mock.calls.find(([source]) => source === "app.crash");
+    expect(crashEntry).toBeUndefined();
+  });
 });

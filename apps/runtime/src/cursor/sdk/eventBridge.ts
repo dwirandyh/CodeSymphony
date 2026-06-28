@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import type { SDKMessage, SDKToolUseMessage } from "@cursor/sdk";
 import type { AgentTodoItem } from "@codesymphony/shared-types";
 import type { ChatAgentRunner } from "../../types.js";
@@ -167,6 +167,10 @@ function buildToolSummary(tool: ToolState): string {
   const command = extractCommand(tool.args);
   const searchParams = buildSearchParamsFromArgs(tool.args);
 
+  if (isCreatePlanTool(tool.toolName)) {
+    return "Created plan";
+  }
+
   if (toolName === "read" && path) {
     return `Read ${path}`;
   }
@@ -229,6 +233,16 @@ function isPlanEditingTool(toolName: string): boolean {
   return normalized === "edit" || normalized === "write";
 }
 
+function isCreatePlanTool(toolName: string): boolean {
+  return toolName.trim().toLowerCase() === "createplan";
+}
+
+function extractInlinePlanContent(args: unknown): string | null {
+  const object = coerceObject(args);
+  const plan = object?.plan;
+  return typeof plan === "string" && plan.trim().length > 0 ? plan.trim() : null;
+}
+
 function extractEditTargetPath(args: unknown): string | undefined {
   const object = coerceObject(args);
   const path = object?.path ?? object?.file_path ?? object?.filePath;
@@ -257,6 +271,20 @@ async function emitPlanIfDetected(
   callbacks: EventBridgeCallbacks,
 ): Promise<void> {
   if (planState.emitted || !callbacks.onPlanFileDetected || !cwd) {
+    return;
+  }
+
+  const inlinePlan = isCreatePlanTool(tool.toolName) ? extractInlinePlanContent(tool.args) : null;
+  if (inlinePlan) {
+    const filePath = resolve(cwd, ".cursor", "plans", "cursor-plan.md");
+    try {
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFile(filePath, `${inlinePlan}\n`, "utf8");
+    } catch {
+      // Best-effort: still surface the plan even if the file write fails.
+    }
+    planState.emitted = true;
+    await callbacks.onPlanFileDetected({ filePath, content: inlinePlan });
     return;
   }
 
@@ -376,6 +404,7 @@ async function handleToolMessage(
 
   if (!current.finishedEmitted) {
     current.finishedEmitted = true;
+    const inlinePlan = isCreatePlanTool(current.toolName) ? extractInlinePlanContent(current.args) : null;
     await callbacks.onToolFinished({
       toolName: current.toolName,
       summary: buildToolSummary(current),
@@ -385,7 +414,7 @@ async function handleToolMessage(
       ...(searchParams ? { searchParams } : {}),
       ...(message.status === "error"
         ? { error: stringifyResult(current.result) }
-        : { output: stringifyResult(current.result) }),
+        : { output: inlinePlan ?? stringifyResult(current.result) }),
     });
     await emitTodoUpdate(current, callbacks);
     await emitPlanIfDetected(current, cwd, planState, callbacks);

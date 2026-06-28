@@ -12,6 +12,7 @@ import {
   type ModelProvider,
   type OpencodeModelCatalogEntry,
   formatModelOptionsSummaryForSelector,
+  hasConfigurableModelOptions,
   resolveModelCapabilities,
   buildProviderOptionSelectionsFromDescriptors,
   cursorCatalogCapabilityHintsFromEntry,
@@ -945,6 +946,12 @@ export function AgentModelSelector({
           selection,
         );
         const showCustomSeparator = isFirstCustomModelOption(modelPreviewOptions, index);
+        const optionHasConfigurableOptions = option.source === "builtin" && (() => {
+          const catalogHints = option.agent === "cursor"
+            ? cursorCatalogCapabilityHintsFromEntry(findCursorCatalogEntry(cursorModels, option.model))
+            : undefined;
+          return hasConfigurableModelOptions(resolveModelCapabilities(option.agent, option.model, catalogHints));
+        })();
 
         return (
           <div key={option.id}>
@@ -988,7 +995,7 @@ export function AgentModelSelector({
                   {option.detail}
                 </span>
               ) : null}
-              {onModelOptionsChange && option.source === "builtin" ? (
+              {onModelOptionsChange && optionHasConfigurableOptions ? (
                 <span
                   role="button"
                   tabIndex={0}

@@ -28,6 +28,7 @@ import {
   destinationForPaneSplit,
   visibleEditorColumnIds,
 } from "./workspace/editorGroups";
+import { prepareEditorGroupsForExplorerFileOpen } from "./workspace/prepareEditorGroupsForExplorerFileOpen";
 import { firstEmptyColumnToTheRight, normalizeColumnWidths } from "./workspace/editorColumns";
 import type { EditorQuadrantId } from "./workspace/editorGroupTypes";
 import { EDITOR_QUADRANT_IDS } from "./workspace/editorGroupTypes";
@@ -2683,8 +2684,11 @@ export function WorkspacePage() {
   }, [activeView, enableNonCriticalWorkspaceData, repos.selectedWorktreeId]);
 
   const pendingExplorerFileTabIdsRef = useRef<Set<string>>(new Set());
-  const handleExplorerFileTabOpened = useCallback((filePath: string) => {
+  const prepareExplorerFileOpenRef = useRef<(filePath: string) => void>((filePath) => {
     pendingExplorerFileTabIdsRef.current.add(filePath);
+  });
+  const handleExplorerFileTabOpened = useCallback((filePath: string) => {
+    prepareExplorerFileOpenRef.current(filePath);
   }, []);
 
   const {
@@ -4465,6 +4469,23 @@ export function WorkspacePage() {
 
     return tabs;
   }, [workspaceFileTabs, selectedTerminalTabsState.tabs, reviewTabOpen, openThreads]);
+
+  const sourceTabsRef = useRef(sourceTabs);
+  sourceTabsRef.current = sourceTabs;
+
+  useEffect(() => {
+    prepareExplorerFileOpenRef.current = (filePath: string) => {
+      pendingExplorerFileTabIdsRef.current.add(filePath);
+      setEditorGroups((current) =>
+        prepareEditorGroupsForExplorerFileOpen({
+          state: current,
+          sourceTabs: sourceTabsRef.current,
+          filePath,
+          allowExplorerFileSplit: desktopLayout,
+        }),
+      );
+    };
+  }, [desktopLayout]);
 
   useEffect(() => {
     setEditorGroups((current) => {

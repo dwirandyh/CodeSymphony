@@ -1,5 +1,11 @@
 import { debugLog } from "../../lib/debugLog";
 
+// Chromium fires a benign ErrorEvent when ResizeObserver delivery spans frames.
+// It is not a crash, so keep it out of the debug/crash pipeline.
+function isBenignResizeObserverError(message: string | undefined): boolean {
+  return typeof message === "string" && message.includes("ResizeObserver loop");
+}
+
 /**
  * Capture uncaught errors that escape React's render boundary — async throws,
  * event-handler errors, and unhandled promise rejections — and force-flush them
@@ -13,6 +19,9 @@ export function installGlobalErrorReporter(): () => void {
   }
 
   const handleError = (event: ErrorEvent) => {
+    if (isBenignResizeObserverError(event.message)) {
+      return;
+    }
     const error = event.error instanceof Error ? event.error : null;
     debugLog(
       "app.crash",

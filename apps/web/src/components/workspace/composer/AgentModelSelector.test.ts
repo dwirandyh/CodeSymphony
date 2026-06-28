@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MOBILE_CONTEXT_Z_CLASS } from "../../../lib/mobileStacking";
+import type { OpencodeModelCatalogEntry } from "@codesymphony/shared-types";
 import { AgentModelSelector, calculateAgentModelPopoverPosition } from "./AgentModelSelector";
 
 describe("calculateAgentModelPopoverPosition", () => {
@@ -256,5 +257,48 @@ describe("AgentModelSelector", () => {
     const portaledWrapper = agentPanel?.parentElement;
     expect(portaledWrapper?.classList.contains("fixed")).toBe(true);
     expect(portaledWrapper?.classList.contains(MOBILE_CONTEXT_Z_CLASS)).toBe(true);
+  });
+
+  it("hides the Edit button for opencode models since they have no configurable options", () => {
+    const onSelectionChange = vi.fn();
+    const onModelOptionsChange = vi.fn();
+    const opencodeModels: OpencodeModelCatalogEntry[] = [
+      { id: "opencode/gpt-5.4", name: "GPT-5.4", providerId: "openai" },
+      { id: "opencode/claude-sonnet-4-6", name: "Claude Sonnet 4.6", providerId: "anthropic" },
+    ];
+
+    act(() => {
+      root.render(
+        createElement(AgentModelSelector, {
+          selection: {
+            agent: "opencode",
+            model: opencodeModels[0]!.id,
+            modelProviderId: null,
+          },
+          providers: [],
+          opencodeModels,
+          showAgentList: true,
+          onSelectionChange,
+          onModelOptionsChange,
+        }),
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Select CLI agent and model"]');
+    if (!trigger) {
+      throw new Error("Model selector trigger not found");
+    }
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const overlayPanel = document.body.querySelector('[data-agent-model-panel="overlay"]');
+    expect(overlayPanel).not.toBeNull();
+
+    const editButtons = overlayPanel!.querySelectorAll('[role="button"]');
+    for (const button of editButtons) {
+      expect(button.textContent).not.toBe("Edit");
+    }
   });
 });

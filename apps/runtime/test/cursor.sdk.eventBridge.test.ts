@@ -1,5 +1,5 @@
 import type { SDKMessage } from "@cursor/sdk";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -275,6 +275,52 @@ describe("Cursor SDK event bridge", () => {
       expect(onPlanFileDetected).toHaveBeenCalledWith(expect.objectContaining({
         filePath: planAbsolutePath,
         content: "# Edited plan",
+      }));
+    });
+
+    it("emits inline createPlan content, writes the plan file, and exposes it as tool output", async () => {
+      const planMarkdown = "# Plan\n\n## Steps\n\n1. step one\n2. step two\n";
+      const onPlanFileDetected = vi.fn();
+      const onToolFinished = vi.fn();
+      const { bridgeCursorSdkRunStream } = await import("../src/cursor/sdk/eventBridge");
+
+      const result = await bridgeCursorSdkRunStream({
+        cwd,
+        stream: messages([
+          {
+            type: "tool_call",
+            agent_id: "agent-1",
+            run_id: "run-1",
+            call_id: "plan 9",
+            name: "createPlan",
+            status: "completed",
+            args: { plan: planMarkdown },
+            result: { status: "success", value: {} },
+          },
+        ]),
+        onText: vi.fn(),
+        onToolStarted: vi.fn(),
+        onToolOutput: vi.fn(),
+        onToolFinished,
+        onPlanFileDetected,
+      });
+
+      expect(result.planEmitted).toBe(true);
+
+      const planAbsolutePath = join(cwd, ".cursor", "plans", "cursor-plan.md");
+      expect(onPlanFileDetected).toHaveBeenCalledTimes(1);
+      expect(onPlanFileDetected).toHaveBeenCalledWith(expect.objectContaining({
+        filePath: planAbsolutePath,
+        content: planMarkdown.trim(),
+      }));
+
+      const written = await readFile(planAbsolutePath, "utf8");
+      expect(written.trim()).toBe(planMarkdown.trim());
+
+      expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+        toolName: "createPlan",
+        output: planMarkdown.trim(),
+        summary: "Created plan",
       }));
     });
 
