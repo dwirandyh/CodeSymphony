@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatQueuedMessage, FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
+import type { ActiveBackgroundJob } from "../../pages/workspace/backgroundJobUtils";
 import { api } from "../../lib/api";
 import { clearMobileComposerScrollPadding } from "../../lib/mobileComposerMetrics";
 import { MOBILE_COMPOSER_Z_CLASS, MOBILE_OVERLAY_Z_CLASS } from "../../lib/mobileStacking";
@@ -639,6 +640,28 @@ describe("Composer", () => {
     expect(editor.className).toContain("overflow-y-auto");
     expect(editor.className).toContain("max-h-[140px]");
     expect(editor.className).toContain("md:max-h-[400px]");
+  });
+
+  it("renders active monitoring jobs in an attached shelf above the composer shell", () => {
+    const activeBackgroundJobs: ActiveBackgroundJob[] = [
+      {
+        id: "background:mon-1",
+        toolUseId: "mon-1",
+        kind: "monitor",
+        label: "errors in deploy.log",
+        status: "running",
+        elapsedSeconds: 45,
+        startIdx: 1,
+        createdAt: "2025-01-01T00:00:00.000Z",
+      },
+    ];
+    renderComposer({ activeBackgroundJobs });
+
+    const composerShell = getEditor().parentElement;
+    const jobsShelf = container.querySelector('[data-testid="attached-background-jobs-shelf"]');
+    expect(jobsShelf).not.toBeNull();
+    expect(jobsShelf?.textContent).toContain("1 monitoring");
+    expect(composerShell?.contains(jobsShelf)).toBe(false);
   });
 
   it("renders queued drafts in an attached shelf above the composer shell", () => {

@@ -25,6 +25,7 @@ import {
   resolveMobileChatViewportInset,
 } from "../../lib/mobileStacking";
 import { cn } from "../../lib/utils";
+import { extractActiveBackgroundJobs } from "../../pages/workspace/backgroundJobUtils";
 import { useThreadPaneSession } from "../../pages/workspace/hooks/chat-session/useThreadPaneSession";
 import { useGateRequestNavigation } from "../../pages/workspace/hooks/useGateRequestNavigation";
 import {
@@ -195,6 +196,10 @@ export function ChatPane({
     workingStatus,
   });
 
+  const activeBackgroundJobs = useMemo(
+    () => extractActiveBackgroundJobs(session.events),
+    [session.events],
+  );
   const composerWorktreePath = worktreeOperational ? worktreePath : null;
   const mobileGateSurfaceRef = useRef<HTMLDivElement | null>(null);
   const showMobileGateSurface = mobileComposerPinned && gates.isWaitingForUserGate;
@@ -363,6 +368,7 @@ export function ChatPane({
             autoConvertLongTextEnabled={autoConvertLongTextEnabled}
             hasMessages={session.messages.length > 0}
             queuedMessages={session.queuedMessages}
+            activeBackgroundJobs={activeBackgroundJobs}
             onSubmitMessage={({ content, mode, attachments }) => session.submitMessage(content, mode, attachments)}
             onQueueDraft={({ content, mode, attachments }) => session.queueDraft(content, mode, attachments)}
             onModeChange={(mode) => void session.setComposerMode(mode)}

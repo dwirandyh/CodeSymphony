@@ -69,6 +69,8 @@ import {
 import { MOBILE_COMPOSER_Z_CLASS, MOBILE_OVERLAY_Z_CLASS } from "../../../lib/mobileStacking";
 import { cn } from "../../../lib/utils";
 import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
+import type { ActiveBackgroundJob } from "../../../pages/workspace/backgroundJobUtils";
+import { BackgroundJobsShelf } from "../BackgroundJobsShelf";
 import { QueuedMessageList } from "../QueuedMessageList";
 import { getWorkspaceShortcutLabel, WORKSPACE_SHORTCUTS } from "../keyboardShortcuts";
 import { createAttachmentChipElement, createChipElement } from "./composerChipUtils";
@@ -140,6 +142,8 @@ type ComposerProps = {
   autoConvertLongTextEnabled?: boolean;
   hasMessages: boolean;
   queuedMessages?: ChatQueuedMessage[];
+  activeBackgroundJobs?: ActiveBackgroundJob[];
+  onStopBackgroundJob?: (toolUseId: string) => void;
   onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onQueueDraft?: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onModeChange: (mode: ChatMode) => void;
@@ -328,6 +332,8 @@ function ComposerContent({
   autoConvertLongTextEnabled = DEFAULT_GENERAL_SETTINGS.autoConvertLongTextEnabled,
   hasMessages,
   queuedMessages = [],
+  activeBackgroundJobs = [],
+  onStopBackgroundJob,
   onSubmitMessage,
   onQueueDraft,
   onModeChange,
@@ -505,6 +511,9 @@ function ComposerContent({
     }
     : null;
   const canRenderQueuedMessages = queuedMessages.length > 0 && queuedMessageHandlers !== null;
+  const canRenderBackgroundJobs = activeBackgroundJobs.length > 0;
+  const hasAttachedComposerShelf = canRenderBackgroundJobs || canRenderQueuedMessages;
+  const composerShellAttachedTop = attachedTop || hasAttachedComposerShelf;
   const codexBuiltinModelOverride = runtimeInfo?.codexCliProviderOverride?.model ?? null;
   const slashCommandsQuery = useSlashCommandsQuery(worktreeId, agent, {
     enabled: !shouldUseProvidedSlashCommands && slashCommandsRequested,
@@ -1720,22 +1729,31 @@ function ComposerContent({
       data-composer-mobile-portal={useMobileComposerPortal ? "true" : undefined}
     >
       <div className="mx-auto w-full max-w-3xl">
-        {canRenderQueuedMessages ? (
+        {hasAttachedComposerShelf ? (
           <div className="mx-auto w-[calc(100%-1.5rem)] max-w-[calc(48rem-1.5rem)]">
-            <QueuedMessageList
-              attached
-              messages={queuedMessages}
-              disabled={disabled}
-              onDelete={queuedMessageHandlers.onDelete}
-              onDispatch={queuedMessageHandlers.onDispatch}
-              onCancelDispatch={queuedMessageHandlers.onCancelDispatch}
-              onUpdate={queuedMessageHandlers.onUpdate}
-            />
+            {canRenderBackgroundJobs ? (
+              <BackgroundJobsShelf
+                attached
+                jobs={activeBackgroundJobs}
+                onStopJob={onStopBackgroundJob}
+              />
+            ) : null}
+            {canRenderQueuedMessages ? (
+              <QueuedMessageList
+                attached
+                messages={queuedMessages}
+                disabled={disabled}
+                onDelete={queuedMessageHandlers.onDelete}
+                onDispatch={queuedMessageHandlers.onDispatch}
+                onCancelDispatch={queuedMessageHandlers.onCancelDispatch}
+                onUpdate={queuedMessageHandlers.onUpdate}
+              />
+            ) : null}
           </div>
         ) : null}
         <div
           className={`relative border bg-background/35 px-3 pb-11 pt-2.5 shadow-sm backdrop-blur-sm lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
-            attachedTop ? "rounded-b-xl rounded-t-none" : "rounded-xl"
+            composerShellAttachedTop ? "rounded-b-xl rounded-t-none" : "rounded-xl"
           } ${
             isDragOver || isPathDragOver ? "border-primary/60 bg-primary/5" : "border-input/50"
           }`}
@@ -1752,7 +1770,7 @@ function ComposerContent({
           />
 
           {(isDragOver || isPathDragOver) && (
-            <div className={`absolute inset-0 z-10 flex items-center justify-center bg-primary/10 ${attachedTop ? "rounded-b-xl rounded-t-none" : "rounded-xl"}`}>
+            <div className={`absolute inset-0 z-10 flex items-center justify-center bg-primary/10 ${composerShellAttachedTop ? "rounded-b-xl rounded-t-none" : "rounded-xl"}`}>
               <span className="text-sm font-medium text-primary">
                 {isPathDragOver ? "Drop to mention this path" : "Drop files here"}
               </span>
