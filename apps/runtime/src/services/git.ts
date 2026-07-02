@@ -432,11 +432,20 @@ export async function createGitWorktree(args: {
     args.repositoryPath,
     "worktree",
     "add",
+    "--no-track",
     "-b",
     args.branch,
     args.worktreePath,
     effectiveBase,
   ]);
+
+  // New worktrees should publish to origin/<branch>, not inherit upstream from the base ref.
+  await runGit(["config", "branch." + args.branch + ".remote", "origin"], args.worktreePath, {
+    timeoutMs: STATUS_GIT_TIMEOUT_MS,
+  });
+  await runGit(["config", "branch." + args.branch + ".merge", "refs/heads/" + args.branch], args.worktreePath, {
+    timeoutMs: STATUS_GIT_TIMEOUT_MS,
+  });
 
 }
 
@@ -501,6 +510,33 @@ export async function getUpstreamRemote(cwd: string): Promise<string | null> {
   return remote?.trim() || null;
 }
 
+async function getConfiguredUpstreamBranch(cwd: string): Promise<string | null> {
+  const branch = await getCurrentBranch(cwd);
+  if (!branch) {
+    return null;
+  }
+
+  const remote = await runGit(["config", "--get", `branch.${branch}.remote`], cwd, {
+    allowedExitCodes: [1],
+  }).catch(() => "");
+  const merge = await runGit(["config", "--get", `branch.${branch}.merge`], cwd, {
+    allowedExitCodes: [1],
+  }).catch(() => "");
+
+  const remoteName = remote.trim();
+  const mergeRef = merge.trim();
+  if (!remoteName || !mergeRef.startsWith("refs/heads/")) {
+    return null;
+  }
+
+  const upstreamBranch = mergeRef.slice("refs/heads/".length);
+  if (!upstreamBranch) {
+    return null;
+  }
+
+  return `${remoteName}/${upstreamBranch}`;
+}
+
 export async function getUpstreamBranch(cwd: string): Promise<string | null> {
   const upstreamRef = await runGit([
     "rev-parse",
@@ -510,7 +546,11 @@ export async function getUpstreamBranch(cwd: string): Promise<string | null> {
   ], cwd, { allowedExitCodes: [128] }).catch(() => "");
 
   const trimmed = upstreamRef.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  if (trimmed.length > 0 && trimmed !== "@{upstream}") {
+    return trimmed;
+  }
+
+  return getConfiguredUpstreamBranch(cwd);
 }
 
 export async function hasUpstreamBranch(cwd: string): Promise<boolean> {
@@ -578,6 +618,39 @@ export async function ensureCliAvailable(command: "gh" | "glab"): Promise<void> 
 
 export async function pushCurrentBranch(cwd: string, remote: string): Promise<void> {
   await runGit(["push", "-u", remote, "HEAD"], cwd, { timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+}
+
+function parseUpstreamBranchName(upstream: string): { remote: string; branch: string } | null {
+  const trimmed = upstream.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const separatorIndex = trimmed.indexOf("/");
+  if (separatorIndex <= 0 || separatorIndex === trimmed.length - 1) {
+    return null;
+  }
+
+  return {
+    remote: trimmed.slice(0, separatorIndex),
+    branch: trimmed.slice(separatorIndex + 1),
+  };
+}
+
+async function pushSyncedBranch(cwd: string, upstream: string): Promise<string> {
+  const currentBranch = await getCurrentBranch(cwd);
+  const parsedUpstream = parseUpstreamBranchName(upstream);
+  if (
+    currentBranch
+    && parsedUpstream
+    && currentBranch !== parsedUpstream.branch
+  ) {
+    await pushCurrentBranch(cwd, parsedUpstream.remote);
+    return `${parsedUpstream.remote}/${currentBranch}`;
+  }
+
+  await runGit(["push"], cwd, { timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+  return upstream;
 }
 
 function parseAheadBehindCounts(output: string): { ahead: number; behind: number } {
@@ -912,7 +985,8 @@ export async function syncCurrentBranch(cwd: string): Promise<{ result: string }
   }
 
   if (syncStatus.ahead > 0 || syncStatus.behind > 0) {
-    await runGit(["push"], cwd, { timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+    const syncedUpstream = await pushSyncedBranch(cwd, upstream);
+    return { result: `Synced with ${syncedUpstream}` };
   }
 
   return { result: `Synced with ${upstream}` };

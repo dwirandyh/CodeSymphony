@@ -17,6 +17,7 @@ import {
   detectReviewProvider,
   syncCurrentBranch,
   rebaseWorktreeOntoBaseBranch,
+  createGitWorktree,
 } from "../src/services/git";
 
 let repoDir: string;
@@ -599,6 +600,69 @@ describe("git utilities", () => {
         expect(afterSync.behind).toBe(0);
       } finally {
         await rm(peerRepo, { recursive: true, force: true });
+        await rm(localRepo, { recursive: true, force: true });
+        await rm(remoteRepo, { recursive: true, force: true });
+      }
+    });
+
+    it("pushes worktrees whose upstream branch name differs from the local branch", async () => {
+      const { localRepo, remoteRepo } = await createRepoWithRemote();
+      const worktreePath = join(localRepo, "..", "cs-git-sync-worktree");
+
+      try {
+        gitIn(localRepo, "worktree add -b bengkulu-2 ../cs-git-sync-worktree origin/main");
+        await writeFile(join(worktreePath, "repro.txt"), "repro\n");
+        gitIn(worktreePath, "add repro.txt");
+        gitIn(worktreePath, 'commit -m "repro commit"');
+
+        const beforeSync = await getGitStatus(worktreePath);
+        expect(beforeSync.branch).toBe("bengkulu-2");
+        expect(beforeSync.upstream).toBe("origin/main");
+        expect(beforeSync.ahead).toBe(1);
+
+        const result = await syncCurrentBranch(worktreePath);
+        expect(result.result).toBe("Synced with origin/bengkulu-2");
+
+        const afterSync = await getGitStatus(worktreePath);
+        expect(afterSync.upstream).toBe("origin/bengkulu-2");
+        expect(afterSync.ahead).toBe(0);
+        expect(afterSync.behind).toBe(0);
+      } finally {
+        try {
+          gitIn(localRepo, "worktree remove --force ../cs-git-sync-worktree");
+        } catch {
+          // Best-effort cleanup for interrupted worktree creation.
+        }
+        await rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
+        await rm(localRepo, { recursive: true, force: true });
+        await rm(remoteRepo, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("createGitWorktree", () => {
+    it("tracks new worktrees against origin/<branch> instead of the base branch", async () => {
+      const { localRepo, remoteRepo } = await createRepoWithRemote();
+      const worktreePath = join(localRepo, "..", "cs-git-create-worktree");
+
+      try {
+        await createGitWorktree({
+          repositoryPath: localRepo,
+          worktreePath,
+          branch: "bengkulu-2",
+          baseBranch: "main",
+        });
+
+        const status = await getGitStatus(worktreePath);
+        expect(status.branch).toBe("bengkulu-2");
+        expect(status.upstream).toBe("origin/bengkulu-2");
+      } finally {
+        try {
+          gitIn(localRepo, "worktree remove --force ../cs-git-create-worktree");
+        } catch {
+          // Best-effort cleanup for interrupted worktree creation.
+        }
+        await rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
         await rm(localRepo, { recursive: true, force: true });
         await rm(remoteRepo, { recursive: true, force: true });
       }
