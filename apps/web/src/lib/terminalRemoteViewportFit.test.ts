@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computeRemoteTerminalFontSize,
+  computeRemoteTerminalVerticalSquash,
   DEFAULT_TERMINAL_FONT_SIZE,
   hasRemoteTerminalGeometry,
   MIN_REMOTE_TERMINAL_FONT_SIZE,
@@ -36,6 +37,24 @@ describe("computeRemoteTerminalFontSize", () => {
     })).toBe(MIN_REMOTE_TERMINAL_FONT_SIZE);
   });
 
+  it("keeps the font size stable when only container height shrinks (keyboard shown)", () => {
+    const widthBound = {
+      containerWidth: 390,
+      renderedWidth: 780,
+      renderedHeight: 300,
+      baseFontSize: 26,
+    };
+    const keyboardHidden = computeRemoteTerminalFontSize({
+      ...widthBound,
+      containerHeight: 700,
+    });
+    const keyboardShown = computeRemoteTerminalFontSize({
+      ...widthBound,
+      containerHeight: 120,
+    });
+    expect(keyboardShown).toBe(keyboardHidden);
+  });
+
   it("returns the base font size for invalid measurements", () => {
     expect(computeRemoteTerminalFontSize({
       containerWidth: 0,
@@ -43,6 +62,38 @@ describe("computeRemoteTerminalFontSize", () => {
       renderedWidth: 900,
       renderedHeight: 520,
     })).toBe(DEFAULT_TERMINAL_FONT_SIZE);
+  });
+});
+
+describe("computeRemoteTerminalVerticalSquash", () => {
+  it("returns 1 when the grid already fits the container height", () => {
+    expect(computeRemoteTerminalVerticalSquash({
+      containerHeight: 600,
+      renderedHeight: 360,
+    })).toBe(1);
+  });
+
+  it("squashes a tall non-scrollable TUI to fit a short container (keyboard shown)", () => {
+    // Width-only font keeps full width but leaves the grid 600px tall; the short
+    // 280px container can't scroll an alt-screen TUI, so scaleY compresses it.
+    expect(computeRemoteTerminalVerticalSquash({
+      containerHeight: 280,
+      renderedHeight: 600,
+    })).toBeCloseTo(280 / 600, 5);
+  });
+
+  it("never returns a factor above 1 (no vertical stretch)", () => {
+    expect(computeRemoteTerminalVerticalSquash({
+      containerHeight: 800,
+      renderedHeight: 360,
+    })).toBe(1);
+  });
+
+  it("returns 1 for invalid measurements", () => {
+    expect(computeRemoteTerminalVerticalSquash({
+      containerHeight: 0,
+      renderedHeight: 360,
+    })).toBe(1);
   });
 });
 

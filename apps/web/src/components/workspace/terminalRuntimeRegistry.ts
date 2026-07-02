@@ -23,6 +23,7 @@ import { debugLog } from "../../lib/debugLog";
 import { resolveRuntimeApiBase } from "../../lib/runtimeUrl";
 import {
   computeRemoteTerminalFontSize,
+  computeRemoteTerminalVerticalSquash,
   DEFAULT_TERMINAL_FONT_SIZE,
   hasRemoteTerminalGeometry,
   resolveRemoteTerminalGeometry,
@@ -515,6 +516,11 @@ function resetAuthoritativeTerminalPresentation(entry: TerminalRuntimeEntry): vo
   entry.wrapper.style.flexDirection = "";
   entry.wrapper.style.overflow = "";
   entry.wrapper.style.alignItems = "";
+  const element = entry.terminal.element;
+  if (element instanceof HTMLElement) {
+    element.style.transform = "";
+    element.style.transformOrigin = "";
+  }
   if (entry.terminal.options.fontSize !== DEFAULT_TERMINAL_FONT_SIZE) {
     entry.terminal.options.fontSize = DEFAULT_TERMINAL_FONT_SIZE;
   }
@@ -536,13 +542,39 @@ function applyRemoteMobileTerminalPresentation(entry: TerminalRuntimeEntry): boo
   const { cols: ptyCols, rows: ptyRows } = geometry;
   const { terminal } = entry;
 
-  terminal.options.fontSize = DEFAULT_TERMINAL_FONT_SIZE;
-  terminal.resize(ptyCols, ptyRows);
-
   const element = terminal.element;
   if (!(element instanceof HTMLElement)) {
     return false;
   }
+
+  // Clear any scaleY squash from a PRIOR fit BEFORE resizing/refreshing. On
+  // reconnect (browser refresh) this function runs in a burst (onopen snapshot
+  // restore + onBufferChange + fit retries), so without this the 2nd+ calls
+  // resize and refresh the WebGL canvas while a stale transform is still
+  // applied. A CSS scaleY changes element.getBoundingClientRect height, which
+  // the WebGL renderer uses to size its backing canvas — resizing while
+  // transformed corrupts the canvas dimensions and the TUI renders broken until
+  // an untransformed resize happens. Resetting here guarantees every resize and
+  // measurement below runs on the untransformed element; the squash is
+  // re-applied at the end.
+  element.style.transform = "";
+  element.style.transformOrigin = "";
+
+  terminal.options.fontSize = DEFAULT_TERMINAL_FONT_SIZE;
+  terminal.resize(ptyCols, ptyRows);
+
+  // Apply the flex wrapper presentation BEFORE measuring. As a block element the
+  // wrapper is width:100% and stretches xterm's element to the container width,
+  // so element.offsetWidth reads the container width (e.g. 390) instead of the
+  // true rendered grid width (e.g. 626). That stale measurement makes widthScale
+  // collapse to 1 (no shrink) on the first fit, so the grid overflows the
+  // container (horizontal scrollbar) until a later fit happens to measure the
+  // real width. flex + align-items:flex-start shrink-wraps the element to its
+  // true content width, so the measurement below reflects the real grid.
+  entry.wrapper.style.display = "flex";
+  entry.wrapper.style.flexDirection = "column";
+  entry.wrapper.style.overflow = "auto";
+  entry.wrapper.style.alignItems = "flex-start";
 
   const renderedWidth = element.offsetWidth || element.clientWidth || element.scrollWidth;
   const renderedHeight = element.offsetHeight || element.clientHeight || element.scrollHeight;
@@ -558,10 +590,30 @@ function applyRemoteMobileTerminalPresentation(entry: TerminalRuntimeEntry): boo
     terminal.resize(ptyCols, ptyRows);
   }
 
-  entry.wrapper.style.display = "flex";
-  entry.wrapper.style.flexDirection = "column";
-  entry.wrapper.style.overflow = "auto";
-  entry.wrapper.style.alignItems = "flex-start";
+  // Width-only font keeps the grid full width in every state. A non-scrollable
+  // alt-screen TUI (vim, opencode) that is still taller than the keyboard-
+  // shortened container is compressed vertically with a CSS scaleY transform
+  // instead of shrinking the font (which would narrow the width — the reported
+  // bug). Re-measure AFTER the font change so the squash is computed against the
+  // real width-fitted grid height. scaleY is visual only — the layout box keeps
+  // its full height — so the wrapper must clip with overflow:hidden, anchored at
+  // the top via transform-origin. Normal-buffer output keeps overflow:auto and
+  // scrolls vertically with no transform.
+  if (entry.onAlternateScreen) {
+    const fittedHeight = element.offsetHeight || element.clientHeight || element.scrollHeight;
+    const squash = computeRemoteTerminalVerticalSquash({
+      containerHeight: container.clientHeight,
+      renderedHeight: fittedHeight,
+    });
+    element.style.transformOrigin = "top left";
+    element.style.transform = squash < 1 ? `scaleY(${squash})` : "";
+    entry.wrapper.style.overflow = "hidden";
+  } else {
+    element.style.transform = "";
+    element.style.transformOrigin = "";
+    entry.wrapper.style.overflow = "auto";
+  }
+
   terminal.refresh(0, Math.max(0, terminal.rows - 1));
   return true;
 }
@@ -1507,6 +1559,15 @@ function createTerminalRuntime(
       return;
     }
     entry.onAlternateScreen = buffer.type === "alternate";
+    // Alt-screen toggle flips the fit constraint: alt-screen TUIs must fit the
+    // container height (non-scrollable), normal buffer is width-only. Re-fit so
+    // the font recomputes immediately on enter AND exit — not just on the next
+    // container resize — which matters when the keyboard is already shown and no
+    // resize follows the buffer switch. Only the remote-mobile path uses the
+    // constraint, so skip the burst for authoritative clients.
+    if (!shouldControlSharedPtySize()) {
+      scheduleFitBurst(entry);
+    }
     if (buffer.type !== "alternate") {
       return;
     }
