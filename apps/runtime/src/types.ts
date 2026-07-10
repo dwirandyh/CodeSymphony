@@ -14,6 +14,7 @@ import type {
   SlashCommand,
   WorkspaceSyncEvent,
   WorkspaceSyncEventType,
+  TerminalAgentStatus,
   ProviderOptionSelection,
 } from "@codesymphony/shared-types";
 import type { LogLevel } from "./services/logService.js";
@@ -54,6 +55,8 @@ export type WorkspaceSyncEventHub = {
       automationId?: string | null;
       worktreeId?: string | null;
       threadId?: string | null;
+      terminalSessionId?: string | null;
+      terminalAgentStatus?: TerminalAgentStatus | null;
     },
   ) => WorkspaceSyncEvent;
   subscribe: (listener: (event: WorkspaceSyncEvent) => void) => () => void;

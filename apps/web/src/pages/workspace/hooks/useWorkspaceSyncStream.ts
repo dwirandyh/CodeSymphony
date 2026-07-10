@@ -23,6 +23,10 @@ import {
   removeThreadFromCollection,
 } from "../../../collections/threads";
 import { clearThreadStreamState } from "../../../collections/threadStreamState";
+import {
+  applyTerminalAgentStatusEvent,
+  hydrateTerminalAgentStatuses,
+} from "./useTerminalAgentStatus";
 function isDocumentForegrounded() {
   if (typeof document === "undefined") {
     return true;
@@ -146,6 +150,12 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
   // Hot domains with dedicated live owners refresh from their own streams.
   // This coarse sync hook only maintains metadata and non-live derived queries.
 
+  // Terminal agent status has no threadId — handle before the threadId gate below.
+  if (event.type === "terminal.agent.status") {
+    applyTerminalAgentStatusEvent(event);
+    return;
+  }
+
   if (
     event.type === "automation.created"
     || event.type === "automation.updated"
@@ -252,6 +262,10 @@ export function useWorkspaceSyncStream() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    // Live events only carry future changes; hydrate current statuses on mount
+    // so reattaching clients see terminals already mid-run.
+    void hydrateTerminalAgentStatuses(api);
+
     const unsubscribe = subscribeToWorkspaceSyncSocket({
       onOpen() {
         measureStartupMetricSinceBoot("startup.live_connected_ms", {
@@ -259,6 +273,7 @@ export function useWorkspaceSyncStream() {
         });
         logWorkspaceSync("stream.open", {});
         void revalidateWorkspaceState(queryClient);
+        void hydrateTerminalAgentStatuses(api);
       },
       onEvent(payload) {
         handleWorkspaceEvent(queryClient, payload);

@@ -21,8 +21,12 @@ import { validateAttachmentSize } from "../../lib/attachments";
 import { api } from "../../lib/api";
 import { getElectronFilePaths, isDesktopShell, isElectronDesktop } from "../../lib/desktopBridge";
 import { cn } from "../../lib/utils";
+import { THREAD_STATUS_META } from "../../lib/threadStatusPresentation";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Badge } from "../ui/badge";
+import { BrailleSpinner } from "./BrailleSpinner";
+import { useTerminalAgentStatus } from "../../pages/workspace/hooks/useTerminalAgentStatus";
 import {
   getOrCreateTerminalRuntime,
   type TerminalRuntime,
@@ -213,6 +217,7 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [connected, setConnected] = useState(false);
   const [hasConnectedOnce, setHasConnectedOnce] = useState(false);
+  const agentStatus = useTerminalAgentStatus(sessionId);
   const [terminalTitle, setTerminalTitle] = useState(() => getFallbackTerminalTitle(sessionId, cwd));
   const [isDragOver, setIsDragOver] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -680,6 +685,26 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {agentStatus && agentStatus !== "idle" ? (
+              agentStatus === "running" ? (
+                <div
+                  className="pointer-events-none flex h-4 w-4 items-center justify-center"
+                  data-testid="terminal-agent-status-running"
+                  aria-label="Agent running"
+                  title="Agent running"
+                >
+                  <BrailleSpinner className="text-[11px]" />
+                </div>
+              ) : (
+                <Badge
+                  variant={THREAD_STATUS_META[agentStatus].variant}
+                  className="pointer-events-none h-3.5 rounded-md px-1 py-0 text-[9px] leading-none shadow-sm"
+                  data-testid={`terminal-agent-status-${agentStatus}`}
+                >
+                  {THREAD_STATUS_META[agentStatus].label}
+                </Badge>
+              )
+            ) : null}
             <span
               role="status"
               aria-label={connectionLabel}

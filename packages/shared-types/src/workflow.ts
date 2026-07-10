@@ -352,6 +352,17 @@ export const ChatQueuedMessageSchema = z.object({
 });
 export type ChatQueuedMessage = z.infer<typeof ChatQueuedMessageSchema>;
 
+export const ChatThreadStatusSchema = z.enum([
+  "waiting_approval",
+  "review_plan",
+  "running",
+  "idle",
+]);
+
+// Terminal-hosted agent CLIs reuse the thread status vocabulary.
+export const TerminalAgentStatusSchema = ChatThreadStatusSchema;
+export type TerminalAgentStatus = z.infer<typeof TerminalAgentStatusSchema>;
+
 export const WorkspaceSyncEventTypeSchema = z.enum([
   "repository.created",
   "repository.updated",
@@ -373,6 +384,7 @@ export const WorkspaceSyncEventTypeSchema = z.enum([
   "terminal.tab.created",
   "terminal.tab.updated",
   "terminal.tab.closed",
+  "terminal.agent.status",
 ]);
 export type WorkspaceSyncEventType = z.infer<typeof WorkspaceSyncEventTypeSchema>;
 
@@ -398,6 +410,8 @@ export const WorkspaceSyncEventSchema = z.object({
   automationId: z.string().nullable().optional(),
   worktreeId: z.string().nullable().optional(),
   threadId: z.string().nullable().optional(),
+  terminalSessionId: z.string().nullable().optional(),
+  terminalAgentStatus: TerminalAgentStatusSchema.nullable().optional(),
   createdAt: z.string().datetime(),
 });
 
@@ -796,17 +810,27 @@ export const ChatThreadSnapshotSchema = z.object({
   timeline: ChatTimelineSnapshotSchema,
 });
 
-export const ChatThreadStatusSchema = z.enum([
-  "waiting_approval",
-  "review_plan",
-  "running",
-  "idle",
-]);
-
 export const ChatThreadStatusSnapshotSchema = z.object({
   status: ChatThreadStatusSchema,
   newestIdx: z.number().int().nonnegative().nullable(),
 });
+
+// Raw lifecycle event a terminal-hosted agent CLI posts back. `eventType` is the
+// CLI's own vocabulary (Claude hook_event_name, Codex/OpenCode names); the runtime
+// normalizer collapses it to a TerminalAgentStatus.
+export const TerminalAgentHookEventSchema = z.object({
+  sessionId: z.string().min(1),
+  eventType: z.string().min(1),
+  toolName: z.string().optional(),
+  agent: z.enum(["claude", "codex", "opencode"]),
+});
+export type TerminalAgentHookEvent = z.infer<typeof TerminalAgentHookEventSchema>;
+
+export const TerminalAgentStatusSnapshotSchema = z.object({
+  sessionId: z.string(),
+  status: TerminalAgentStatusSchema,
+});
+export type TerminalAgentStatusSnapshot = z.infer<typeof TerminalAgentStatusSnapshotSchema>;
 
 export const CreateRepositoryInputSchema = z.object({
   path: z.string().trim().min(1),

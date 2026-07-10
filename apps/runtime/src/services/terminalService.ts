@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
-import { summarizeTerminalData, type TerminalTab } from "@codesymphony/shared-types";
+import { summarizeTerminalData, type TerminalAgentStatus, type TerminalAgentStatusSnapshot, type TerminalTab } from "@codesymphony/shared-types";
 import { buildClaudeRuntimeEnv } from "../claude/shellEnv.js";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
 import { HeadlessEmulator, DEFAULT_MODES, type TerminalSnapshot } from "./headlessEmulator.js";
 import { isPtyIoError, spawnPty, type PtyProcess } from "./ptyBackend.js";
+import { ensureAgentHookConfigs } from "./terminalAgentHooks.js";
 
 const MAX_SCROLLBACK_BYTES = 50_000;
 const TERMINAL_TYPING_DEBUG_PREFIX = "[DEBUG-terminal-typing]";
@@ -128,7 +129,40 @@ function resolveTerminalZdotdir(): string | undefined {
     return undefined;
 }
 
-function buildTerminalEnv(): Record<string, string> {
+function isAgentStatusInjectionEnabled(): boolean {
+    const raw = process.env.CODESYMPHONY_TERMINAL_AGENT_STATUS?.trim().toLowerCase();
+    return raw !== "0" && raw !== "false" && raw !== "off";
+}
+
+function resolveAgentHookScriptPath(): string | undefined {
+    const configured = process.env.CODESYMPHONY_AGENT_HOOK_SCRIPT?.trim();
+    if (configured && existsSync(configured)) {
+        return configured;
+    }
+
+    const moduleDir = dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+        join(moduleDir, "../../assets/agent-hooks/agent-status-hook.sh"),
+        join(moduleDir, "../../agent-hooks/agent-status-hook.sh"),
+        join(process.cwd(), "assets/agent-hooks/agent-status-hook.sh"),
+        join(process.cwd(), "agent-hooks/agent-status-hook.sh"),
+    ];
+
+    for (const candidate of candidates) {
+        if (existsSync(candidate)) {
+            return candidate;
+        }
+    }
+
+    return undefined;
+}
+
+function resolveAgentHookUrl(): string {
+    const port = process.env.RUNTIME_PORT ?? "4331";
+    return `http://127.0.0.1:${port}/api/terminal/agent-hook`;
+}
+
+function buildTerminalEnv(sessionId?: string): Record<string, string> {
     const merged = buildClaudeRuntimeEnv(process.env) as Record<string, string>;
     // Cursor/Zed/agent parents set NO_COLOR=1; shell rc often re-applies when CURSOR_AGENT leaks in.
     stripAgentEnvForTerminal(merged);
@@ -136,6 +170,17 @@ function buildTerminalEnv(): Record<string, string> {
     const terminalZdotdir = resolveTerminalZdotdir();
     if (terminalZdotdir) {
         merged.ZDOTDIR = terminalZdotdir;
+    }
+
+    // Let agent CLIs report lifecycle status back to the runtime (badge on the
+    // terminal tab). The hook script reads these to know which terminal it is in.
+    if (sessionId && isAgentStatusInjectionEnabled()) {
+        const scriptPath = resolveAgentHookScriptPath();
+        if (scriptPath) {
+            merged.CS_TERMINAL_SESSION_ID = sessionId;
+            merged.CS_AGENT_HOOK_URL = resolveAgentHookUrl();
+            merged.CS_AGENT_HOOK_SCRIPT = scriptPath;
+        }
     }
 
     return {
@@ -256,9 +301,47 @@ export function buildExecShellArgs(shell: string | undefined, command: string): 
     return ["-lc", command];
 }
 
-export function createTerminalService(prisma: PrismaClient) {
+interface TerminalServiceOptions {
+    onAgentStatusChange?: (sessionId: string, status: TerminalAgentStatus) => void;
+}
+
+export function createTerminalService(prisma: PrismaClient, options: TerminalServiceOptions = {}) {
     const sessions = new Map<string, TerminalSession>();
     const sessionViewerCounts = new Map<string, SessionViewerCounts>();
+    const agentStatuses = new Map<string, TerminalAgentStatus>();
+
+    function getAgentStatus(sessionId: string): TerminalAgentStatus | undefined {
+        return agentStatuses.get(sessionId);
+    }
+
+    function setAgentStatus(sessionId: string, status: TerminalAgentStatus): boolean {
+        if (agentStatuses.get(sessionId) === status) {
+            return false;
+        }
+        agentStatuses.set(sessionId, status);
+        options.onAgentStatusChange?.(sessionId, status);
+        return true;
+    }
+
+    function clearAgentStatus(sessionId: string): void {
+        if (agentStatuses.has(sessionId)) {
+            agentStatuses.delete(sessionId);
+        }
+    }
+
+    function listAgentStatuses(): TerminalAgentStatusSnapshot[] {
+        return [...agentStatuses.entries()].map(([sessionId, status]) => ({ sessionId, status }));
+    }
+
+    // The agent may die without emitting a terminal event (Ctrl+C does not fire
+    // Claude's Stop hook, a crash fires nothing). Force idle so a stuck
+    // "running"/"waiting_approval" badge clears when the process goes away.
+    function forceIdleOnExit(sessionId: string): void {
+        const current = agentStatuses.get(sessionId);
+        if (current !== undefined && current !== "idle") {
+            setAgentStatus(sessionId, "idle");
+        }
+    }
 
     function registerSessionViewer(sessionId: string, kind: SessionViewerKind): () => void {
         const counts = sessionViewerCounts.get(sessionId) ?? { authoritative: 0, remote: 0 };
@@ -298,7 +381,7 @@ export function createTerminalService(prisma: PrismaClient) {
         return Array.from(new Set(candidates));
     }
 
-    function spawnProcess(cwd?: string, options?: SpawnOptions): { ptyProcess: PtyProcess; resolvedCwd: string } {
+    function spawnProcess(sessionId: string, cwd?: string, options?: SpawnOptions): { ptyProcess: PtyProcess; resolvedCwd: string } {
         const shellCandidates = resolveShellCandidates();
         const cwdCandidates = resolveCwdCandidates(cwd);
         let lastError: unknown = new Error("Unable to spawn terminal process");
@@ -318,7 +401,7 @@ export function createTerminalService(prisma: PrismaClient) {
                             cols: 80,
                             rows: 24,
                             cwd: candidateCwd,
-                            env: buildTerminalEnv(),
+                            env: buildTerminalEnv(sessionId),
                         }),
                         resolvedCwd: candidateCwd,
                     };
@@ -355,9 +438,23 @@ export function createTerminalService(prisma: PrismaClient) {
         }
         existing?.emulator.dispose();
 
-        const { ptyProcess, resolvedCwd } = spawnProcess(normalizedCwd, options);
+        const { ptyProcess, resolvedCwd } = spawnProcess(sessionId, normalizedCwd, options);
 
         const sessionWorktreeId = resolveWorktreeId(sessionId);
+
+        // Wire agent-status hooks into the worktree so CLIs report lifecycle
+        // back to the runtime. Only for real worktree dirs — never $HOME or "/".
+        if (
+            isAgentStatusInjectionEnabled()
+            && sessionWorktreeId
+            && resolvedCwd !== process.env.HOME
+            && resolvedCwd !== "/"
+        ) {
+            const scriptPath = resolveAgentHookScriptPath();
+            if (scriptPath) {
+                ensureAgentHookConfigs(resolvedCwd, scriptPath);
+            }
+        }
 
         const emulator = new HeadlessEmulator({
             cols: existing?.lastResize?.cols ?? 80,
@@ -484,6 +581,8 @@ export function createTerminalService(prisma: PrismaClient) {
                 exitCode: event.exitCode,
                 signal: event.signal ?? 0,
             };
+
+            forceIdleOnExit(sessionId);
 
             for (const listener of session.exitListeners) {
                 listener(session.exitEvent);
@@ -619,6 +718,8 @@ export function createTerminalService(prisma: PrismaClient) {
             session.emulator.dispose();
             sessions.delete(sessionId);
         }
+        forceIdleOnExit(sessionId);
+        clearAgentStatus(sessionId);
     }
 
     function has(sessionId: string): boolean {
@@ -804,5 +905,9 @@ export function createTerminalService(prisma: PrismaClient) {
         listTabs,
         renameTab,
         closeTab,
+        getAgentStatus,
+        setAgentStatus,
+        clearAgentStatus,
+        listAgentStatuses,
     };
 }

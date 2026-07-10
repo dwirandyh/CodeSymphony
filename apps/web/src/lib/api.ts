@@ -63,6 +63,7 @@ import type {
   SendChatMessageInput,
   StartDeviceStreamInput,
   StopDeviceStreamInput,
+  TerminalAgentStatusSnapshot,
   TerminalTab,
   TestModelProviderInput,
   TestAgentConfigInput,
@@ -624,6 +625,10 @@ export const api = {
     });
   },
   listTerminalSessions: () => request<TerminalSessionInfo[]>("/terminal/sessions"),
+  getTerminalAgentStatuses: async (): Promise<TerminalAgentStatusSnapshot[]> => {
+    const response = await request<{ data: TerminalAgentStatusSnapshot[] }>("/terminal/agent-status");
+    return response.data;
+  },
   listTerminalTabs: (worktreeId?: string) =>
     request<TerminalTab[]>(
       worktreeId ? `/terminal/tabs?worktreeId=${encodeURIComponent(worktreeId)}` : "/terminal/tabs",

@@ -102,7 +102,16 @@ function createApp() {
   const worktreeService = createWorktreeService(prisma, { workspaceEventHub });
   const systemService = createSystemService();
   const fileService = createFileService();
-  const terminalService = createTerminalService(prisma);
+  const terminalService = createTerminalService(prisma, {
+    onAgentStatusChange: (sessionId, status) => {
+      const worktreeId = sessionId.includes(":") ? sessionId.split(":", 1)[0] : null;
+      workspaceEventHub.emit("terminal.agent.status", {
+        worktreeId,
+        terminalSessionId: sessionId,
+        terminalAgentStatus: status,
+      });
+    },
+  });
   setPtyDiagnosticsSink((event) => {
     appendRuntimeDebugLog({
       source: "diagnose.pty",

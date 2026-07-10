@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { RenameTerminalTabTitleInputSchema, summarizeTerminalData } from "@codesymphony/shared-types";
+import { RenameTerminalTabTitleInputSchema, TerminalAgentHookEventSchema, summarizeTerminalData } from "@codesymphony/shared-types";
+import { mapTerminalAgentEvent } from "../services/terminalAgentStatusMap.js";
 import { appendRuntimeDebugLog } from "./debug.js";
 
 const TERMINAL_TYPING_DEBUG_PREFIX = "[DEBUG-terminal-typing]";
@@ -408,6 +409,39 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
             const message = error instanceof Error ? error.message : "Failed to close terminal session";
             return reply.code(400).send({ error: message });
         }
+    });
+
+    // Unauthenticated by design: a terminal-hosted agent CLI's shell hook posts
+    // here. It can only move a status badge, and reusing an auth secret would
+    // leak it into every agent shell's env. Guarded by 127.0.0.1 bind + a
+    // sessionId existence check + never erroring the caller.
+    app.post("/terminal/agent-hook", async (request, reply) => {
+        const parsed = TerminalAgentHookEventSchema.safeParse(request.body ?? {});
+        if (!parsed.success) {
+            return reply.code(204).send();
+        }
+        const { sessionId, eventType, toolName, agent } = parsed.data;
+        if (!app.terminalService.has(sessionId)) {
+            return reply.code(204).send();
+        }
+
+        const next = mapTerminalAgentEvent(
+            { eventType, toolName, agent },
+            app.terminalService.getAgentStatus(sessionId),
+        );
+        if (app.terminalService.setAgentStatus(sessionId, next)) {
+            const worktreeId = sessionId.includes(":") ? sessionId.split(":", 1)[0] : null;
+            app.workspaceEventHub.emit("terminal.agent.status", {
+                worktreeId,
+                terminalSessionId: sessionId,
+                terminalAgentStatus: next,
+            });
+        }
+        return reply.code(204).send();
+    });
+
+    app.get("/terminal/agent-status", async (_request, reply) => {
+        return reply.send({ data: app.terminalService.listAgentStatuses() });
     });
 
     app.get(

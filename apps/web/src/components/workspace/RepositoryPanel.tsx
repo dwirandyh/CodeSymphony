@@ -35,6 +35,7 @@ import type {
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
+import { THREAD_STATUS_META } from "../../lib/threadStatusPresentation";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { BrailleSpinner } from "./BrailleSpinner";
 import { WorktreeBranchSyncBadge } from "./WorktreeBranchSyncBadge";
@@ -131,13 +132,7 @@ function reorderRepositoryIds(
   return nextOrder;
 }
 
-const WORKTREE_STATUS_META: Record<
-  Exclude<WorktreeThreadUiStatus, "idle" | "running">,
-  { label: string; variant: "secondary" | "destructive" }
-> = {
-  waiting_approval: { label: "Waiting approval", variant: "destructive" },
-  review_plan: { label: "Review plan", variant: "secondary" },
-};
+const WORKTREE_STATUS_META = THREAD_STATUS_META;
 
 const REVIEW_STATE_META: Record<
   ReviewRef["state"],

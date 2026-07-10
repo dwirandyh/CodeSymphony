@@ -14,6 +14,8 @@ export function createWorkspaceEventHub(): WorkspaceSyncEventHub {
       automationId?: string | null;
       worktreeId?: string | null;
       threadId?: string | null;
+      terminalSessionId?: string | null;
+      terminalAgentStatus?: WorkspaceSyncEvent["terminalAgentStatus"];
     } = {},
   ): WorkspaceSyncEvent {
     nextId += 1;
@@ -25,6 +27,8 @@ export function createWorkspaceEventHub(): WorkspaceSyncEventHub {
       automationId: payload.automationId ?? null,
       worktreeId: payload.worktreeId ?? null,
       threadId: payload.threadId ?? null,
+      terminalSessionId: payload.terminalSessionId ?? null,
+      terminalAgentStatus: payload.terminalAgentStatus ?? null,
       createdAt: new Date().toISOString(),
     };
 
