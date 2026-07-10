@@ -274,6 +274,26 @@ function extractSubagentResponse(
   return undefined;
 }
 
+function formatApiRetryError(error: unknown): string {
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const message = typeof record.message === "string" ? record.message : null;
+    const code = typeof record.code === "string" ? record.code : null;
+    if (message) {
+      return message;
+    }
+    if (code) {
+      return code;
+    }
+  }
+
+  return String(error ?? "unknown_error");
+}
+
 function captureSystemDiagnostic(state: SessionState, message: SDKMessage): void {
   if (message.type !== "system") {
     return;
@@ -283,8 +303,8 @@ function captureSystemDiagnostic(state: SessionState, message: SDKMessage): void
     subtype?: string;
     attempt?: number;
     max_retries?: number;
-    error_status?: number;
-    error?: string;
+    error_status?: number | null;
+    error?: unknown;
     model?: string;
     apiKeySource?: string;
   };
@@ -292,7 +312,7 @@ function captureSystemDiagnostic(state: SessionState, message: SDKMessage): void
   if (systemMessage.subtype === "api_retry") {
     captureDiagnosticLine(
       state.recentDiagnostics,
-      `api_retry attempt ${systemMessage.attempt ?? "?"}/${systemMessage.max_retries ?? "?"}: status ${systemMessage.error_status ?? "unknown"} ${systemMessage.error ?? "unknown_error"}`,
+      `api_retry attempt ${systemMessage.attempt ?? "?"}/${systemMessage.max_retries ?? "?"}: status ${systemMessage.error_status ?? "unknown"} ${formatApiRetryError(systemMessage.error)}`,
     );
     return;
   }
@@ -325,9 +345,9 @@ function fatalSystemErrorFromMessage(message: SDKMessage): string | null {
     return null;
   }
 
+  // Let sessionRunner retry with native CLI aliases before surfacing routing errors.
   if (/unknown provider for model/i.test(systemMessage.error)) {
-    const status = systemMessage.error_status ?? 502;
-    return `Claude API routing error (${status}): ${systemMessage.error}`;
+    return null;
   }
 
   return null;

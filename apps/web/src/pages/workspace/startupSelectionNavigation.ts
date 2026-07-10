@@ -1,3 +1,35 @@
+export function resolveThreadIdOnSelectionChange(args: {
+  worktreeChanged: boolean;
+  shouldReusePendingThreadId: boolean;
+  pendingThreadId?: string | null;
+  routeThreadId?: string | null;
+  restoredThreadId?: string | null;
+  nextWorktreeId: string | null;
+  routeWorktreeId?: string | null;
+  restoredWorktreeId?: string | null;
+}): { threadId?: string } {
+  if (args.shouldReusePendingThreadId) {
+    return { threadId: args.pendingThreadId ?? undefined };
+  }
+
+  if (!args.worktreeChanged) {
+    return {};
+  }
+
+  const intendedWorktreeId = args.routeWorktreeId ?? args.restoredWorktreeId ?? null;
+  const routeThreadId = args.routeThreadId ?? args.restoredThreadId ?? undefined;
+  const navigatingToIntendedWorktree =
+    args.nextWorktreeId != null
+    && intendedWorktreeId != null
+    && args.nextWorktreeId === intendedWorktreeId;
+
+  if (navigatingToIntendedWorktree && routeThreadId) {
+    return { threadId: routeThreadId };
+  }
+
+  return { threadId: undefined };
+}
+
 export function shouldSuppressStartupFallbackSearchUpdate(args: {
   startupSelectionFallbackActive: boolean;
   routeRepoId: string | null;

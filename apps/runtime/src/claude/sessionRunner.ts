@@ -316,7 +316,17 @@ async function buildClaudePromptInput(params: {
     return params.promptWithAttachments ?? params.prompt;
   }
 
-  const contentBlocks: Array<Record<string, unknown>> = [];
+  const contentBlocks: Array<{
+    type: "text";
+    text: string;
+  } | {
+    type: "image";
+    source: {
+      type: "base64";
+      media_type: string;
+      data: string;
+    };
+  }> = [];
   for (const attachment of params.attachments ?? []) {
     if (!isImageAttachment(attachment)) {
       continue;
@@ -350,8 +360,8 @@ async function buildClaudePromptInput(params: {
       type: "user",
       message: {
         role: "user",
-        content: contentBlocks,
-      } as SDKUserMessage["message"],
+        content: contentBlocks as SDKUserMessage["message"]["content"],
+      },
       parent_tool_use_id: null,
       session_id: "",
     } satisfies SDKUserMessage;

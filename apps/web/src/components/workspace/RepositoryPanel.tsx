@@ -202,6 +202,57 @@ function isWorktreeShortcutModifierActive(event: KeyboardEvent): boolean {
     : event.ctrlKey && event.shiftKey;
 }
 
+function getWorktreeShortcutIndex(event: KeyboardEvent): number | null {
+  if (!isWorktreeShortcutModifierActive(event) || event.altKey) {
+    return null;
+  }
+
+  const key = event.key.length === 1 ? Number.parseInt(event.key, 10) : Number.NaN;
+  if (!Number.isInteger(key) || key < 1 || key > MAX_WORKTREE_SHORTCUT_HINTS) {
+    return null;
+  }
+
+  return key - 1;
+}
+
+function getVisibleSelectableWorktrees(params: {
+  repositories: Repository[];
+  expandedByRepo: Record<string, boolean>;
+  selectedRepositoryId: string | null;
+}): Array<{ repositoryId: string; worktreeId: string }> {
+  const { repositories, expandedByRepo, selectedRepositoryId } = params;
+  const worktrees: Array<{ repositoryId: string; worktreeId: string }> = [];
+
+  for (const repository of repositories) {
+    const isExpanded = expandedByRepo[repository.id] ?? selectedRepositoryId === repository.id;
+    if (!isExpanded) {
+      continue;
+    }
+
+    const visibleWorktrees = repository.worktrees.filter(
+      (worktree) => isVisibleWorktreeStatus(worktree.status),
+    );
+    const rootWorkspace =
+      visibleWorktrees.find((worktree) =>
+        isRootWorktree(worktree, repository),
+      ) ?? null;
+    const branchWorktrees = rootWorkspace
+      ? visibleWorktrees.filter((worktree) => worktree.id !== rootWorkspace.id)
+      : visibleWorktrees;
+    const orderedWorktrees = rootWorkspace
+      ? [rootWorkspace, ...branchWorktrees]
+      : branchWorktrees;
+
+    for (const worktree of orderedWorktrees) {
+      if (isSelectableWorktreeStatus(worktree.status)) {
+        worktrees.push({ repositoryId: repository.id, worktreeId: worktree.id });
+      }
+    }
+  }
+
+  return worktrees;
+}
+
 export function mergeSelectedWorktreeStatusOverride(params: {
   worktreeStatuses: Record<string, WorktreeStatusSummary>;
   selectedWorktreeId: string | null;
@@ -767,41 +818,19 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   }, [activeWorktreeSummaries, gitBranchDiffQueries]);
   const worktreeShortcutLabels = useMemo(() => {
     const labels = new Map<string, string>();
-    let shortcutIndex = 0;
+    const worktrees = getVisibleSelectableWorktrees({
+      repositories: visibleRepositories,
+      expandedByRepo,
+      selectedRepositoryId,
+    });
 
-    for (const repository of visibleRepositories) {
-      const isExpanded = expandedByRepo[repository.id] ?? selectedRepositoryId === repository.id;
-      if (!isExpanded) {
-        continue;
+    for (const [index, worktree] of worktrees.entries()) {
+      const label = getWorktreeJumpShortcutLabel(index);
+      if (!label) {
+        return labels;
       }
 
-      const visibleWorktrees = repository.worktrees.filter(
-        (worktree) => isVisibleWorktreeStatus(worktree.status),
-      );
-      const rootWorkspace =
-        visibleWorktrees.find((worktree) =>
-          isRootWorktree(worktree, repository),
-        ) ?? null;
-      const branchWorktrees = rootWorkspace
-        ? visibleWorktrees.filter((worktree) => worktree.id !== rootWorkspace.id)
-        : visibleWorktrees;
-      const orderedWorktrees = rootWorkspace
-        ? [rootWorkspace, ...branchWorktrees]
-        : branchWorktrees;
-
-      for (const worktree of orderedWorktrees) {
-        if (!isSelectableWorktreeStatus(worktree.status)) {
-          continue;
-        }
-
-        const label = getWorktreeJumpShortcutLabel(shortcutIndex);
-        if (!label) {
-          return labels;
-        }
-
-        labels.set(worktree.id, label);
-        shortcutIndex += 1;
-      }
+      labels.set(worktree.worktreeId, label);
     }
 
     return labels;
@@ -1223,6 +1252,37 @@ export const RepositoryPanel = memo(function RepositoryPanel({
       document.removeEventListener("visibilitychange", hideShortcutHints);
     };
   }, []);
+
+  useEffect(() => {
+    function handleWorktreeJumpShortcut(event: KeyboardEvent) {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      const shortcutIndex = getWorktreeShortcutIndex(event);
+      if (shortcutIndex == null) {
+        return;
+      }
+
+      const target = getVisibleSelectableWorktrees({
+        repositories: visibleRepositories,
+        expandedByRepo,
+        selectedRepositoryId,
+      })[shortcutIndex];
+      if (!target || target.worktreeId === selectedWorktreeId) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      onSelectWorktree(target.repositoryId, target.worktreeId, null);
+    }
+
+    window.addEventListener("keydown", handleWorktreeJumpShortcut, true);
+    return () => {
+      window.removeEventListener("keydown", handleWorktreeJumpShortcut, true);
+    };
+  }, [expandedByRepo, onSelectWorktree, selectedRepositoryId, selectedWorktreeId, visibleRepositories]);
 
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-y-hidden overflow-x-visible">

@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { inferPlanDetectionSource } from "../src/services/chat/chatAttachmentUtils.js";
+import { inferPlanDetectionSource, isPrismaRecordNotFound } from "../src/services/chat/chatAttachmentUtils.js";
+
+describe("isPrismaRecordNotFound", () => {
+  it("detects Prisma P2025 record-not-found errors", () => {
+    expect(isPrismaRecordNotFound({ code: "P2025" })).toBe(true);
+    expect(isPrismaRecordNotFound({ code: "P2002" })).toBe(false);
+    expect(isPrismaRecordNotFound(new Error("missing"))).toBe(false);
+  });
+});
 
 describe("inferPlanDetectionSource", () => {
   it("preserves explicit codex plan items", () => {

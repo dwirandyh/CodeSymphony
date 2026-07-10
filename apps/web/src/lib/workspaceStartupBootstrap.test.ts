@@ -259,6 +259,41 @@ describe("workspaceStartupBootstrap", () => {
     );
   });
 
+  it("resolves a bootstrap thread for worktree-only routes", async () => {
+    const { resolveBootstrapThreadForWorktreeOnlyRoute } = await import("./workspaceStartupBootstrap");
+
+    expect(resolveBootstrapThreadForWorktreeOnlyRoute({
+      routeWorktreeId: "wt-1",
+      routeThreadId: null,
+      bootstrap: createBootstrapData(),
+    })).toBe("thread-2");
+
+    expect(resolveBootstrapThreadForWorktreeOnlyRoute({
+      routeWorktreeId: "wt-1",
+      routeThreadId: "thread-2",
+      bootstrap: createBootstrapData(),
+    })).toBeNull();
+
+    expect(resolveBootstrapThreadForWorktreeOnlyRoute({
+      routeWorktreeId: "wt-2",
+      routeThreadId: null,
+      bootstrap: createBootstrapData(),
+    })).toBeNull();
+
+    expect(resolveBootstrapThreadForWorktreeOnlyRoute({
+      routeWorktreeId: "wt-1",
+      routeThreadId: null,
+      bootstrap: createBootstrapData({
+        thread: null,
+        selection: {
+          repositoryId: "repo-1",
+          worktreeId: "wt-1",
+          threadId: null,
+        },
+      }),
+    })).toBeNull();
+  });
+
   it("starts bootstrap fetch only when startup selection exists", async () => {
     getWorkspaceBootstrapMock.mockResolvedValue(createBootstrapData());
     const { startWorkspaceStartupBootstrap } = await import("./workspaceStartupBootstrap");

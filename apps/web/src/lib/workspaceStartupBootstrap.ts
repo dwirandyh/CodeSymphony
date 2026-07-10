@@ -105,6 +105,31 @@ export function hasWorkspaceStartupBootstrapSelection(selection: WorkspaceStartu
   return !!(selection.repositoryId || selection.worktreeId || selection.threadId);
 }
 
+export function resolveBootstrapThreadForWorktreeOnlyRoute(params: {
+  routeWorktreeId?: string | null;
+  routeThreadId?: string | null;
+  bootstrap?: Pick<WorkspaceStartupBootstrapData, "selection" | "worktree" | "thread"> | null;
+}): string | null {
+  const routeWorktreeId = params.routeWorktreeId?.trim() || null;
+  if (!routeWorktreeId || params.routeThreadId != null) {
+    return null;
+  }
+
+  const bootstrap = params.bootstrap;
+  if (!bootstrap) {
+    return null;
+  }
+
+  const bootstrapWorktreeId = bootstrap.worktree?.id ?? bootstrap.selection.worktreeId ?? null;
+  const bootstrapThreadId = bootstrap.thread?.id ?? bootstrap.selection.threadId ?? null;
+
+  if (!bootstrapWorktreeId || !bootstrapThreadId || bootstrapWorktreeId !== routeWorktreeId) {
+    return null;
+  }
+
+  return bootstrapThreadId;
+}
+
 export async function waitForWorkspaceStartupBootstrap() {
   if (!startupBootstrapPromise) {
     return null;

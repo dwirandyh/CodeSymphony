@@ -805,6 +805,14 @@ export async function registerChatRoutes(app: FastifyInstance) {
         throw error;
       }
     } catch (error) {
+      if (reply.raw.headersSent) {
+        try {
+          reply.raw.end();
+        } catch {
+          // Stream may already be closed when the client disconnects mid-flight.
+        }
+        return reply;
+      }
       return respondForChatRouteError(reply, error, "Unable to stream events");
     }
   });

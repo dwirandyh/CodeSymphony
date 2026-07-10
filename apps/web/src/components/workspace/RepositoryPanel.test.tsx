@@ -386,6 +386,28 @@ describe("RepositoryPanel", () => {
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-shortcut"]')).toBeNull();
   });
 
+  it("jumps to the first visible worktree with Cmd+1 when another worktree is selected", () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true,
+    });
+    const onSelectWorktree = vi.fn();
+
+    renderPanel({
+      enableMetadataQueries: false,
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+      onSelectWorktree,
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "1", metaKey: true }));
+    });
+
+    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "r1-wt-root", null);
+  });
+
   it("does not render worktree shortcut hints for collapsed or hidden repositories", () => {
     Object.defineProperty(window.navigator, "platform", {
       value: "MacIntel",

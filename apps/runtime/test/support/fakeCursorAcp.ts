@@ -6,6 +6,7 @@ import {
   type AvailableCommand,
   type CreateElicitationResponse,
   type RequestPermissionResponse,
+  type SessionConfigOption,
 } from "@agentclientprotocol/sdk";
 
 type FakeCursorModel = {
@@ -79,13 +80,17 @@ function readPromptText(prompt: unknown): string {
     .join("\n");
 }
 
-function buildModelState(models: FakeCursorModel[], currentModelId: string) {
+function buildModelConfigOption(models: FakeCursorModel[], currentModelId: string): SessionConfigOption {
   return {
-    availableModels: models.map((model) => ({
-      modelId: model.modelId,
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: currentModelId,
+    options: models.map((model) => ({
+      value: model.modelId,
       name: model.name,
     })),
-    currentModelId,
   };
 }
 
@@ -174,7 +179,7 @@ export class FakeCursorAgent {
     return {
       sessionId,
       modes: buildModeState(currentModeId, modes),
-      models: buildModelState(models, currentModelId),
+      configOptions: [buildModelConfigOption(models, currentModelId)],
     };
   }
 
@@ -191,7 +196,9 @@ export class FakeCursorAgent {
 
     return {
       modes: buildModeState(state.currentModeId, modes),
-      models: buildModelState(this.scenario.availableModels ?? DEFAULT_MODELS, state.currentModelId),
+      configOptions: [
+        buildModelConfigOption(this.scenario.availableModels ?? DEFAULT_MODELS, state.currentModelId),
+      ],
     };
   }
 
@@ -203,12 +210,20 @@ export class FakeCursorAgent {
     return {};
   }
 
-  async unstable_setSessionModel(params: { sessionId: string; modelId: string }) {
+  async setSessionConfigOption(params: { sessionId: string; configId: string; value: string }) {
     const state = fakeCursorSessions.get(params.sessionId);
-    if (state) {
-      state.currentModelId = params.modelId;
+    if (state && params.configId === "model") {
+      state.currentModelId = params.value;
     }
-    return {};
+
+    return {
+      configOptions: [
+        buildModelConfigOption(
+          this.scenario.availableModels ?? DEFAULT_MODELS,
+          state?.currentModelId ?? DEFAULT_MODELS[0]!.modelId,
+        ),
+      ],
+    };
   }
 
   async prompt(params: { sessionId: string; prompt: unknown }) {

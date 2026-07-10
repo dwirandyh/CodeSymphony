@@ -452,6 +452,13 @@ export function aggregateWorktreeStatus(
   let bestThread: ChatThread | null = null;
 
   for (const summary of threadSummaries) {
+    // A closed (tabOpen: false) thread that isn't actively running should not
+    // drive the worktree badge — its unresolved gates (e.g. review_plan) are
+    // dismissed by closing. Active background jobs still badge while running.
+    if ((summary.thread.tabOpen ?? true) === false && !summary.thread.active) {
+      continue;
+    }
+
     const status = summary.status ?? deriveThreadUiStatus(summary.thread, summary.snapshot);
     const priority = WORKTREE_STATUS_PRIORITY.indexOf(status);
     const bestPriority = WORKTREE_STATUS_PRIORITY.indexOf(bestStatus);

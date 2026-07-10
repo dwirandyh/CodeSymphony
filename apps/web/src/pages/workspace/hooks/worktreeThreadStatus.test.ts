@@ -457,4 +457,48 @@ describe("worktreeThreadStatus", () => {
   it("returns idle for empty worktree thread list", () => {
     expect(aggregateWorktreeStatus([])).toEqual({ kind: "idle", threadId: null });
   });
+
+  it("ignores closed inactive threads with a pending plan review", () => {
+    const closedReviewThread = makeThread({
+      id: "t-closed-review",
+      active: false,
+      tabOpen: false,
+    });
+    const reviewPlanSnapshot = makeSnapshot([
+      makeEvent({
+        id: "e1",
+        threadId: closedReviewThread.id,
+        idx: 1,
+        type: "plan.created",
+        payload: { content: "Plan body", filePath: "/tmp/.claude/plans/plan.md" },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: closedReviewThread.id,
+        idx: 2,
+        type: "chat.completed",
+        payload: {},
+      }),
+    ]);
+
+    const result = aggregateWorktreeStatus([
+      { thread: closedReviewThread, snapshot: reviewPlanSnapshot },
+    ]);
+
+    expect(result).toEqual({ kind: "idle", threadId: null });
+  });
+
+  it("still badges closed threads that are active (background jobs)", () => {
+    const closedActiveThread = makeThread({
+      id: "t-closed-active",
+      active: true,
+      tabOpen: false,
+    });
+
+    const result = aggregateWorktreeStatus([
+      { thread: closedActiveThread, snapshot: makeSnapshot() },
+    ]);
+
+    expect(result).toEqual({ kind: "running", threadId: "t-closed-active" });
+  });
 });

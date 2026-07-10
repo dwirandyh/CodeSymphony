@@ -144,6 +144,10 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
     return Array.isArray(target) && target.includes("threadId") && target.includes("idx");
   }
 
+  function isMissingThreadForeignKey(error: unknown): boolean {
+    return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003";
+  }
+
   async function persistEvent(threadId: string, event: ChatEvent): Promise<void> {
     await prisma.chatEvent.create({
       data: {
@@ -165,6 +169,9 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
         await persistEvent(threadId, event);
         return;
       } catch (error) {
+        if (isMissingThreadForeignKey(error)) {
+          return;
+        }
         if (!isThreadIdxCollision(error)) {
           throw error;
         }

@@ -3,14 +3,21 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import {
   ClientSideConnection,
+  CreateElicitationRequest as CreateElicitationRequestGuards,
+  ElicitationPropertySchema as ElicitationPropertySchemaGuards,
   ndJsonStream,
   type ContentBlock,
   type CreateElicitationRequest,
   type CreateElicitationResponse,
   type ElicitationPropertySchema,
   type EnumOption,
+  type LoadSessionResponse,
+  type NewSessionResponse,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
+  type SessionConfigOption,
+  type SessionConfigSelect,
+  type SessionConfigSelectOption,
   type SessionUpdate,
   type ToolCall,
   type ToolCallContent,
@@ -114,17 +121,55 @@ function isOpencodePlanFilePath(filePath: string): boolean {
   return filePath.endsWith(".md") && filePath.includes(".opencode/plans/");
 }
 
+function isSessionConfigSelect(option: SessionConfigOption): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
+  return option.type === "select";
+}
+
+function findModelConfigOption(
+  configOptions: Array<SessionConfigOption> | null | undefined,
+): (SessionConfigOption & SessionConfigSelect & { type: "select" }) | null {
+  const selectOptions = (configOptions ?? []).filter(isSessionConfigSelect);
+  return selectOptions.find((option) => option.category === "model")
+    ?? selectOptions.find((option) => /model/i.test(option.name))
+    ?? null;
+}
+
+function flattenSessionConfigSelectOptions(
+  options: SessionConfigSelect["options"],
+): SessionConfigSelectOption[] {
+  return options.flatMap((entry) => ("options" in entry ? entry.options : [entry]));
+}
+
+function resolveSessionModelConfig(
+  session: Pick<LoadSessionResponse | NewSessionResponse, "configOptions">,
+) {
+  const modelConfig = findModelConfigOption(session.configOptions);
+  if (!modelConfig) {
+    return null;
+  }
+
+  return {
+    configId: modelConfig.id,
+    currentModelId: modelConfig.currentValue,
+    availableModelIds: new Set(flattenSessionConfigSelectOptions(modelConfig.options).map((entry) => entry.value)),
+  };
+}
+
+function readElicitationSchemaString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
 function toQuestionText(params: {
   requestMessage: string;
   propertyKey: string;
   propertySchema: ElicitationPropertySchema;
 }): string {
-  const description = params.propertySchema.description?.trim();
+  const description = readElicitationSchemaString(params.propertySchema.description);
   if (description) {
     return description;
   }
 
-  const title = params.propertySchema.title?.trim();
+  const title = readElicitationSchemaString(params.propertySchema.title);
   if (title) {
     return title;
   }
@@ -142,7 +187,7 @@ function extractQuestionOptions(propertySchema: ElicitationPropertySchema): Arra
   description?: string;
   value: string;
 }> {
-  if (propertySchema.type === "string") {
+  if (ElicitationPropertySchemaGuards.isString(propertySchema)) {
     if (Array.isArray(propertySchema.oneOf)) {
       return propertySchema.oneOf.map((option: EnumOption) => ({
         label: option.title,
@@ -161,20 +206,21 @@ function extractQuestionOptions(propertySchema: ElicitationPropertySchema): Arra
     return [];
   }
 
-  if (propertySchema.type !== "array") {
+  if (!ElicitationPropertySchemaGuards.isArray(propertySchema)) {
     return [];
   }
 
-  if ("anyOf" in propertySchema.items && Array.isArray(propertySchema.items.anyOf)) {
-    return propertySchema.items.anyOf.map((option: EnumOption) => ({
+  const items = propertySchema.items;
+  if ("anyOf" in items && Array.isArray(items.anyOf)) {
+    return items.anyOf.map((option: EnumOption) => ({
       label: option.title,
       description: option.const,
       value: option.const,
     }));
   }
 
-  if ("enum" in propertySchema.items && Array.isArray(propertySchema.items.enum)) {
-    return propertySchema.items.enum.map((value) => ({
+  if ("enum" in items && Array.isArray(items.enum)) {
+    return items.enum.map((value) => ({
       label: value,
       value,
     }));
@@ -184,7 +230,7 @@ function extractQuestionOptions(propertySchema: ElicitationPropertySchema): Arra
 }
 
 function buildQuestionDefinitions(request: CreateElicitationRequest): OpencodeQuestionDefinition[] {
-  if (request.mode !== "form") {
+  if (!CreateElicitationRequestGuards.isForm(request)) {
     return [];
   }
 
@@ -201,7 +247,7 @@ function buildQuestionDefinitions(request: CreateElicitationRequest): OpencodeQu
           propertyKey: answerKey,
           propertySchema,
         }),
-        header: propertySchema.title?.trim() || undefined,
+        header: readElicitationSchemaString(propertySchema.title),
         options: options.length > 0
           ? options.map((option) => ({
               label: option.label,
@@ -979,15 +1025,16 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
     }
 
     const resolvedModel = model?.trim();
-    const availableModelIds = new Set((session.models?.availableModels ?? []).map((entry) => entry.modelId));
-    if (resolvedModel && availableModelIds.size > 0 && !availableModelIds.has(resolvedModel)) {
+    const sessionModelConfig = resolveSessionModelConfig(session);
+    if (resolvedModel && sessionModelConfig && sessionModelConfig.availableModelIds.size > 0 && !sessionModelConfig.availableModelIds.has(resolvedModel)) {
       throw new Error(`OpenCode model "${resolvedModel}" is not available in the current OpenCode config.`);
     }
 
-    if (resolvedModel && (session.models?.currentModelId ?? null) !== resolvedModel) {
-      await connection.unstable_setSessionModel({
+    if (resolvedModel && sessionModelConfig && sessionModelConfig.currentModelId !== resolvedModel) {
+      await connection.setSessionConfigOption({
         sessionId: currentSessionId,
-        modelId: resolvedModel,
+        configId: sessionModelConfig.configId,
+        value: resolvedModel,
       });
     }
 

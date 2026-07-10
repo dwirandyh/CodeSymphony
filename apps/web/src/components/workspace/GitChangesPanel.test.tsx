@@ -185,11 +185,14 @@ describe("GitChangesPanel", () => {
     expect(container.textContent).toContain("1 incoming");
   });
 
-  it("shows error message", () => {
+  it("shows error as bottom-right toast, not inline in the panel", () => {
     act(() => {
       root.render(<GitChangesPanel {...baseProps} error="Something went wrong" />);
     });
-    expect(container.textContent).toContain("Something went wrong");
+    const toast = container.querySelector('[data-testid="workspace-live-error-toast"]');
+    expect(toast).toBeTruthy();
+    expect(toast?.textContent).toContain("Something went wrong");
+    expect(container.querySelector('p[role="alert"]')).toBeNull();
   });
 
   it("calls onClose when close button clicked", () => {

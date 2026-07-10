@@ -160,7 +160,7 @@ describe("codex session runner skill integration", () => {
       { name: "vercel-react-best-practices", description: "Repo skill", argumentHint: "" },
     ]);
     expect(spawnMock).toHaveBeenCalledWith(
-      "codex",
+      expect.stringMatching(/codex$/),
       ["app-server"],
       expect.objectContaining({
         cwd: "/tmp/project",
@@ -222,7 +222,7 @@ describe("codex session runner skill integration", () => {
       },
     ]);
     expect(spawnMock).toHaveBeenCalledWith(
-      "codex",
+      expect.stringMatching(/codex$/),
       ["app-server"],
       expect.objectContaining({
         cwd: "/tmp/project",

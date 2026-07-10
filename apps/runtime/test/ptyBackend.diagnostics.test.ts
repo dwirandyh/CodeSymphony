@@ -17,6 +17,7 @@ describe("ptyBackend diagnostics sink", () => {
   const originalNodeOverride = process.env.CODESYMPHONY_NODE_EXECUTABLE;
 
   afterEach(() => {
+    resetPtyHostForTests();
     setPtyDiagnosticsSink(null);
     if (originalNodeOverride === undefined) {
       delete process.env.CODESYMPHONY_NODE_EXECUTABLE;

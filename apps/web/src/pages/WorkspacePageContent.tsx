@@ -236,7 +236,10 @@ import {
   type GlobalSessionTarget,
 } from "./workspace/globalSessionTargets";
 import { buildGlobalSwitcherItems } from "./workspace/sessionSwitcherItems";
-import { shouldSuppressStartupFallbackSearchUpdate } from "./workspace/startupSelectionNavigation";
+import {
+  resolveThreadIdOnSelectionChange,
+  shouldSuppressStartupFallbackSearchUpdate,
+} from "./workspace/startupSelectionNavigation";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
@@ -250,7 +253,10 @@ import { useInstalledApps } from "../hooks/queries/useInstalledApps";
 import { THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS } from "../hooks/queries/useThreadSnapshot";
 import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../hooks/queries/useThreads";
 import { queryKeys } from "../lib/queryKeys";
-import { startWorkspaceStartupBootstrap } from "../lib/workspaceStartupBootstrap";
+import {
+  resolveBootstrapThreadForWorktreeOnlyRoute,
+  startWorkspaceStartupBootstrap,
+} from "../lib/workspaceStartupBootstrap";
 import { refetchGitStatusCollection } from "../collections/gitStatus";
 import { getExistingThreadsCollection, getThreadsCollection, replaceThreadsCollection } from "../collections/threads";
 import { writeWorkspaceShellStateSnapshot } from "../collections/workspaceShellState";
@@ -1023,15 +1029,20 @@ export function WorkspacePage() {
         const nextSearchPatch = {
           repoId: selection.repoId ?? undefined,
           worktreeId: selection.worktreeId ?? undefined,
-          ...(shouldReusePendingThreadId
-            ? { threadId: pendingSelection?.threadId }
-            : worktreeChanged
-              ? { threadId: undefined }
-              : {}),
+          ...resolveThreadIdOnSelectionChange({
+            worktreeChanged,
+            shouldReusePendingThreadId,
+            pendingThreadId: pendingSelection?.threadId,
+            routeThreadId: search.threadId,
+            restoredThreadId,
+            nextWorktreeId: selection.worktreeId,
+            routeWorktreeId: search.worktreeId,
+            restoredWorktreeId,
+          }),
         };
         updateSearch(nextSearchPatch);
       },
-      [restoredRepoId, restoredWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
+      [restoredRepoId, restoredThreadId, restoredWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
     ),
   });
 
@@ -1270,8 +1281,31 @@ export function WorkspacePage() {
         worktreeId: restoredWorktreeId,
         threadId: restoredThreadId,
       },
+    }).then((data) => {
+      const bootstrapThreadId = resolveBootstrapThreadForWorktreeOnlyRoute({
+        routeWorktreeId: search.worktreeId,
+        routeThreadId: search.threadId,
+        bootstrap: data,
+      });
+      if (!bootstrapThreadId) {
+        return;
+      }
+
+      const bootstrapWorktreeId = data?.worktree?.id ?? search.worktreeId ?? null;
+      setWorkspaceLandingHold(bootstrapWorktreeId, false);
+      updateSearch({ threadId: bootstrapThreadId });
     }).catch(() => {});
-  }, [desktopApp, queryClient, restoredRepoId, restoredThreadId, restoredWorktreeId]);
+  }, [
+    desktopApp,
+    queryClient,
+    restoredRepoId,
+    restoredThreadId,
+    restoredWorktreeId,
+    search.threadId,
+    search.worktreeId,
+    setWorkspaceLandingHold,
+    updateSearch,
+  ]);
 
   const installedAppsQuery = useInstalledApps({
     enabled: enableNonCriticalWorkspaceData,

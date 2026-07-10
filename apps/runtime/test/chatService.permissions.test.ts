@@ -8,6 +8,7 @@ import { createChatService } from "../src/services/chat";
 import { createLogService } from "../src/services/logService";
 import type { ClaudeRunner } from "../src/types";
 import * as gitService from "../src/services/git.js";
+import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
 import { buildPromptWithAttachments } from "../src/services/chat/chatAttachmentUtils";
 
 const stubModelProviderService = {
@@ -120,6 +121,7 @@ async function waitForEvent(
 describe("chatService permission flow", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
+    vi.spyOn(cursorSessionRunner, "listCursorModels").mockResolvedValue([]);
     process.env.CODESYMPHONY_ATTACHMENT_STORAGE_DIR = TEST_ATTACHMENT_DIR;
     await resetDatabase();
   });

@@ -61,6 +61,15 @@ export function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || /abort|cancel|interrupt/i.test(error.message));
 }
 
+export function isPrismaRecordNotFound(error: unknown): boolean {
+  return (
+    typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === "P2025"
+  );
+}
+
 export function instrumentationMessage(event: ClaudeToolInstrumentationEvent): string {
   if (event.stage === "anomaly") {
     return event.anomaly?.message ?? `Tool anomaly (${event.toolName})`;

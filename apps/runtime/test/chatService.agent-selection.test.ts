@@ -141,6 +141,7 @@ async function waitForCompletion(
 describe("chatService agent selection", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
+    vi.spyOn(cursorSessionRunner, "listCursorModels").mockResolvedValue([]);
     originalCodexHome = process.env.CODEX_HOME;
     originalSlashCommandCacheDir = process.env.CODESYMPHONY_SLASH_COMMAND_CACHE_DIR;
     process.env.CODEX_HOME = mkdtempSync(join(tmpdir(), "codesymphony-test-codex-home-"));

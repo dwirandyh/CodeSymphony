@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dot, ExternalLink, Eye, GitPullRequestArrow, Plus, Minus, RefreshCw, Undo2, X, Loader2 } from "lucide-react";
 import type { GitChangeEntry, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { VList } from "virtua";
@@ -8,6 +8,7 @@ import { Card } from "../ui/card";
 import { Separator } from "../ui/separator";
 import { Input } from "../ui/input";
 import { cn } from "../../lib/utils";
+import { LiveStatusErrorToast } from "./LiveStatusErrorToast";
 
 interface GitChangesPanelProps {
   entries: GitChangeEntry[];
@@ -208,7 +209,17 @@ export function GitChangesPanel({
   showHeader = true,
 }: GitChangesPanelProps) {
   const [commitMessage, setCommitMessage] = useState("");
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
   const syncSummary = formatSyncSummary(ahead, behind);
+  const visibleError = error && error !== dismissedError ? error : null;
+
+  useEffect(() => {
+    if (!error) {
+      setDismissedError(null);
+      return;
+    }
+    setDismissedError((current) => (current != null && current !== error ? null : current));
+  }, [error]);
 
   const handleCommit = () => {
     onCommit(commitMessage.trim());
@@ -315,9 +326,6 @@ export function GitChangesPanel({
             Ready to sync {syncSummary} on <span className="font-medium text-foreground/80">{branch}</span>.
           </p>
         )}
-        {error && (
-          <p className="text-[11px] text-destructive" role="alert">{error}</p>
-        )}
       </div>
 
       <Separator className="opacity-20" />
@@ -391,6 +399,15 @@ export function GitChangesPanel({
           </div>
         )}
       </div>
+
+      {visibleError ? (
+        <LiveStatusErrorToast
+          title="Source Control"
+          description={visibleError}
+          mobileComposerPinned={!showHeader}
+          onDismiss={() => setDismissedError(visibleError)}
+        />
+      ) : null}
     </Card>
   );
 }

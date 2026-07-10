@@ -111,6 +111,11 @@ class PtyHost {
             },
         }) as ChildProcessWithoutNullStreams;
 
+        child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+            if (!isPtyIoError(error)) {
+                console.warn(`[pty-host] stdin error: ${error.message}`);
+            }
+        });
         child.stdout.setEncoding("utf8");
         child.stdout.on("data", (chunk: string) => this.handleStdout(chunk));
         child.stderr.setEncoding("utf8");
@@ -203,10 +208,20 @@ class PtyHost {
 
     private writeCommand(command: Record<string, unknown>): void {
         const child = this.child;
-        if (!child || child.killed) {
+        if (!child || child.killed || child.stdin.destroyed) {
             return;
         }
-        child.stdin.write(`${JSON.stringify(command)}\n`);
+        try {
+            child.stdin.write(`${JSON.stringify(command)}\n`, (error) => {
+                if (error && !isPtyIoError(error)) {
+                    console.warn(`[pty-host] write error: ${error.message}`);
+                }
+            });
+        } catch (error) {
+            if (!isPtyIoError(error)) {
+                throw error;
+            }
+        }
     }
 
     spawn(file: string, args: string[], options: PtySpawnOptions): PtyProcess {

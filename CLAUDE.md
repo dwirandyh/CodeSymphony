@@ -97,6 +97,17 @@ Local-first monorepo (Bun workspaces + Turbo) for a conductor.build-style AI cod
 - Runtime tests use a separate `prisma/test.db` (set via `DATABASE_URL="file:./test.db"` in the test script)
 - Sanitize env before `query()`: unset `CLAUDECODE` and remove empty `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` to avoid CLI errors
 
+### Runtime URL resolution (browser vs desktop)
+
+Runtime URL resolution lives in `apps/web/src/lib/runtimeUrl.ts`. There are two independent runtime instances:
+
+- **Web dev in a browser** infers the runtime port from `VITE_RUNTIME_PORT` (default `4331`). Start it with `bun run dev:runtime` or `bun run dev`.
+- **Desktop shell** injects its own runtime base (`window.__CS_RUNTIME_API_BASE` / `__CS_RUNTIME_PORT`): `4321` in dev, `4322` in the packaged app. This sidecar is private to the shell — a plain browser cannot discover it on its own.
+
+To point a browser at the packaged desktop sidecar (e.g. accessing the installed macOS app's runtime from a browser), set `VITE_RUNTIME_URL=http://localhost:4322/api` in `apps/web/.env`. `VITE_RUNTIME_URL` overrides all other resolution.
+
+Do **not** change the port-inference logic in `runtimeUrl.ts` to work around a "browser can't reach the desktop runtime" symptom — use `VITE_RUNTIME_URL` instead. Editing the resolver has repeatedly reintroduced the same connectivity issue.
+
 ### Runtime: Bun vs Node
 
 - Use Bun for everything: installing deps, dev/build/test/lint scripts, and the production runtime. The repo pins `bun@1.3.14` as its `packageManager`, and the packaged desktop app spawns the runtime with the bundled Bun binary.

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { shouldSuppressStartupFallbackSearchUpdate } from "./startupSelectionNavigation";
+import {
+  resolveThreadIdOnSelectionChange,
+  shouldSuppressStartupFallbackSearchUpdate,
+} from "./startupSelectionNavigation";
 
 const baseArgs = {
   startupSelectionFallbackActive: true,
@@ -12,6 +15,46 @@ const baseArgs = {
   nextRepoId: "repo-1",
   nextWorktreeId: "wt-stale",
 };
+
+describe("resolveThreadIdOnSelectionChange", () => {
+  it("preserves route thread when startup selection lands on the requested worktree", () => {
+    expect(resolveThreadIdOnSelectionChange({
+      worktreeChanged: true,
+      shouldReusePendingThreadId: false,
+      routeWorktreeId: "wt-target",
+      routeThreadId: "thread-route",
+      nextWorktreeId: "wt-target",
+    })).toEqual({ threadId: "thread-route" });
+  });
+
+  it("clears thread when user switches to a different worktree", () => {
+    expect(resolveThreadIdOnSelectionChange({
+      worktreeChanged: true,
+      shouldReusePendingThreadId: false,
+      routeWorktreeId: "wt-target",
+      routeThreadId: "thread-route",
+      nextWorktreeId: "wt-other",
+    })).toEqual({ threadId: undefined });
+  });
+
+  it("reuses pending thread when pending worktree matches", () => {
+    expect(resolveThreadIdOnSelectionChange({
+      worktreeChanged: true,
+      shouldReusePendingThreadId: true,
+      pendingThreadId: "thread-pending",
+      nextWorktreeId: "wt-target",
+    })).toEqual({ threadId: "thread-pending" });
+  });
+
+  it("does not touch thread when worktree is unchanged", () => {
+    expect(resolveThreadIdOnSelectionChange({
+      worktreeChanged: false,
+      shouldReusePendingThreadId: false,
+      routeThreadId: "thread-route",
+      nextWorktreeId: "wt-target",
+    })).toEqual({});
+  });
+});
 
 describe("shouldSuppressStartupFallbackSearchUpdate", () => {
   it("suppresses promoting a snapshot-only startup selection into the URL", () => {

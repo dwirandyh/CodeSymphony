@@ -206,6 +206,13 @@ describe("Cursor SDK catalog", () => {
   it("lists slash commands by scanning Cursor skills", async () => {
     vi.doMock("@cursor/sdk", () => FakeCursorSdkModule);
     const cwd = await mkdtemp(join(tmpdir(), "cursor-sdk-skills-"));
+    vi.doMock("node:os", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:os")>();
+      return {
+        ...actual,
+        homedir: () => cwd,
+      };
+    });
     const skillDir = join(cwd, ".cursor", "skills", "dogfood");
     await mkdir(skillDir, { recursive: true });
     await writeFile(join(skillDir, "SKILL.md"), [

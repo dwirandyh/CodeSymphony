@@ -83,6 +83,7 @@ import {
   isImageMimeType,
   buildPromptWithAttachments,
   isAbortError,
+  isPrismaRecordNotFound,
   instrumentationMessage,
   nextMessageSeq,
   persistAlwaysAllowRule,
@@ -2588,12 +2589,18 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       if (assistantMessageId) {
-        await deps.prisma.chatMessage.update({
-          where: { id: assistantMessageId },
-          data: {
-            content: wasCancelled ? fullOutput : fullOutput.length > 0 ? fullOutput : `[runtime-error] ${errorMessage}`,
-          },
-        });
+        try {
+          await deps.prisma.chatMessage.update({
+            where: { id: assistantMessageId },
+            data: {
+              content: wasCancelled ? fullOutput : fullOutput.length > 0 ? fullOutput : `[runtime-error] ${errorMessage}`,
+            },
+          });
+        } catch (updateError) {
+          if (!isPrismaRecordNotFound(updateError)) {
+            throw updateError;
+          }
+        }
       }
 
       if (wasCancelled) {

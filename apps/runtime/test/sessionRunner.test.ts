@@ -3430,7 +3430,9 @@ describe("thinking_delta", () => {
   it("retries native Claude runs with CLI aliases when proxy rejects canonical model ids", async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "codesymphony-claude-retry-"));
     const tempHome = join(tempRoot, "home");
+    const tempCwd = join(tempRoot, "worktree");
     mkdirSync(tempHome, { recursive: true });
+    mkdirSync(tempCwd, { recursive: true });
     mockQuery
       .mockImplementationOnce(() => {
         return attachQueryControls((async function* () {
@@ -3471,12 +3473,14 @@ describe("thinking_delta", () => {
       });
 
     const previousHome = process.env.HOME;
+    const previousAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
     process.env.HOME = tempHome;
+    process.env.ANTHROPIC_BASE_URL = "https://api.anthropic.com";
     try {
       const result = await runClaudeWithStreaming({
         prompt: "say done",
         sessionId: null,
-        cwd: process.cwd(),
+        cwd: tempCwd,
         model: "claude-sonnet-4-6",
         onText: () => { },
         onThinking: () => { },
@@ -3498,6 +3502,11 @@ describe("thinking_delta", () => {
       expect(result.sessionId).toBe("session-native-proxy-success");
     } finally {
       process.env.HOME = previousHome;
+      if (previousAnthropicBaseUrl === undefined) {
+        delete process.env.ANTHROPIC_BASE_URL;
+      } else {
+        process.env.ANTHROPIC_BASE_URL = previousAnthropicBaseUrl;
+      }
     }
   });
 

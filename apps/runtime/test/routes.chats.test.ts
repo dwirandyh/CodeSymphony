@@ -112,6 +112,7 @@ describe("chat routes", () => {
   const mockEventHub = {
     list: vi.fn(),
     subscribe: vi.fn(() => vi.fn()),
+    subscribeTransient: vi.fn(() => vi.fn()),
   };
 
   const mockRepositoryService = {
