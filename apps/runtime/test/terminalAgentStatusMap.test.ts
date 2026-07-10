@@ -21,6 +21,42 @@ describe("mapTerminalAgentEvent", () => {
       ).toBe("review_plan");
     });
 
+    it("maps PreToolUse ExitPlanMode case-insensitively (auto-accept still hits review_plan briefly)", () => {
+      expect(
+        mapTerminalAgentEvent(
+          { eventType: "PreToolUse", toolName: "exitplanmode", agent: "claude", permissionMode: "plan" },
+          "running",
+        ),
+      ).toBe("review_plan");
+    });
+
+    it("maps Notification in plan mode to review_plan (plan ready / attention)", () => {
+      expect(
+        mapTerminalAgentEvent(
+          { eventType: "Notification", agent: "claude", permissionMode: "plan" },
+          "running",
+        ),
+      ).toBe("review_plan");
+    });
+
+    it("keeps plan-mode research PreToolUse as running, not waiting_approval", () => {
+      expect(
+        mapTerminalAgentEvent(
+          { eventType: "PreToolUse", toolName: "Read", agent: "claude", permissionMode: "plan" },
+          "running",
+        ),
+      ).toBe("running");
+    });
+
+    it("after ExitPlanMode, PostToolUse returns to running (auto-execute path)", () => {
+      expect(
+        mapTerminalAgentEvent(
+          { eventType: "PostToolUse", toolName: "ExitPlanMode", agent: "claude", permissionMode: "default" },
+          "review_plan",
+        ),
+      ).toBe("running");
+    });
+
     it("maps Notification to waiting_approval", () => {
       expect(mapTerminalAgentEvent({ eventType: "Notification", agent: "claude" }, "running")).toBe("waiting_approval");
     });

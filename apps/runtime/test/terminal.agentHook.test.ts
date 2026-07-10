@@ -6,8 +6,10 @@ import { registerTerminalRoutes } from "../src/routes/terminal";
 function createFakeTerminalService() {
   const statuses = new Map<string, TerminalAgentStatus>();
   const known = new Set<string>();
+  const knownTabs = new Set<string>();
   return {
     has: vi.fn((sessionId: string) => known.has(sessionId)),
+    isKnownAgentHookSession: vi.fn(async (sessionId: string) => known.has(sessionId) || knownTabs.has(sessionId)),
     getAgentStatus: vi.fn((sessionId: string) => statuses.get(sessionId)),
     setAgentStatus: vi.fn((sessionId: string, status: TerminalAgentStatus) => {
       if (statuses.get(sessionId) === status) return false;
@@ -18,6 +20,7 @@ function createFakeTerminalService() {
       [...statuses.entries()].map(([sessionId, status]) => ({ sessionId, status })),
     ),
     __addKnown: (sessionId: string) => known.add(sessionId),
+    __addKnownTab: (sessionId: string) => knownTabs.add(sessionId),
     __statuses: statuses,
   };
 }
@@ -79,6 +82,25 @@ describe("POST /terminal/agent-hook", () => {
     });
     expect(res.statusCode).toBe(204);
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("accepts hooks for a persisted terminal tab even when the PTY is not live", async () => {
+    terminalService.__addKnownTab("wt1:terminal:tab-only");
+    const res = await app.inject({
+      method: "POST",
+      url: "/terminal/agent-hook",
+      payload: { sessionId: "wt1:terminal:tab-only", eventType: "UserPromptSubmit", agent: "claude" },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(terminalService.__statuses.get("wt1:terminal:tab-only")).toBe("running");
+    expect(emit).toHaveBeenCalledWith(
+      "terminal.agent.status",
+      expect.objectContaining({
+        terminalSessionId: "wt1:terminal:tab-only",
+        terminalAgentStatus: "running",
+        worktreeId: "wt1",
+      }),
+    );
   });
 
   it("returns 204 without throwing for a malformed body", async () => {

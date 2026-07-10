@@ -3,7 +3,9 @@ import {
   __resetTerminalAgentStatusStoreForTest,
   applyTerminalAgentStatusEvent,
   getTerminalAgentStatus,
+  getWorktreeTerminalAgentStatus,
   hydrateTerminalAgentStatuses,
+  mergeWorktreeStatusWithTerminalAgent,
   setTerminalAgentStatuses,
   subscribeTerminalAgentStatus,
 } from "./useTerminalAgentStatus";
@@ -72,5 +74,32 @@ describe("terminal agent status store", () => {
       .mockResolvedValue([{ sessionId: "s1", status: "review_plan" }]);
     await hydrateTerminalAgentStatuses({ getTerminalAgentStatuses } as never);
     expect(getTerminalAgentStatus("s1")).toBe("review_plan");
+  });
+
+  it("rolls up the highest-priority terminal status for a worktree", () => {
+    setTerminalAgentStatuses([
+      { sessionId: "wt1:terminal:a", status: "running" },
+      { sessionId: "wt1:terminal:b", status: "waiting_approval" },
+      { sessionId: "wt2:terminal:a", status: "running" },
+    ]);
+    expect(getWorktreeTerminalAgentStatus("wt1")).toBe("waiting_approval");
+    expect(getWorktreeTerminalAgentStatus("wt2")).toBe("running");
+    expect(getWorktreeTerminalAgentStatus("wt3")).toBeUndefined();
+  });
+
+  it("merges terminal status into worktree summary without clobbering higher thread priority", () => {
+    expect(
+      mergeWorktreeStatusWithTerminalAgent(
+        { kind: "idle", threadId: null },
+        "running",
+      ),
+    ).toEqual({ kind: "running", threadId: null });
+
+    expect(
+      mergeWorktreeStatusWithTerminalAgent(
+        { kind: "waiting_approval", threadId: "t1" },
+        "running",
+      ),
+    ).toEqual({ kind: "waiting_approval", threadId: "t1" });
   });
 });

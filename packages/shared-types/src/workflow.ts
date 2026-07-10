@@ -822,6 +822,8 @@ export const TerminalAgentHookEventSchema = z.object({
   sessionId: z.string().min(1),
   eventType: z.string().min(1),
   toolName: z.string().optional(),
+  /** Claude/Codex permission mode from hook stdin (`plan`, `default`, …). */
+  permissionMode: z.string().optional(),
   agent: z.enum(["claude", "codex", "opencode"]),
 });
 export type TerminalAgentHookEvent = z.infer<typeof TerminalAgentHookEventSchema>;

@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 // Claude Code lifecycle events we wire to the status hook. The script reads the
@@ -16,18 +17,83 @@ const CLAUDE_EVENTS = [
 // Tool-scoped events take a matcher; the rest are session/turn events.
 const CLAUDE_MATCHER_EVENTS = new Set(["PreToolUse", "PostToolUse"]);
 
-interface ClaudeHookEntry {
+// Codex native hooks.json (v0.142+) uses the same Claude-style event names and
+// stdin JSON with hook_event_name. PermissionRequest is Codex-native for
+// approval prompts. Project hooks work for normal repos; git worktrees ignore
+// project-layer hooks (codex#27133), so we also merge into user-global
+// $CODEX_HOME/hooks.json. The notify script no-ops without CS_TERMINAL_SESSION_ID.
+const CODEX_EVENTS = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+] as const;
+
+const CODEX_MATCHER_EVENTS = new Set(["PreToolUse", "PostToolUse", "PermissionRequest"]);
+
+interface CommandHookEntry {
     type: "command";
     command: string;
 }
 
-interface ClaudeHookGroup {
+interface HookGroup {
     matcher?: string;
-    hooks: ClaudeHookEntry[];
+    hooks: CommandHookEntry[];
 }
 
-function groupHasCommand(group: ClaudeHookGroup, command: string): boolean {
+function groupHasCommand(group: HookGroup, command: string): boolean {
     return (group.hooks ?? []).some((hook) => hook?.command === command);
+}
+
+function shellQuote(value: string): string {
+    return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function buildCodexHookCommand(scriptPath: string): string {
+    return `CS_AGENT_ID=codex ${shellQuote(scriptPath)}`;
+}
+
+function resolveCodexHome(): string {
+    const fromEnv = process.env.CODEX_HOME?.trim();
+    return fromEnv && fromEnv.length > 0 ? fromEnv : join(homedir(), ".codex");
+}
+
+function mergeHooksJsonFile(
+    hooksPath: string,
+    events: readonly string[],
+    matcherEvents: Set<string>,
+    command: string,
+): void {
+    let document: Record<string, unknown> = {};
+    if (existsSync(hooksPath)) {
+        try {
+            document = JSON.parse(readFileSync(hooksPath, "utf8")) as Record<string, unknown>;
+        } catch {
+            document = {};
+        }
+    }
+
+    const hooks = (document.hooks && typeof document.hooks === "object"
+        ? (document.hooks as Record<string, HookGroup[]>)
+        : {}) as Record<string, HookGroup[]>;
+
+    for (const event of events) {
+        const groups = Array.isArray(hooks[event]) ? hooks[event] : [];
+        const alreadyWired = groups.some((group) => groupHasCommand(group, command));
+        if (!alreadyWired) {
+            const group: HookGroup = { hooks: [{ type: "command", command }] };
+            if (matcherEvents.has(event)) {
+                group.matcher = "*";
+            }
+            groups.push(group);
+        }
+        hooks[event] = groups;
+    }
+
+    document.hooks = hooks;
+    writeFileSync(hooksPath, `${JSON.stringify(document, null, 2)}\n`, "utf8");
 }
 
 function ensureClaudeSettings(worktreeCwd: string, scriptPath: string): void {
@@ -44,14 +110,14 @@ function ensureClaudeSettings(worktreeCwd: string, scriptPath: string): void {
     }
 
     const hooks = (settings.hooks && typeof settings.hooks === "object"
-        ? (settings.hooks as Record<string, ClaudeHookGroup[]>)
-        : {}) as Record<string, ClaudeHookGroup[]>;
+        ? (settings.hooks as Record<string, HookGroup[]>)
+        : {}) as Record<string, HookGroup[]>;
 
     for (const event of CLAUDE_EVENTS) {
         const groups = Array.isArray(hooks[event]) ? hooks[event] : [];
         const alreadyWired = groups.some((group) => groupHasCommand(group, scriptPath));
         if (!alreadyWired) {
-            const group: ClaudeHookGroup = { hooks: [{ type: "command", command: scriptPath }] };
+            const group: HookGroup = { hooks: [{ type: "command", command: scriptPath }] };
             if (CLAUDE_MATCHER_EVENTS.has(event)) {
                 group.matcher = "*";
             }
@@ -108,11 +174,40 @@ function ensureOpencodePlugin(worktreeCwd: string, scriptPath: string): void {
     writeFileSync(join(pluginDir, "cs-agent-status.js"), buildOpencodePlugin(scriptPath), "utf8");
 }
 
+function ensureCodexHooks(worktreeCwd: string, scriptPath: string): void {
+    const command = buildCodexHookCommand(scriptPath);
+
+    // Project-local: works for normal git checkouts; ignored inside git worktrees.
+    const projectCodexDir = join(worktreeCwd, ".codex");
+    mkdirSync(projectCodexDir, { recursive: true });
+    mergeHooksJsonFile(
+        join(projectCodexDir, "hooks.json"),
+        CODEX_EVENTS,
+        CODEX_MATCHER_EVENTS,
+        command,
+    );
+
+    // User-global: required for git worktrees (project hooks silently ignored).
+    // Env-guarded script makes this safe outside CodeSymphony terminals.
+    const codexHome = resolveCodexHome();
+    mkdirSync(codexHome, { recursive: true });
+    mergeHooksJsonFile(
+        join(codexHome, "hooks.json"),
+        CODEX_EVENTS,
+        CODEX_MATCHER_EVENTS,
+        command,
+    );
+}
+
 /**
- * Wire the supported agent CLIs (Claude Code, OpenCode) in a worktree so they
- * report lifecycle status back to the runtime. Best-effort and idempotent;
- * never throws (a failed write must not break terminal spawn). Codex is wired
- * separately via the bundled ZDOTDIR `codex` shell function.
+ * Wire the supported agent CLIs (Claude Code, OpenCode, Codex) in a worktree so
+ * they report lifecycle status back to the runtime. Best-effort and idempotent;
+ * never throws (a failed write must not break terminal spawn).
+ *
+ * Codex also merges into user-global $CODEX_HOME/hooks.json because project
+ * hooks are ignored when Codex runs inside a git worktree. The bundled ZDOTDIR
+ * `codex` shell function only adds `--dangerously-bypass-hook-trust` so the
+ * injected hooks run without an interactive trust prompt.
  */
 export function ensureAgentHookConfigs(worktreeCwd: string, scriptPath: string): void {
     try {
@@ -122,6 +217,11 @@ export function ensureAgentHookConfigs(worktreeCwd: string, scriptPath: string):
     }
     try {
         ensureOpencodePlugin(worktreeCwd, scriptPath);
+    } catch {
+        // best-effort
+    }
+    try {
+        ensureCodexHooks(worktreeCwd, scriptPath);
     } catch {
         // best-effort
     }

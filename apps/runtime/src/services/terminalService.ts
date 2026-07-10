@@ -162,6 +162,25 @@ function resolveAgentHookUrl(): string {
     return `http://127.0.0.1:${port}/api/terminal/agent-hook`;
 }
 
+
+function maybeEnsureAgentHookConfigs(sessionId: string, resolvedCwd: string): void {
+    if (!isAgentStatusInjectionEnabled()) {
+        return;
+    }
+    const sessionWorktreeId = resolveWorktreeId(sessionId);
+    if (
+        !sessionWorktreeId
+        || resolvedCwd === process.env.HOME
+        || resolvedCwd === "/"
+    ) {
+        return;
+    }
+    const scriptPath = resolveAgentHookScriptPath();
+    if (scriptPath) {
+        ensureAgentHookConfigs(resolvedCwd, scriptPath);
+    }
+}
+
 function buildTerminalEnv(sessionId?: string): Record<string, string> {
     const merged = buildClaudeRuntimeEnv(process.env) as Record<string, string>;
     // Cursor/Zed/agent parents set NO_COLOR=1; shell rc often re-applies when CURSOR_AGENT leaks in.
@@ -426,6 +445,10 @@ export function createTerminalService(prisma: PrismaClient, options: TerminalSer
             && existing.requestedCwd === normalizedCwd
             && (existing.active || !isWorkspaceTerminalSessionId(sessionId));
         if (shouldReuseExisting) {
+            // Env on the live PTY is fixed at first spawn, but rewrite hook
+            // config files so a terminal opened before the feature (or before a
+            // worktree checkout) still picks up Claude/OpenCode/Codex hooks.
+            maybeEnsureAgentHookConfigs(sessionId, existing.resolvedCwd);
             return existing;
         }
 
@@ -439,22 +462,9 @@ export function createTerminalService(prisma: PrismaClient, options: TerminalSer
         existing?.emulator.dispose();
 
         const { ptyProcess, resolvedCwd } = spawnProcess(sessionId, normalizedCwd, options);
-
         const sessionWorktreeId = resolveWorktreeId(sessionId);
 
-        // Wire agent-status hooks into the worktree so CLIs report lifecycle
-        // back to the runtime. Only for real worktree dirs — never $HOME or "/".
-        if (
-            isAgentStatusInjectionEnabled()
-            && sessionWorktreeId
-            && resolvedCwd !== process.env.HOME
-            && resolvedCwd !== "/"
-        ) {
-            const scriptPath = resolveAgentHookScriptPath();
-            if (scriptPath) {
-                ensureAgentHookConfigs(resolvedCwd, scriptPath);
-            }
-        }
+        maybeEnsureAgentHookConfigs(sessionId, resolvedCwd);
 
         const emulator = new HeadlessEmulator({
             cols: existing?.lastResize?.cols ?? 80,
@@ -726,6 +736,22 @@ export function createTerminalService(prisma: PrismaClient, options: TerminalSer
         return sessions.has(sessionId);
     }
 
+    /**
+     * Accept agent-hook posts for live PTYs OR persisted terminal tabs. Hooks
+     * can race a brief disconnect / bun --watch restart; dropping them leaves
+     * the worktree braille stuck idle even though the tab still exists.
+     */
+    async function isKnownAgentHookSession(sessionId: string): Promise<boolean> {
+        if (sessions.has(sessionId)) {
+            return true;
+        }
+        const tab = await prisma.terminalTab.findFirst({
+            where: { sessionId },
+            select: { id: true },
+        });
+        return tab != null;
+    }
+
     function listResourceSessions(): Array<{
         sessionId: string;
         pid: number;
@@ -895,6 +921,7 @@ export function createTerminalService(prisma: PrismaClient, options: TerminalSer
         addExitListener,
         kill,
         has,
+        isKnownAgentHookSession,
         listResourceSessions,
         listSessions,
         getScrollback,

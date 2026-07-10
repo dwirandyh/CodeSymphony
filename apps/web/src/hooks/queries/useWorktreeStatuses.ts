@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useSyncExternalStore } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import type { ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
@@ -11,6 +11,12 @@ import {
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
 import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "./useThreads";
 import { pickStatusSnapshotCandidateIds } from "./worktreeStatusSnapshotCandidates";
+import {
+  getTerminalAgentStatusStoreVersion,
+  getWorktreeTerminalAgentStatus,
+  mergeWorktreeStatusWithTerminalAgent,
+  subscribeTerminalAgentStatus,
+} from "../../pages/workspace/hooks/useTerminalAgentStatus";
 
 export function useWorktreeStatuses(
   repositories: Repository[],
@@ -26,6 +32,12 @@ export function useWorktreeStatuses(
     enabled: enabled && threadSnapshot == null,
   });
   const { threadsByWorktreeId, threadIds } = threadSnapshot ?? ownedThreadSnapshot;
+
+  // Re-render when any terminal agent status changes so worktree braille updates.
+  const terminalAgentStatusVersion = useSyncExternalStore(
+    subscribeTerminalAgentStatus,
+    getTerminalAgentStatusStoreVersion,
+  );
 
   const prevThreadIdsRef = useRef<string[]>([]);
   const stableThreadIds = useMemo(() => {
@@ -93,10 +105,14 @@ export function useWorktreeStatuses(
           status: (snapshotResult[thread.id]?.status ?? null) as WorktreeThreadUiStatus | null,
         })),
       );
+      const withTerminal = mergeWorktreeStatusWithTerminalAgent(
+        summary,
+        getWorktreeTerminalAgentStatus(worktreeId),
+      );
 
-      return [worktreeId, summary] as const;
+      return [worktreeId, withTerminal] as const;
     });
 
     return Object.fromEntries(entries);
-  }, [activeWorktreeIds, snapshotResult, threadsByWorktreeId]);
+  }, [activeWorktreeIds, snapshotResult, terminalAgentStatusVersion, threadsByWorktreeId]);
 }

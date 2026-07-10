@@ -626,8 +626,8 @@ export const api = {
   },
   listTerminalSessions: () => request<TerminalSessionInfo[]>("/terminal/sessions"),
   getTerminalAgentStatuses: async (): Promise<TerminalAgentStatusSnapshot[]> => {
-    const response = await request<{ data: TerminalAgentStatusSnapshot[] }>("/terminal/agent-status");
-    return response.data;
+    // `request` already unwraps the `{ data: T }` envelope.
+    return request<TerminalAgentStatusSnapshot[]>("/terminal/agent-status");
   },
   listTerminalTabs: (worktreeId?: string) =>
     request<TerminalTab[]>(

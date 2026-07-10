@@ -420,13 +420,14 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
         if (!parsed.success) {
             return reply.code(204).send();
         }
-        const { sessionId, eventType, toolName, agent } = parsed.data;
-        if (!app.terminalService.has(sessionId)) {
+        const { sessionId, eventType, toolName, permissionMode, agent } = parsed.data;
+        // Live PTY or a persisted terminal tab (hooks can outlive a brief reconnect).
+        if (!(await app.terminalService.isKnownAgentHookSession(sessionId))) {
             return reply.code(204).send();
         }
 
         const next = mapTerminalAgentEvent(
-            { eventType, toolName, agent },
+            { eventType, toolName, permissionMode, agent },
             app.terminalService.getAgentStatus(sessionId),
         );
         if (app.terminalService.setAgentStatus(sessionId, next)) {

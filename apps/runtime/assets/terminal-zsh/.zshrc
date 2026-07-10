@@ -40,48 +40,20 @@ if [[ -n "${ZSH_VERSION:-}" ]]; then
   fi
 fi
 
-# CodeSymphony Codex agent-status shim. Codex's native `notify` only reports
-# completion, so we also tail its TUI session log for turn-start / approval
-# events and forward them to the runtime hook script. Only active inside a
-# workspace terminal (CS_TERMINAL_SESSION_ID + CS_AGENT_HOOK_SCRIPT set).
+# CodeSymphony Codex agent-status shim. Codex v0.142+ has native hooks.json
+# (wired by ensureCodexHooks into project + $CODEX_HOME). Project hooks are
+# ignored inside git worktrees, so user-global is the reliable path. This
+# wrapper only bypasses the interactive hook-trust prompt for app terminals;
+# the notify script still no-ops without CS_TERMINAL_SESSION_ID.
 if [[ -n "${CS_TERMINAL_SESSION_ID:-}" && -n "${CS_AGENT_HOOK_SCRIPT:-}" ]]; then
   codex() {
-    local real_bin
-    real_bin="$(command -v codex 2>/dev/null)"
-    if [[ -z "$real_bin" || "$real_bin" == "codex" ]]; then
-      real_bin="${CODEX_BINARY_PATH:-codex}"
+    local real_bin="${CODEX_BINARY_PATH:-}"
+    if [[ -z "$real_bin" ]]; then
+      real_bin="$(whence -p codex 2>/dev/null || true)"
     fi
-
-    local notify="$CS_AGENT_HOOK_SCRIPT"
-    local session_log="${TMPDIR:-/tmp}/cs-codex-session-$$-$RANDOM.jsonl"
-    export CODEX_TUI_RECORD_SESSION="${CODEX_TUI_RECORD_SESSION:-1}"
-    export CODEX_TUI_SESSION_LOG_PATH="$session_log"
-
-    local watcher_pid=""
-    (
-      local i=0
-      while [[ ! -f "$session_log" && $i -lt 200 ]]; do
-        i=$((i + 1)); sleep 0.1
-      done
-      [[ -f "$session_log" ]] || exit 0
-      tail -n +1 -F "$session_log" 2>/dev/null | while IFS= read -r line; do
-        case "$line" in
-          *'"dir":"from_tui"'*'"kind":"op"'*'"UserTurn"'*)
-            CS_AGENT_ID=codex bash "$notify" '{"type":"task_started"}' >/dev/null 2>&1 || true ;;
-          *'_approval_request"'*)
-            CS_AGENT_ID=codex bash "$notify" '{"type":"exec_approval_request"}' >/dev/null 2>&1 || true ;;
-        esac
-      done
-    ) 2>/dev/null &
-    watcher_pid=$!
-
-    CS_AGENT_ID=codex "$real_bin" --enable hooks -c "notify=[\"bash\",\"$notify\"]" "$@"
-    local status=$?
-
-    if [[ -n "$watcher_pid" ]]; then
-      kill "$watcher_pid" >/dev/null 2>&1 || true
+    if [[ -z "$real_bin" ]]; then
+      real_bin="codex"
     fi
-    rm -f "$session_log" >/dev/null 2>&1 || true
-    return $status
+    CS_AGENT_ID=codex "$real_bin" --dangerously-bypass-hook-trust "$@"
   }
 fi

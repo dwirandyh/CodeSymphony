@@ -29,6 +29,8 @@ fi
 [ -n "$EVENT_TYPE" ] || exit 0
 
 TOOL_NAME="$(printf '%s' "$INPUT" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+# Claude stdin also carries permission_mode (plan | default | acceptEdits | …).
+PERMISSION_MODE="$(printf '%s' "$INPUT" | sed -n 's/.*"permission_mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 AGENT="${CS_AGENT_ID:-claude}"
 
 json_escape() {
@@ -38,6 +40,9 @@ json_escape() {
 PAYLOAD="{\"sessionId\":\"$(json_escape "$CS_TERMINAL_SESSION_ID")\",\"eventType\":\"$(json_escape "$EVENT_TYPE")\""
 if [ -n "$TOOL_NAME" ]; then
   PAYLOAD="$PAYLOAD,\"toolName\":\"$(json_escape "$TOOL_NAME")\""
+fi
+if [ -n "$PERMISSION_MODE" ]; then
+  PAYLOAD="$PAYLOAD,\"permissionMode\":\"$(json_escape "$PERMISSION_MODE")\""
 fi
 PAYLOAD="$PAYLOAD,\"agent\":\"$(json_escape "$AGENT")\"}"
 
