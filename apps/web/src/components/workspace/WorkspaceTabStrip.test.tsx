@@ -7,7 +7,7 @@ import {
   EDITOR_TAB_DRAG_MIME,
   writeEditorTabDragData,
 } from "./editorTabDrag";
-import { WorkspaceTabStrip } from "./WorkspaceTabStrip";
+import { resolveSessionTabScrollLeft, WorkspaceTabStrip } from "./WorkspaceTabStrip";
 
 function dispatchDragEvent(
   target: HTMLElement,
@@ -274,5 +274,257 @@ describe("WorkspaceTabStrip drag and drop", () => {
 
     expect(onTabDragStart).toHaveBeenCalled();
     expect(onTabDragEnd).toHaveBeenCalled();
+  });
+});
+
+describe("resolveSessionTabScrollLeft", () => {
+  it("returns null when the selected tab is safely inside the strip", () => {
+    expect(
+      resolveSessionTabScrollLeft({
+        currentScrollLeft: 40,
+        regionWidth: 320,
+        scrollWidth: 800,
+        selectedLeftInRegion: 100,
+        selectedWidth: 120,
+        edgeInsetPx: 64,
+      }),
+    ).toBeNull();
+  });
+
+  it("centers a tab that sits past the right edge inset", () => {
+    const next = resolveSessionTabScrollLeft({
+      currentScrollLeft: 0,
+      regionWidth: 320,
+      scrollWidth: 800,
+      selectedLeftInRegion: 260,
+      selectedWidth: 140,
+      edgeInsetPx: 64,
+    });
+    // selected center at 330 → target scroll 330 - 160 = 170
+    expect(next).toBe(170);
+  });
+
+  it("clamps to the max scroll when the last tab cannot be centered", () => {
+    const next = resolveSessionTabScrollLeft({
+      currentScrollLeft: 100,
+      regionWidth: 320,
+      scrollWidth: 500,
+      selectedLeftInRegion: 280,
+      selectedWidth: 140,
+      edgeInsetPx: 64,
+    });
+    expect(next).toBe(180);
+  });
+});
+
+describe("WorkspaceTabStrip auto-scroll", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    clearActiveEditorTabDragPayload();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    clearActiveEditorTabDragPayload();
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  function mockEdgeGeometry() {
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function getBoundingClientRect(
+      this: HTMLElement,
+    ) {
+      if (this instanceof HTMLDivElement && this.dataset.testid === "session-tabs-scroll") {
+        return {
+          x: 0,
+          y: 0,
+          width: 320,
+          height: 40,
+          top: 0,
+          right: 320,
+          bottom: 40,
+          left: 0,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+
+      if (
+        this instanceof HTMLButtonElement
+        && this.getAttribute("role") === "tab"
+        && this.getAttribute("aria-selected") === "true"
+      ) {
+        return {
+          x: 260,
+          y: 0,
+          width: 140,
+          height: 32,
+          top: 0,
+          right: 400,
+          bottom: 32,
+          left: 260,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+
+      return originalGetBoundingClientRect.call(this);
+    });
+  }
+
+  it("auto-scrolls via scrollLeft and never calls scrollIntoView", async () => {
+    mockEdgeGeometry();
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    const manyTabs: TabItem[] = [
+      { type: "chat", id: "thread-1" },
+      { type: "chat", id: "thread-2" },
+      { type: "chat", id: "thread-3" },
+      { type: "chat", id: "thread-4" },
+    ];
+
+    const threadProps = manyTabs.map((tab) => ({
+      id: tab.id,
+      title: tab.id,
+      worktreeId: "wt",
+      status: "idle",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })) as never;
+
+    // Mount without auto-scroll so metrics can be attached before the first snap.
+    act(() => {
+      root.render(
+        <WorkspaceTabStrip
+          groupId="topLeft"
+          tabs={manyTabs}
+          activeTabId="thread-4"
+          threads={threadProps}
+          terminalTabs={[]}
+          fileTabs={[]}
+          enableScrollIntoView={false}
+          onSelectTab={() => {}}
+          onCloseTab={() => {}}
+        />,
+      );
+    });
+    await Promise.resolve();
+
+    const scrollRegion = container.querySelector('[data-testid="session-tabs-scroll"]') as HTMLDivElement;
+    Object.defineProperty(scrollRegion, "scrollWidth", { configurable: true, value: 800 });
+    Object.defineProperty(scrollRegion, "clientWidth", { configurable: true, value: 320 });
+    scrollRegion.scrollLeft = 0;
+
+    act(() => {
+      root.render(
+        <WorkspaceTabStrip
+          groupId="topLeft"
+          tabs={manyTabs}
+          activeTabId="thread-4"
+          threads={threadProps}
+          terminalTabs={[]}
+          fileTabs={[]}
+          enableScrollIntoView
+          onSelectTab={() => {}}
+          onCloseTab={() => {}}
+        />,
+      );
+    });
+    await Promise.resolve();
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    // selected center 330 in 320-wide region from scrollLeft 0 → 170
+    expect(scrollRegion.scrollLeft).toBe(170);
+  });
+
+  it("does not re-snap scroll when tabs array identity churns for the same selection", async () => {
+    mockEdgeGeometry();
+
+    const manyTabs: TabItem[] = [
+      { type: "chat", id: "thread-1" },
+      { type: "chat", id: "thread-2" },
+      { type: "chat", id: "thread-3" },
+      { type: "chat", id: "thread-4" },
+    ];
+
+    const renderStrip = (tabList: TabItem[]) => (
+      <WorkspaceTabStrip
+        groupId="topLeft"
+        tabs={tabList}
+        activeTabId="thread-4"
+        threads={tabList.map((tab) => ({
+          id: tab.id,
+          title: tab.id,
+          worktreeId: "wt",
+          status: "idle",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        })) as never}
+        terminalTabs={[]}
+        fileTabs={[]}
+        enableScrollIntoView
+        onSelectTab={() => {}}
+        onCloseTab={() => {}}
+      />
+    );
+
+    act(() => {
+      root.render(renderStrip(manyTabs));
+    });
+    await Promise.resolve();
+
+    const scrollRegion = container.querySelector('[data-testid="session-tabs-scroll"]') as HTMLDivElement;
+    Object.defineProperty(scrollRegion, "scrollWidth", { configurable: true, value: 800 });
+    Object.defineProperty(scrollRegion, "clientWidth", { configurable: true, value: 320 });
+
+    // Force a selection change so auto-scroll applies with mocked scroll metrics.
+    act(() => {
+      root.render(
+        <WorkspaceTabStrip
+          groupId="topLeft"
+          tabs={manyTabs}
+          activeTabId="thread-1"
+          threads={manyTabs.map((tab) => ({
+            id: tab.id,
+            title: tab.id,
+            worktreeId: "wt",
+            status: "idle",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          })) as never}
+          terminalTabs={[]}
+          fileTabs={[]}
+          enableScrollIntoView
+          onSelectTab={() => {}}
+          onCloseTab={() => {}}
+        />,
+      );
+    });
+    await Promise.resolve();
+
+    act(() => {
+      root.render(renderStrip([...manyTabs]));
+    });
+    await Promise.resolve();
+
+    scrollRegion.scrollLeft = 42;
+
+    // Churn tabs identity many times with the same active tab — must not yank scroll.
+    for (let i = 0; i < 8; i++) {
+      act(() => {
+        root.render(renderStrip(manyTabs.map((tab) => ({ ...tab }))));
+      });
+      await Promise.resolve();
+    }
+
+    expect(scrollRegion.scrollLeft).toBe(42);
   });
 });

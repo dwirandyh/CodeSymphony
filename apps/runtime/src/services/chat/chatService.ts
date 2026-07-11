@@ -761,65 +761,6 @@ export function createChatService(deps: RuntimeDeps) {
     return threadRuns.has(threadId);
   }
 
-  const threadWorktreeIds = new Map<string, string>();
-
-  async function rememberThreadWorktreeId(threadId: string, worktreeId?: string | null): Promise<string | null> {
-    if (worktreeId) {
-      threadWorktreeIds.set(threadId, worktreeId);
-      return worktreeId;
-    }
-
-    const cached = threadWorktreeIds.get(threadId);
-    if (cached) {
-      return cached;
-    }
-
-    const thread = await deps.prisma.chatThread.findUnique({
-      where: { id: threadId },
-      select: { worktreeId: true },
-    });
-    if (!thread) {
-      return null;
-    }
-
-    threadWorktreeIds.set(threadId, thread.worktreeId);
-    return thread.worktreeId;
-  }
-
-  async function findConflictingWorktreeRun(worktreeId: string, excludingThreadId: string): Promise<string | null> {
-    for (const [threadId] of threadRuns.entries()) {
-      if (threadId === excludingThreadId) {
-        continue;
-      }
-
-      const candidateWorktreeId = await rememberThreadWorktreeId(threadId);
-      if (candidateWorktreeId === worktreeId) {
-        return threadId;
-      }
-    }
-
-    return null;
-  }
-
-  async function assertWorktreeAssistantAvailable(worktreeId: string, threadId: string): Promise<void> {
-    const conflictingThreadId = await findConflictingWorktreeRun(worktreeId, threadId);
-    if (!conflictingThreadId) {
-      return;
-    }
-
-    appendRuntimeDebugLog({
-      source: "runtime.chat.worktree-guard",
-      message: "worktree.assistant.busy",
-      data: {
-        worktreeId,
-        threadId,
-        conflictingThreadId,
-      },
-    });
-
-    throw new Error("Another thread in this worktree is already running or waiting for user input");
-  }
-
   function hasPendingPermissionRequests(threadId: string): boolean {
     const pendingMap = pendingPermissionsByThread.get(threadId);
     if (!pendingMap) {
@@ -1550,14 +1491,6 @@ export function createChatService(deps: RuntimeDeps) {
         return;
       }
 
-      const queuedThread = await deps.prisma.chatThread.findUnique({
-        where: { id: threadId },
-        select: { worktreeId: true },
-      });
-      if (queuedThread) {
-        await assertWorktreeAssistantAvailable(queuedThread.worktreeId, threadId);
-      }
-
       const nextQueued = await getNextQueuedMessage(threadId);
       if (!nextQueued) {
         return;
@@ -1838,7 +1771,6 @@ export function createChatService(deps: RuntimeDeps) {
 
       const worktreePath = thread.worktree.path;
       const threadWorktreeId = thread.worktreeId;
-      threadWorktreeIds.set(threadId, threadWorktreeId);
       threadWorktreePath = worktreePath;
       const autoAcceptTools = options?.autoAcceptTools ?? thread.permissionMode === "full_access";
       logRunDebug("runAssistant.threadLoaded", {
@@ -3677,7 +3609,6 @@ export function createChatService(deps: RuntimeDeps) {
         });
         throw new Error("Assistant is still processing the previous message");
       }
-      await assertWorktreeAssistantAvailable(thread.worktreeId, threadId);
       setThreadRunState(threadId, { status: "scheduled", mode: input.mode });
       appendRuntimeDebugLog({
         source: "runtime.chat.send",

@@ -121,7 +121,7 @@ async function waitForEvent(
   throw new Error("Timed out waiting for matching event");
 }
 
-describe("chatService worktree assistant guard", () => {
+describe("chatService multi-thread worktree concurrency", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     await resetDatabase();
@@ -131,7 +131,72 @@ describe("chatService worktree assistant guard", () => {
     await prisma.$disconnect();
   });
 
-  it("rejects starting a second thread while another thread in the same worktree is still active", async () => {
+  it("allows starting a second thread while another thread in the same worktree is still active", async () => {
+    let releaseRunningThread: (() => void) | null = null;
+    let releaseSecondThread: (() => void) | null = null;
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ prompt, onText }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await onText("Thread title");
+        return { output: "Thread title", sessionId: null };
+      }
+
+      if (prompt.includes("RUNNING_THREAD_MARKER")) {
+        await onText("Running");
+        await new Promise<void>((resolve) => {
+          releaseRunningThread = resolve;
+        });
+        return { output: "Running", sessionId: "session-running" };
+      }
+
+      if (prompt.includes("SECOND_THREAD_MARKER")) {
+        await onText("Second");
+        await new Promise<void>((resolve) => {
+          releaseSecondThread = resolve;
+        });
+        return { output: "Second", sessionId: "session-second" };
+      }
+
+      throw new Error(`Unexpected prompt: ${prompt}`);
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { runningThreadId, secondThreadId } = await seedWorktreeWithThreads();
+
+    const runningSend = chatService.sendMessage(runningThreadId, {
+      content: "RUNNING_THREAD_MARKER",
+      mode: "default",
+    });
+
+    await waitForEvent(
+      chatService,
+      runningThreadId,
+      (event) => event.type === "message.delta" && event.payload.role === "assistant",
+    );
+
+    const secondSend = chatService.sendMessage(secondThreadId, {
+      content: "SECOND_THREAD_MARKER",
+      mode: "default",
+    });
+
+    await waitForEvent(
+      chatService,
+      secondThreadId,
+      (event) => event.type === "message.delta" && event.payload.role === "assistant",
+    );
+
+    releaseRunningThread?.();
+    releaseSecondThread?.();
+    await Promise.all([runningSend, secondSend]);
+  });
+
+  it("keeps status-snapshot/timeline readable on an idle thread while a sibling thread is active", async () => {
     let releaseRunningThread: (() => void) | null = null;
 
     const claudeRunner: ClaudeRunner = vi.fn(async ({ prompt, onText }) => {
@@ -171,16 +236,18 @@ describe("chatService worktree assistant guard", () => {
       (event) => event.type === "message.delta" && event.payload.role === "assistant",
     );
 
-    await expect(chatService.sendMessage(secondThreadId, {
-      content: "SECOND_THREAD_MARKER",
-      mode: "default",
-    })).rejects.toThrow("Another thread in this worktree is already running or waiting for user input");
+    await expect(chatService.listThreadStatusSnapshot(secondThreadId)).resolves.toMatchObject({
+      status: "idle",
+    });
+    await expect(chatService.listThreadSnapshot(secondThreadId, { includeCollections: false }))
+      .resolves.toBeTruthy();
+    await expect(chatService.listQueuedMessages(secondThreadId)).resolves.toEqual([]);
 
     releaseRunningThread?.();
     await runningSend;
   });
 
-  it("rejects starting a second thread while the first thread is waiting on a permission gate", async () => {
+  it("allows starting a second thread while the first thread is waiting on a permission gate", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ prompt, onPermissionRequest, onText }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {
         await onText("Thread title");
@@ -199,6 +266,11 @@ describe("chatService worktree assistant guard", () => {
           launcherToolUseId: null,
         });
         return { output: "", sessionId: "session-gated" };
+      }
+
+      if (prompt.includes("SECOND_THREAD_MARKER")) {
+        await onText("Second while gated");
+        return { output: "Second while gated", sessionId: "session-second" };
       }
 
       throw new Error(`Unexpected prompt: ${prompt}`);
@@ -227,7 +299,11 @@ describe("chatService worktree assistant guard", () => {
     await expect(chatService.sendMessage(secondThreadId, {
       content: "SECOND_THREAD_MARKER",
       mode: "default",
-    })).rejects.toThrow("Another thread in this worktree is already running or waiting for user input");
+    })).resolves.toMatchObject({
+      role: "user",
+    });
+
+    await waitForTerminalEvent(chatService, secondThreadId);
 
     await chatService.resolvePermission(runningThreadId, {
       requestId: "perm-guard-1",

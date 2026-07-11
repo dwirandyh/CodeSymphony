@@ -534,8 +534,8 @@ export function WorkspaceHeader({
 
       <div
         className={cn(
-          "flex gap-1",
-          splitTabStrips ? "relative w-full min-w-0 shrink-0 items-center" : "items-center",
+          "flex min-w-0 gap-1",
+          splitTabStrips ? "relative w-full shrink-0 items-center" : "w-full items-center",
         )}
       >
         {splitTabStrips ? (

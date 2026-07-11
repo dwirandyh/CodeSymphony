@@ -425,7 +425,7 @@ describe("WorkspaceHeader", () => {
     expect(container.querySelector('button[aria-label="Close session Plan handoff"]')).not.toBeNull();
   });
 
-  it("recenters the selected thread tab when it renders too close to the tab-strip edge", async () => {
+  it("recenters the selected thread tab via local scrollLeft when it renders too close to the tab-strip edge", async () => {
     const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
     const scrollIntoView = vi.fn();
     const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
@@ -472,14 +472,25 @@ describe("WorkspaceHeader", () => {
     });
 
     try {
-      renderHeader();
+      // Header always enables auto-scroll. Mount, attach metrics, then change
+      // selection so the once-per-tab effect runs with known scroll geometry.
+      renderHeader({ selectedThreadId: "thread-2" });
       await Promise.resolve();
 
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
-      expect(scrollIntoView).toHaveBeenCalledWith({
-        block: "nearest",
-        inline: "center",
-      });
+      const scrollRegion = container.querySelector('[data-testid="session-tabs-scroll"]');
+      if (!(scrollRegion instanceof HTMLDivElement)) {
+        throw new Error("Session tab scroll region not found");
+      }
+      Object.defineProperty(scrollRegion, "scrollWidth", { configurable: true, value: 800 });
+      Object.defineProperty(scrollRegion, "clientWidth", { configurable: true, value: 320 });
+      scrollRegion.scrollLeft = 0;
+
+      renderHeader({ selectedThreadId: "thread-1" });
+      await Promise.resolve();
+
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      // Static edge mock: center 330 in 320-wide region from scrollLeft 0 → 170
+      expect(scrollRegion.scrollLeft).toBe(170);
     } finally {
       if (scrollIntoViewDescriptor) {
         Object.defineProperty(HTMLElement.prototype, "scrollIntoView", scrollIntoViewDescriptor);

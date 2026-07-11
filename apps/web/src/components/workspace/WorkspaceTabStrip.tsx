@@ -20,6 +20,37 @@ import {
 
 const SESSION_TAB_EDGE_INSET_PX = 64;
 
+/**
+ * Decide whether the tab strip should auto-scroll to keep the selected tab away
+ * from the viewport edges. Returns the next `scrollLeft`, or `null` when no
+ * adjustment is needed.
+ *
+ * Uses local scrollLeft math instead of `Element.scrollIntoView` so mobile
+ * browsers do not rubber-band ancestor overflow containers.
+ */
+export function resolveSessionTabScrollLeft(args: {
+  currentScrollLeft: number;
+  regionWidth: number;
+  scrollWidth: number;
+  /** selected.getBoundingClientRect().left - region.getBoundingClientRect().left */
+  selectedLeftInRegion: number;
+  selectedWidth: number;
+  edgeInsetPx?: number;
+}): number | null {
+  const edgeInsetPx = args.edgeInsetPx ?? SESSION_TAB_EDGE_INSET_PX;
+  const selectedRightInRegion = args.selectedLeftInRegion + args.selectedWidth;
+  const tooCloseToLeftEdge = args.selectedLeftInRegion < edgeInsetPx;
+  const tooCloseToRightEdge = selectedRightInRegion > args.regionWidth - edgeInsetPx;
+  if (!tooCloseToLeftEdge && !tooCloseToRightEdge) {
+    return null;
+  }
+
+  const selectedCenter = args.selectedLeftInRegion + args.selectedWidth / 2;
+  const target = args.currentScrollLeft + selectedCenter - args.regionWidth / 2;
+  const maxScrollLeft = Math.max(0, args.scrollWidth - args.regionWidth);
+  return Math.max(0, Math.min(maxScrollLeft, target));
+}
+
 export interface WorkspaceTabStripPendingThread {
   id: string;
   title: string;
@@ -109,6 +140,8 @@ export function WorkspaceTabStrip({
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const selectedTabRef = useRef<HTMLButtonElement | null>(null);
+  /** Prevents re-snapping when `tabs` identity churns or selected tab sits at the strip end. */
+  const lastAutoScrolledTabIdRef = useRef<string | null>(null);
 
   const isAnyThreadClosing = closingThreadId !== null;
 
@@ -206,27 +239,36 @@ export function WorkspaceTabStrip({
   }, [editingTabId]);
 
   useEffect(() => {
-    if (!enableScrollIntoView) {
+    if (!enableScrollIntoView || !activeTabId) {
       return;
     }
+    // Only auto-scroll once per selection. Re-running on every `tabs` identity
+    // change fights user horizontal panning on mobile (rubber-band / bounce).
+    if (lastAutoScrolledTabIdRef.current === activeTabId) {
+      return;
+    }
+
     const scrollRegion = scrollRef.current;
     const selected = selectedTabRef.current;
     if (!scrollRegion || !selected) {
-      return;
-    }
-    if (typeof selected.scrollIntoView !== "function") {
+      // Selected tab not mounted yet (pending thread handoff); retry when tabs update.
       return;
     }
 
     const scrollRegionRect = scrollRegion.getBoundingClientRect();
     const selectedRect = selected.getBoundingClientRect();
-    const tooCloseToLeftEdge = selectedRect.left < scrollRegionRect.left + SESSION_TAB_EDGE_INSET_PX;
-    const tooCloseToRightEdge = selectedRect.right > scrollRegionRect.right - SESSION_TAB_EDGE_INSET_PX;
-    if (!tooCloseToLeftEdge && !tooCloseToRightEdge) {
-      return;
-    }
+    const nextScrollLeft = resolveSessionTabScrollLeft({
+      currentScrollLeft: scrollRegion.scrollLeft,
+      regionWidth: scrollRegionRect.width,
+      scrollWidth: scrollRegion.scrollWidth,
+      selectedLeftInRegion: selectedRect.left - scrollRegionRect.left,
+      selectedWidth: selectedRect.width,
+    });
 
-    selected.scrollIntoView({ block: "nearest", inline: "center" });
+    if (nextScrollLeft != null && Math.abs(nextScrollLeft - scrollRegion.scrollLeft) > 0.5) {
+      scrollRegion.scrollLeft = nextScrollLeft;
+    }
+    lastAutoScrolledTabIdRef.current = activeTabId;
   }, [enableScrollIntoView, activeTabId, tabs]);
 
   function startRename(tab: TabItem, isSelected: boolean, resolved: ResolvedTab) {
@@ -341,7 +383,8 @@ export function WorkspaceTabStrip({
         onTabDragEnd?.();
       }}
       className={cn(
-        "min-w-0 overflow-x-auto overscroll-x-contain scroll-px-16 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
+        // touch-pan-x: prefer horizontal strip scrolling over parent/body rubber-band on mobile.
+        "min-w-0 touch-pan-x overflow-x-auto overscroll-x-contain scroll-px-16 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
         fillWidth ? "flex-1" : (desktopApp ? "max-w-full" : "flex-1"),
         fillWidth && !isActiveGroup && "opacity-85",
         isCrossGroupTarget && "bg-primary/5",
