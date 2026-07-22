@@ -101,19 +101,19 @@ describe("systemService", () => {
       Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
       mockExecFile.mockResolvedValueOnce({ stdout: "", stderr: "" } as never);
 
-      await service.openInApp("Cursor", "/path/to/project");
-      expect(mockExecFile).toHaveBeenCalledWith("open", ["-a", "Cursor", "/path/to/project"], expect.any(Object));
+      await service.openInApp("/Applications/Cursor.app", "/path/to/project");
+      expect(mockExecFile).toHaveBeenCalledWith("open", ["-a", "/Applications/Cursor.app", "/path/to/project"], expect.any(Object));
     });
 
     it("throws for empty target path", async () => {
-      await expect(service.openInApp("Cursor", "  ")).rejects.toThrow("Target path is required");
+      await expect(service.openInApp("/Applications/Cursor.app", "  ")).rejects.toThrow("Target path is required");
     });
 
     it("wraps exec errors", async () => {
       Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
       mockExecFile.mockRejectedValueOnce(new Error("app not found"));
 
-      await expect(service.openInApp("Unknown", "/path")).rejects.toThrow("Failed to open in Unknown");
+      await expect(service.openInApp("/Applications/Xcode.app", "/path")).rejects.toThrow("Failed to open /Applications/Xcode.app");
     });
   });
 

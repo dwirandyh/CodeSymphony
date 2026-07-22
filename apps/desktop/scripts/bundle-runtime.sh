@@ -13,14 +13,19 @@ WORKSPACE_ROOT="${DESKTOP_DIR}/../.."
 BUNDLE_DIR="$(cd "${DESKTOP_DIR}/electron" && pwd)/runtime-bundle"
 SIGN_MACOS_BINARIES_SCRIPT="${SCRIPT_DIR}/sign-macos-binaries.sh"
 WRITE_RUNTIME_BUNDLE_MANIFEST_SCRIPT="${SCRIPT_DIR}/write-runtime-bundle-manifest.mjs"
+PRUNE_CLAUDE_SDK_NATIVE_BINARIES_SCRIPT="${SCRIPT_DIR}/prune-claude-sdk-native-binaries.mjs"
+PRUNE_NODE_PTY_ARTIFACTS_SCRIPT="${SCRIPT_DIR}/prune-node-pty-artifacts.mjs"
+PRUNE_PRISMA_RUNTIME_ARTIFACTS_SCRIPT="${SCRIPT_DIR}/prune-prisma-runtime-artifacts.mjs"
 CURRENT_ARCH="$(uname -m)"
 
 case "${CURRENT_ARCH}" in
   arm64)
     PRISMA_ENGINE_SUFFIX="darwin-arm64"
+    CURRENT_PLATFORM_PREBUILD="darwin-arm64"
     ;;
   x86_64)
     PRISMA_ENGINE_SUFFIX="darwin"
+    CURRENT_PLATFORM_PREBUILD="darwin-x64"
     ;;
   *)
     echo "Unsupported macOS architecture for Prisma engine bundling: ${CURRENT_ARCH}" >&2
@@ -110,25 +115,69 @@ prune_claude_sdk_vendor_binaries() {
   shopt -u nullglob
 }
 
-prune_prisma_runtime_artifacts() {
-  local query_engine_filename="libquery_engine-${PRISMA_ENGINE_SUFFIX}.dylib.node"
-  local generated_client_dir="${BUNDLE_DIR}/node_modules/.prisma/client"
-  local engine_path=""
-  local engine_name=""
+# Drop the ~200MB optional Claude Code CLI binary that ships with
+# @anthropic-ai/claude-agent-sdk. Runtime always resolves the user's system
+# Claude Code install via pathToClaudeCodeExecutable.
+prune_claude_sdk_native_binaries() {
+  bun "${PRUNE_CLAUDE_SDK_NATIVE_BINARIES_SCRIPT}" "${BUNDLE_DIR}"
+}
 
-  if [[ -d "${generated_client_dir}" ]]; then
-    shopt -s nullglob
-    for engine_path in "${generated_client_dir}"/libquery_engine-*.dylib.node; do
-      [[ -f "${engine_path}" ]] || continue
-      engine_name="$(basename "${engine_path}")"
-      if [[ "${engine_name}" != "${query_engine_filename}" ]]; then
-        rm -f "${engine_path}"
-      fi
-    done
-    shopt -u nullglob
+assert_no_claude_sdk_native_binaries() {
+  local first_match=""
+
+  first_match="$(find "${BUNDLE_DIR}/node_modules/@anthropic-ai" -maxdepth 1 -type d -name 'claude-agent-sdk-*' -print -quit 2>/dev/null || true)"
+  if [[ -n "${first_match}" ]]; then
+    echo "Claude Agent SDK native package left in runtime bundle: ${first_match}" >&2
+    echo "Runtime uses the system Claude Code CLI; native SDK binaries must be pruned." >&2
+    find "${BUNDLE_DIR}/node_modules/@anthropic-ai" -maxdepth 1 -type d -name 'claude-agent-sdk-*' -print >&2
+    exit 1
+  fi
+}
+
+prune_prisma_runtime_artifacts() {
+  # SQLite-only: drop non-sqlite wasm engines, foreign dylibs, prisma CLI, fetch-engine.
+  bun "${PRUNE_PRISMA_RUNTIME_ARTIFACTS_SCRIPT}" "${BUNDLE_DIR}" "${PRISMA_ENGINE_SUFFIX}"
+}
+
+prune_node_pty_artifacts() {
+  # macOS app only needs prebuilds/$(uname platform)-$(arch); drop win32 + pdb + sources.
+  bun "${PRUNE_NODE_PTY_ARTIFACTS_SCRIPT}" "${BUNDLE_DIR}"
+}
+
+assert_no_node_pty_cross_platform_artifacts() {
+  local first_match=""
+  local prebuilds_dir="${BUNDLE_DIR}/node_modules/node-pty/prebuilds"
+
+  if [[ ! -d "${prebuilds_dir}" ]]; then
+    return 0
   fi
 
-  rm -rf "${BUNDLE_DIR}/node_modules/@prisma/engines" "${BUNDLE_DIR}/node_modules/prisma"
+  first_match="$(find "${prebuilds_dir}" -mindepth 1 -maxdepth 1 -type d ! -name "${CURRENT_PLATFORM_PREBUILD}" -print -quit 2>/dev/null || true)"
+  if [[ -n "${first_match}" ]]; then
+    echo "Unexpected node-pty prebuild left in runtime bundle: ${first_match}" >&2
+    echo "Only prebuilds/${CURRENT_PLATFORM_PREBUILD} should remain for this macOS build." >&2
+    find "${prebuilds_dir}" -mindepth 1 -maxdepth 1 -type d -print >&2
+    exit 1
+  fi
+
+  first_match="$(find "${BUNDLE_DIR}/node_modules/node-pty" -name '*.pdb' -print -quit 2>/dev/null || true)"
+  if [[ -n "${first_match}" ]]; then
+    echo "Debug symbol left in node-pty bundle: ${first_match}" >&2
+    exit 1
+  fi
+}
+
+assert_no_prisma_non_sqlite_engines() {
+  local first_match=""
+  local runtime_dir="${BUNDLE_DIR}/node_modules/@prisma/client/runtime"
+
+  if [[ -d "${runtime_dir}" ]]; then
+    first_match="$(find "${runtime_dir}" \( -name '*mysql*' -o -name '*postgresql*' -o -name '*sqlserver*' -o -name '*cockroachdb*' \) -print -quit 2>/dev/null || true)"
+    if [[ -n "${first_match}" ]]; then
+      echo "Non-SQLite Prisma engine artifact left in runtime bundle: ${first_match}" >&2
+      exit 1
+    fi
+  fi
 }
 
 remove_bundle_source_maps() {
@@ -330,8 +379,13 @@ prune_bundle_root
 rm -rf "${BUNDLE_DIR}/android-ws-scrcpy/dist/node_modules/.bin" "${NODE_MODULES_DIR}/.bin"
 remove_bundle_source_maps
 prune_claude_sdk_vendor_binaries
+prune_claude_sdk_native_binaries
+prune_node_pty_artifacts
 prune_prisma_runtime_artifacts
 assert_no_prohibited_files
+assert_no_claude_sdk_native_binaries
+assert_no_node_pty_cross_platform_artifacts
+assert_no_prisma_non_sqlite_engines
 assert_no_symlinks_under "${BUNDLE_DIR}"
 
 echo "=== Signing bundled macOS native binaries ==="

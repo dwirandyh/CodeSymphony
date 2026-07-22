@@ -1086,6 +1086,9 @@ export async function getGitBranchDiffSummary(
 
 export async function discardGitChange(cwd: string, filePath: string): Promise<void> {
   const status = await runGit(["status", "--porcelain", "--untracked-files=all", "--", filePath], cwd);
+  if (status.trim().length === 0) {
+    return;
+  }
   if (status.startsWith("??")) {
     await runGit(["clean", "-f", filePath], cwd);
   } else {

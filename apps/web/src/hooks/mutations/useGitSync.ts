@@ -5,6 +5,7 @@ import { invalidateWorktreeGitQueries } from "./invalidateWorktreeGitQueries";
 export function useGitSync(worktreeId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: ["git-sync", worktreeId],
     mutationFn: () => api.gitSync(worktreeId!),
     onSuccess: () => {
       if (worktreeId) {

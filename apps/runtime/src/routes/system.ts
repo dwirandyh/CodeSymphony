@@ -75,7 +75,7 @@ export async function registerSystemRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: `App not found: ${input.appId}` });
       }
 
-      await app.systemService.openInApp(appEntry.name, input.targetPath);
+      await app.systemService.openInApp(appEntry.path, input.targetPath);
       return reply.code(204).send();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to open in app";

@@ -85,9 +85,44 @@ function collapseEmptyColumns(state: EditorGroupsState): EditorGroupsState {
 export type ReconcileEditorGroupsOptions = {
   /** File tab ids newly opened from explorer; routed to right / unfocused pane. */
   newFileTabIds?: readonly string[];
-  /** Chat tab to activate when it is newly added, so the unsplit pane follows a freshly created/selected thread. */
+  /**
+   * Tab id to activate when it is newly added (chat, terminal, etc.).
+   * Keeps the focused pane on a freshly created/selected session tab in both
+   * single and split layouts.
+   */
+  activateTabId?: string | null;
+  /**
+   * @deprecated Use `activateTabId`. Kept so existing call sites keep working.
+   */
   activateChatTabId?: string | null;
 } & ExplorerFileTabPlacementOptions;
+
+/**
+ * Align the focused pane's active tab with an external session selection.
+ * - single layout: always topLeft
+ * - split layout: activeGroupId only (does not steal focus from other panes)
+ */
+export function alignEditorActiveTabWithSelection(
+  state: EditorGroupsState,
+  selectionTabId: string,
+): EditorGroupsState {
+  const groupId = state.layout === "single" ? "topLeft" : state.activeGroupId;
+  const group = state.groups[groupId];
+  if (group.activeTabId === selectionTabId) {
+    return state;
+  }
+  if (!group.tabs.some((tab) => tab.id === selectionTabId)) {
+    return state;
+  }
+  return {
+    ...state,
+    activeGroupId: groupId,
+    groups: {
+      ...state.groups,
+      [groupId]: { ...group, activeTabId: selectionTabId },
+    },
+  };
+}
 
 export function reconcileEditorGroups(
   state: EditorGroupsState,
@@ -146,9 +181,10 @@ export function reconcileEditorGroups(
   }
 
   const newTabIdSet = new Set(newTabs.map((t) => t.id));
-  const activateChatTabId =
-    options?.activateChatTabId && newTabIdSet.has(options.activateChatTabId)
-      ? options.activateChatTabId
+  const requestedActivateTabId = options?.activateTabId ?? options?.activateChatTabId ?? null;
+  const activateTabId =
+    requestedActivateTabId && newTabIdSet.has(requestedActivateTabId)
+      ? requestedActivateTabId
       : null;
 
   if (otherNewTabs.length > 0) {
@@ -156,14 +192,14 @@ export function reconcileEditorGroups(
     const g = nextRecord[active];
     nextRecord[active] = {
       tabs: [...g.tabs, ...otherNewTabs],
-      activeTabId: activateChatTabId ?? g.activeTabId ?? otherNewTabs[0]?.id ?? null,
+      activeTabId: activateTabId ?? g.activeTabId ?? otherNewTabs[0]?.id ?? null,
     };
   } else if (explorerFileTabs.length === 0) {
     const active = state.activeGroupId;
     const g = nextRecord[active];
     nextRecord[active] = {
       tabs: [...g.tabs, ...newTabs],
-      activeTabId: activateChatTabId ?? g.activeTabId ?? newTabs[0]?.id ?? null,
+      activeTabId: activateTabId ?? g.activeTabId ?? newTabs[0]?.id ?? null,
     };
   }
 

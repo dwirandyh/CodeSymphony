@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type TabItem,
   type EditorGroupsState,
+  alignEditorActiveTabWithSelection,
   createEmptyEditorGroupsState,
   reconcileEditorGroups,
   moveTabToQuadrant,
@@ -47,10 +48,75 @@ describe("editorGroups state management", () => {
       ];
 
       const reconciled = reconcileEditorGroups(state, sourceTabs, {
-        activateChatTabId: "thread-new",
+        activateTabId: "thread-new",
       });
 
       expect(reconciled.groups.topLeft.activeTabId).toBe("thread-new");
+    });
+
+    it("activates a newly added terminal tab in the focused split pane", () => {
+      const state: EditorGroupsState = {
+        ...emptyState(),
+        layout: "horizontal",
+        splitMode: true,
+        activeGroupId: "topRight",
+        groups: {
+          ...emptyState().groups,
+          topLeft: {
+            tabs: [{ type: "chat", id: "thread-1" }],
+            activeTabId: "thread-1",
+          },
+          topRight: {
+            tabs: [{ type: "terminal", id: "term-old" }],
+            activeTabId: "term-old",
+          },
+        },
+      };
+      const sourceTabs: TabItem[] = [
+        { type: "chat", id: "thread-1" },
+        { type: "terminal", id: "term-old" },
+        { type: "terminal", id: "term-new" },
+      ];
+
+      const reconciled = reconcileEditorGroups(state, sourceTabs, {
+        activateTabId: "term-new",
+      });
+
+      expect(reconciled.groups.topRight.activeTabId).toBe("term-new");
+      expect(reconciled.groups.topLeft.activeTabId).toBe("thread-1");
+      expect(reconciled.groups.topRight.tabs.map((t) => t.id)).toEqual(["term-old", "term-new"]);
+    });
+
+    it("activates a newly added chat tab in the focused split pane", () => {
+      const state: EditorGroupsState = {
+        ...emptyState(),
+        layout: "horizontal",
+        splitMode: true,
+        activeGroupId: "topRight",
+        groups: {
+          ...emptyState().groups,
+          topLeft: {
+            tabs: [{ type: "chat", id: "thread-1" }],
+            activeTabId: "thread-1",
+          },
+          topRight: {
+            tabs: [{ type: "chat", id: "thread-2" }],
+            activeTabId: "thread-2",
+          },
+        },
+      };
+      const sourceTabs: TabItem[] = [
+        { type: "chat", id: "thread-1" },
+        { type: "chat", id: "thread-2" },
+        { type: "chat", id: "thread-new" },
+      ];
+
+      const reconciled = reconcileEditorGroups(state, sourceTabs, {
+        activateTabId: "thread-new",
+      });
+
+      expect(reconciled.groups.topRight.activeTabId).toBe("thread-new");
+      expect(reconciled.groups.topLeft.activeTabId).toBe("thread-1");
     });
 
     it("does not move the active tab when the requested chat tab is not newly added", () => {
@@ -73,10 +139,32 @@ describe("editorGroups state management", () => {
       ];
 
       const reconciled = reconcileEditorGroups(state, sourceTabs, {
-        activateChatTabId: "thread-new",
+        activateTabId: "thread-new",
       });
 
       expect(reconciled.groups.topLeft.activeTabId).toBe("thread-old");
+    });
+
+    it("still honors deprecated activateChatTabId", () => {
+      const state: EditorGroupsState = {
+        ...emptyState(),
+        groups: {
+          ...emptyState().groups,
+          topLeft: {
+            tabs: [{ type: "chat", id: "thread-old" }],
+            activeTabId: "thread-old",
+          },
+        },
+      };
+      const reconciled = reconcileEditorGroups(
+        state,
+        [
+          { type: "chat", id: "thread-old" },
+          { type: "chat", id: "thread-new" },
+        ],
+        { activateChatTabId: "thread-new" },
+      );
+      expect(reconciled.groups.topLeft.activeTabId).toBe("thread-new");
     });
 
     it("places explorer file tabs on topRight and enables horizontal split on first open", () => {
@@ -331,6 +419,78 @@ describe("editorGroups state management", () => {
       };
       const { nextState } = closeTabInGroup(state, "t1", "topRight");
       expect(nextState.layout).toBe("single");
+    });
+  });
+
+  describe("alignEditorActiveTabWithSelection", () => {
+    it("updates topLeft in single layout", () => {
+      const state: EditorGroupsState = {
+        ...emptyState(),
+        groups: {
+          ...emptyState().groups,
+          topLeft: {
+            tabs: [
+              { type: "chat", id: "thread-a" },
+              { type: "terminal", id: "term-1" },
+            ],
+            activeTabId: "thread-a",
+          },
+        },
+      };
+
+      const next = alignEditorActiveTabWithSelection(state, "term-1");
+      expect(next.groups.topLeft.activeTabId).toBe("term-1");
+    });
+
+    it("updates only the focused pane in split layout", () => {
+      const state: EditorGroupsState = {
+        ...emptyState(),
+        layout: "horizontal",
+        splitMode: true,
+        activeGroupId: "topRight",
+        groups: {
+          ...emptyState().groups,
+          topLeft: {
+            tabs: [{ type: "chat", id: "thread-a" }],
+            activeTabId: "thread-a",
+          },
+          topRight: {
+            tabs: [
+              { type: "chat", id: "thread-b" },
+              { type: "terminal", id: "term-new" },
+            ],
+            activeTabId: "thread-b",
+          },
+        },
+      };
+
+      const next = alignEditorActiveTabWithSelection(state, "term-new");
+      expect(next.groups.topRight.activeTabId).toBe("term-new");
+      expect(next.groups.topLeft.activeTabId).toBe("thread-a");
+      expect(next.activeGroupId).toBe("topRight");
+    });
+
+    it("does not activate a tab that lives in another pane", () => {
+      const state: EditorGroupsState = {
+        ...emptyState(),
+        layout: "horizontal",
+        splitMode: true,
+        activeGroupId: "topRight",
+        groups: {
+          ...emptyState().groups,
+          topLeft: {
+            tabs: [{ type: "chat", id: "thread-a" }],
+            activeTabId: "thread-a",
+          },
+          topRight: {
+            tabs: [{ type: "chat", id: "thread-b" }],
+            activeTabId: "thread-b",
+          },
+        },
+      };
+
+      const next = alignEditorActiveTabWithSelection(state, "thread-a");
+      expect(next).toBe(state);
     });
   });
 });

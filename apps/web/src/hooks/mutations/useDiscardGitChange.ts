@@ -5,6 +5,7 @@ import { invalidateWorktreeGitQueries } from "./invalidateWorktreeGitQueries";
 export function useDiscardGitChange(worktreeId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: ["discard-git-change", worktreeId],
     mutationFn: (filePath: string) => api.discardGitChange(worktreeId!, filePath),
     onSuccess: () => {
       if (worktreeId) {

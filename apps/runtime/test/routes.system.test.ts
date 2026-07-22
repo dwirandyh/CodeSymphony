@@ -120,7 +120,7 @@ describe("system routes", () => {
   });
 
   it("POST /api/system/open-in-app opens file", async () => {
-    getInstalledApps.mockResolvedValue([{ id: "cursor", name: "Cursor" }]);
+    getInstalledApps.mockResolvedValue([{ id: "cursor", name: "Cursor", path: "/Applications/Cursor.app" }]);
     openInApp.mockResolvedValue(undefined);
     const res = await app.inject({
       method: "POST",
@@ -128,11 +128,11 @@ describe("system routes", () => {
       payload: { appId: "cursor", targetPath: "/home/project" },
     });
     expect(res.statusCode).toBe(204);
-    expect(openInApp).toHaveBeenCalledWith("Cursor", "/home/project");
+    expect(openInApp).toHaveBeenCalledWith("/Applications/Cursor.app", "/home/project");
   });
 
   it("POST /api/system/open-in-app opens Finder from installed apps list", async () => {
-    getInstalledApps.mockResolvedValue([{ id: "finder", name: "Finder" }]);
+    getInstalledApps.mockResolvedValue([{ id: "finder", name: "Finder", path: "/System/Library/CoreServices/Finder.app" }]);
     openInApp.mockResolvedValue(undefined);
     const res = await app.inject({
       method: "POST",
@@ -141,7 +141,7 @@ describe("system routes", () => {
     });
     expect(res.statusCode).toBe(204);
     expect(getInstalledApps).toHaveBeenCalledTimes(1);
-    expect(openInApp).toHaveBeenCalledWith("Finder", "/home/project");
+    expect(openInApp).toHaveBeenCalledWith("/System/Library/CoreServices/Finder.app", "/home/project");
   });
 
   it("POST /api/system/open-in-app returns 404 for unknown app", async () => {

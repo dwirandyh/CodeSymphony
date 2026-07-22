@@ -189,7 +189,8 @@ describe("GitChangesPanel", () => {
     act(() => {
       root.render(<GitChangesPanel {...baseProps} error="Something went wrong" />);
     });
-    const toast = container.querySelector('[data-testid="workspace-live-error-toast"]');
+    // Toast portals to document.body so filtered/overflow ancestors cannot clip it.
+    const toast = document.body.querySelector('[data-testid="workspace-live-error-toast"]');
     expect(toast).toBeTruthy();
     expect(toast?.textContent).toContain("Something went wrong");
     expect(container.querySelector('p[role="alert"]')).toBeNull();

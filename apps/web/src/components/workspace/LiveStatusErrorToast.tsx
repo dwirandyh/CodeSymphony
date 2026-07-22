@@ -1,4 +1,5 @@
 import { AlertTriangle, X } from "lucide-react";
+import { createPortal } from "react-dom";
 import { MOBILE_OVERLAY_Z_CLASS } from "../../lib/mobileStacking";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
@@ -14,7 +15,10 @@ export function LiveStatusErrorToast({
   mobileComposerPinned?: boolean;
   onDismiss: () => void;
 }) {
-  return (
+  if (typeof document === "undefined") {
+    return null;
+  }
+  return createPortal(
     <div
       className={cn(
         "pointer-events-none fixed inset-x-0 flex justify-end px-3 sm:inset-x-auto sm:right-4 sm:px-0",
@@ -52,6 +56,7 @@ export function LiveStatusErrorToast({
           </Button>
         </div>
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }

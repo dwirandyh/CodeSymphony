@@ -567,6 +567,12 @@ describe("git utilities", () => {
       const status = await getGitStatus(repoDir);
       expect(status.entries.find(e => e.path === "temp.txt")).toBeUndefined();
     });
+
+    it("no-ops when the file has no changes to discard", async () => {
+      await expect(
+        discardGitChange(repoDir, "docs/handoff-mobile-companion-character.md"),
+      ).resolves.toBeUndefined();
+    });
   });
 
   describe("syncCurrentBranch", () => {

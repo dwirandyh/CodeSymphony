@@ -15,6 +15,7 @@ import { disposeTerminalRuntime } from "../components/workspace/terminalRuntimeR
 import {
   type TabItem,
   type EditorGroupsState,
+  alignEditorActiveTabWithSelection,
   createEmptyEditorGroupsState,
   getEditorGroup,
   reconcileEditorGroups,
@@ -1444,8 +1445,6 @@ export function WorkspacePage() {
       [repos.selectedRepositoryId, repos.selectedWorktreeId, search.repoId, search.threadId, search.worktreeId, startupSelectionFallbackActive, updateSearch],
     ),
   });
-  const chatSelectedThreadIdRef = useRef<string | null>(null);
-  chatSelectedThreadIdRef.current = chat.selectedThreadId;
   const selectionOscillationHistoryRef = useRef<Array<{
     atMs: number;
     scopeKey: string;
@@ -3850,26 +3849,7 @@ export function WorkspacePage() {
       setUserIntentThreadId(threadId);
       chat.setSelectedThreadId(threadId);
       if (threadId != null) {
-        setEditorGroups((current) => {
-          if (current.splitMode) {
-            return current;
-          }
-          const topLeft = current.groups.topLeft;
-          if (!topLeft.tabs.some((tab) => tab.type === "chat" && tab.id === threadId)) {
-            return current;
-          }
-          if (topLeft.activeTabId === threadId) {
-            return current;
-          }
-          return {
-            ...current,
-            activeGroupId: "topLeft",
-            groups: {
-              ...current.groups,
-              topLeft: { ...topLeft, activeTabId: threadId },
-            },
-          };
-        });
+        setEditorGroups((current) => alignEditorActiveTabWithSelection(current, threadId));
       }
       updateSearch({ view: undefined, file: undefined, threadId: threadId ?? undefined });
     },
@@ -4507,6 +4487,15 @@ export function WorkspacePage() {
   const sourceTabsRef = useRef(sourceTabs);
   sourceTabsRef.current = sourceTabs;
 
+  // Align editor strip with navigation; session selection is authoritative for chat/terminal.
+  const currentSelectionTabId: string | null = reviewTabOpen
+    ? "review"
+    : activeFilePath
+      ? activeFilePath
+      : terminalViewActive
+        ? (activeTerminalTab?.id ?? null)
+        : chat.selectedThreadId;
+
   useEffect(() => {
     prepareExplorerFileOpenRef.current = (filePath: string) => {
       pendingExplorerFileTabIdsRef.current.add(filePath);
@@ -4532,47 +4521,22 @@ export function WorkspacePage() {
       }
       return reconcileEditorGroups(current, sourceTabs, {
         newFileTabIds: newFileTabIds.length > 0 ? newFileTabIds : undefined,
-        activateChatTabId: chatSelectedThreadIdRef.current,
+        // Activate freshly created/selected chat OR terminal tabs in the focused pane
+        // (including split mode). Previously only chat selectedThreadId was passed, so
+        // new terminals stayed inactive while split was on.
+        activateTabId: currentSelectionTabId,
         allowExplorerFileSplit: desktopLayout,
       });
     });
-  }, [desktopLayout, sourceTabs]);
+  }, [currentSelectionTabId, desktopLayout, sourceTabs]);
 
-  // Align editor strip with navigation; session selection is authoritative for chat threads.
-  const currentSelectionTabId: string | null = reviewTabOpen
-    ? "review"
-    : activeFilePath
-      ? activeFilePath
-      : terminalViewActive
-        ? (activeTerminalTab?.id ?? null)
-        : chat.selectedThreadId;
-
-  // Keep the active group's active tab aligned with the external selection while not
-  // split, so toggling a split (Cmd+\) operates on the visually-active tab.
+  // Keep the focused pane's active tab aligned with session selection in single and
+  // split layouts. Split only updates activeGroupId so other panes keep their own tab.
   useEffect(() => {
     if (!currentSelectionTabId) {
       return;
     }
-    setEditorGroups((current) => {
-      if (current.layout !== "single") {
-        return current;
-      }
-      const topLeft = current.groups.topLeft;
-      if (topLeft.activeTabId === currentSelectionTabId) {
-        return current;
-      }
-      if (!topLeft.tabs.some((t) => t.id === currentSelectionTabId)) {
-        return current;
-      }
-      return {
-        ...current,
-        activeGroupId: "topLeft",
-        groups: {
-          ...current.groups,
-          topLeft: { ...topLeft, activeTabId: currentSelectionTabId },
-        },
-      };
-    });
+    setEditorGroups((current) => alignEditorActiveTabWithSelection(current, currentSelectionTabId));
   }, [currentSelectionTabId]);
 
   const syncTabToUrl = useCallback((tab: TabItem) => {

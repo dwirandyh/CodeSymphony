@@ -319,7 +319,7 @@ export function createSystemService() {
     };
   }
 
-  async function openInApp(appName: string, targetPath: string): Promise<void> {
+  async function openInApp(appPath: string, targetPath: string): Promise<void> {
     const trimmedPath = targetPath.trim();
     if (trimmedPath.length === 0) {
       throw new Error("Target path is required");
@@ -330,13 +330,13 @@ export function createSystemService() {
     }
 
     try {
-      await execFile("open", ["-a", appName, trimmedPath], {
+      await execFile("open", ["-a", appPath, trimmedPath], {
         encoding: "utf8",
         timeout: 10_000,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to open in app";
-      throw new Error(`Failed to open in ${appName}: ${message}`);
+      throw new Error(`Failed to open ${appPath}: ${message}`);
     }
   }
 

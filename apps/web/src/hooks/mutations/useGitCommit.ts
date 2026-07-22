@@ -6,6 +6,7 @@ import { invalidateWorktreeGitQueries } from "./invalidateWorktreeGitQueries";
 export function useGitCommit(worktreeId: string | null) {
   const queryClient = useQueryClient();
   return useMutation({
+    mutationKey: ["git-commit", worktreeId],
     mutationFn: (input: GitCommitInput) =>
       api.gitCommit(worktreeId!, input),
     onSuccess: () => {

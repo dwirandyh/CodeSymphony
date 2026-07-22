@@ -32,8 +32,36 @@ describe("LiveStatusErrorToast", () => {
         />,
       );
     });
-    const toast = container.querySelector("[data-testid='workspace-live-error-toast']")?.parentElement;
+    const toast = document.body.querySelector("[data-testid='workspace-live-error-toast']")?.parentElement;
     expect(toast?.className).toContain(MOBILE_OVERLAY_Z_CLASS);
     expect(toast?.className).toContain("bottom-[calc(0.75rem+var(--cs-mobile-composer-rest-offset,4rem))]");
+  });
+
+  it("renders into document.body via portal so filtered/overflow ancestors cannot clip it", () => {
+    const clippingAncestor = document.createElement("div");
+    clippingAncestor.style.overflow = "hidden";
+    clippingAncestor.style.backdropFilter = "blur(4px)";
+    document.body.appendChild(clippingAncestor);
+    const clippedRoot = createRoot(clippingAncestor);
+
+    act(() => {
+      clippedRoot.render(
+        <LiveStatusErrorToast
+          description="SSE disconnected"
+          onDismiss={() => undefined}
+          title="Source Control"
+        />,
+      );
+    });
+
+    const toast = document.body.querySelector("[data-testid='workspace-live-error-toast']");
+    expect(toast).not.toBeNull();
+    // Portaled to body, NOT nested inside the clipping ancestor.
+    expect(clippingAncestor.contains(toast)).toBe(false);
+
+    act(() => {
+      clippedRoot.unmount();
+    });
+    clippingAncestor.remove();
   });
 });
