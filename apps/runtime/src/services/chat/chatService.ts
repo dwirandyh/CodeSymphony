@@ -392,6 +392,42 @@ function normalizePermissionMode(permissionMode: ChatThreadPermissionMode | unde
   return permissionMode === "full_access" ? "full_access" : "default";
 }
 
+/**
+ * Permission mode is sticky: a new thread keeps whatever mode the user last worked in,
+ * scoped to the worktree first and then to the repository so a freshly created worktree
+ * does not silently drop back to `default`. Automation threads are excluded because their
+ * mode is set by the automation config, not by the user.
+ */
+async function resolveInheritedPermissionMode(
+  deps: RuntimeDeps,
+  worktree: { id: string; repositoryId: string },
+): Promise<ChatThreadPermissionMode> {
+  const orderBy = [
+    { updatedAt: "desc" as const },
+    { createdAt: "desc" as const },
+  ];
+
+  const latestInWorktree = await deps.prisma.chatThread.findFirst({
+    where: { worktreeId: worktree.id, isAutomation: false, kind: "default" },
+    orderBy,
+  });
+
+  if (latestInWorktree) {
+    return normalizePermissionMode(latestInWorktree.permissionMode);
+  }
+
+  const latestInRepository = await deps.prisma.chatThread.findFirst({
+    where: {
+      isAutomation: false,
+      kind: "default",
+      worktree: { repositoryId: worktree.repositoryId },
+    },
+    orderBy,
+  });
+
+  return latestInRepository ? normalizePermissionMode(latestInRepository.permissionMode) : "default";
+}
+
 function defaultAlwaysAllowScopeForAgent(agent: CliAgent): AlwaysAllowScope {
   if (agent === "claude") {
     return "workspace";
@@ -2787,7 +2823,9 @@ export function createChatService(deps: RuntimeDeps) {
 
       const kind = normalizeThreadKind(input.kind);
       const permissionProfile = normalizePermissionProfile(kind);
-      const permissionMode = normalizePermissionMode(input.permissionMode);
+      const permissionMode = input.permissionMode !== undefined || isAutomation
+        ? normalizePermissionMode(input.permissionMode)
+        : await resolveInheritedPermissionMode(deps, worktree);
       const reviewTitle = kind === "review" && !input.title ? await resolveReviewThreadTitle(worktree.path) : null;
       const normalizedTitle = input.title?.trim() ?? reviewTitle ?? DEFAULT_THREAD_TITLE;
       const selection = await resolveThreadSelection(deps, {

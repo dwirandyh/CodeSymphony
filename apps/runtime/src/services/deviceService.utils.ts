@@ -1,3 +1,4 @@
+import { resolve as resolvePath } from "node:path";
 import type { DeviceConnectionKind, DeviceSummary } from "@codesymphony/shared-types";
 
 export const ANDROID_VIEWER_WS_PLACEHOLDER = "__DEVICE_WS_PROXY__";
@@ -125,6 +126,21 @@ export function parseSimctlDevicesOutput(output: string): ParsedIosSimulator[] {
       } satisfies ParsedIosSimulator];
     })
   );
+}
+
+/**
+ * Bundled runtime assets sit at different depths depending on how the runtime runs.
+ * The packaged desktop app bundles the runtime into a single `runtime-bundle/dist/index.js`,
+ * so assets are one level up; in the dev source tree the caller is `src/services`, so the
+ * same assets are two levels up. Return both, packaged first.
+ */
+export function buildRuntimeAssetCandidates(moduleDir: string, relativePath: string): string[] {
+  const candidates = [
+    resolvePath(moduleDir, "..", relativePath),
+    resolvePath(moduleDir, "../..", relativePath),
+  ];
+
+  return [...new Set(candidates)];
 }
 
 export function buildAndroidWsScrcpyViewerUrl(baseUrl: string, udid: string, player = "webcodecs"): string {

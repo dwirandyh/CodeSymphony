@@ -1239,8 +1239,8 @@ describe("useChatSession", () => {
       await Promise.resolve();
     });
 
+    // permissionMode is intentionally omitted so the runtime inherits the worktree's sticky mode.
     expect(api.createThread).toHaveBeenCalledWith("wt-1", {
-      permissionMode: "default",
       agent: "cursor",
       model: "default[]",
       modelProviderId: null,
@@ -1901,9 +1901,9 @@ describe("useChatSession", () => {
       await hookResult.createAdditionalThread();
     });
 
+    // permissionMode is intentionally omitted so the runtime inherits the worktree's sticky mode.
     expect(api.createThread).toHaveBeenCalledWith("wt-1", {
       title: "New Thread",
-      permissionMode: "default",
       agent: "claude",
       model: "claude-sonnet-4-6",
       modelProviderId: null,

@@ -5,6 +5,7 @@ import {
   buildAndroidInputTextCommands,
   buildAndroidProxyViewerUrl,
   buildAndroidWsScrcpyViewerUrl,
+  buildRuntimeAssetCandidates,
   escapeAndroidInputText,
   parseAdbDevicesOutput,
   parseAndroidClipboardBooleanServiceCall,
@@ -244,5 +245,37 @@ describe("deviceService.utils", () => {
         isAvailable: true,
       },
     ]);
+  });
+
+  it("resolves packaged bundle assets relative to the bundled entry directory", () => {
+    const candidates = buildRuntimeAssetCandidates(
+      "/Applications/CodeSymphony.app/Contents/Resources/runtime-bundle/dist",
+      "android-ws-scrcpy/dist/index.js",
+    );
+
+    expect(candidates).toContain(
+      "/Applications/CodeSymphony.app/Contents/Resources/runtime-bundle/android-ws-scrcpy/dist/index.js",
+    );
+  });
+
+  it("resolves dev source tree assets relative to the runtime package root", () => {
+    const candidates = buildRuntimeAssetCandidates(
+      "/repo/apps/runtime/src/services",
+      "android-helpers/ClipboardCli.java",
+    );
+
+    expect(candidates).toContain("/repo/apps/runtime/android-helpers/ClipboardCli.java");
+  });
+
+  it("prefers the packaged bundle candidate over the source tree candidate", () => {
+    const candidates = buildRuntimeAssetCandidates("/bundle/dist", "android-ws-scrcpy/dist/index.js");
+
+    expect(candidates[0]).toBe("/bundle/android-ws-scrcpy/dist/index.js");
+  });
+
+  it("does not repeat candidates", () => {
+    const candidates = buildRuntimeAssetCandidates("/repo/apps/runtime/src/services", "x.yaml");
+
+    expect(new Set(candidates).size).toBe(candidates.length);
   });
 });

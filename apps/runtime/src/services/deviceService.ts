@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
-import { join as joinPath, resolve as resolvePath } from "node:path";
+import { dirname, join as joinPath, resolve as resolvePath } from "node:path";
 import { exec as execCallback, execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -22,6 +22,7 @@ import {
   annotateIosSimulatorBridgeTccError,
   buildAndroidInputTextCommands,
   buildAndroidProxyViewerUrl,
+  buildRuntimeAssetCandidates,
   parseAdbDevicesOutput,
   parseAndroidClipboardBooleanServiceCall,
   parseAndroidClipboardServiceCallOutput,
@@ -34,6 +35,7 @@ import {
 
 const execFile = promisify(execFileCallback);
 const exec = promisify(execCallback);
+const moduleDir = dirname(fileURLToPath(import.meta.url));
 const managedSubprocessEnv = buildSubprocessEnv({
   ...process.env,
 } as NodeJS.ProcessEnv);
@@ -146,8 +148,15 @@ function getSidecarLogPath(name: string): string {
   return joinPath(directory, `${name}.log`);
 }
 
+// Falls back to the deepest candidate (the dev source-tree depth) so callers that
+// surface the path in an error message still report something meaningful.
+function resolveRuntimeAssetPath(relativePath: string): string {
+  const candidates = buildRuntimeAssetCandidates(moduleDir, relativePath);
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates.at(-1) ?? "";
+}
+
 function getAndroidClipboardHelperSourcePath(): string {
-  return fileURLToPath(new URL("../../android-helpers/ClipboardCli.java", import.meta.url));
+  return resolveRuntimeAssetPath("android-helpers/ClipboardCli.java");
 }
 
 function getAndroidClipboardHelperBuildPath(...parts: string[]): string {
@@ -232,17 +241,28 @@ function buildRuntimeEntryCommand(runtimePath: string, entryPath: string, envEnt
 }
 
 function resolvePackagedAndroidSidecarCommand(): string {
-  const entryPath = fileURLToPath(new URL("../../android-ws-scrcpy/dist/index.js", import.meta.url));
-  const configPath = fileURLToPath(new URL("../../android-ws-scrcpy/ws-scrcpy.config.yaml", import.meta.url));
   const runtimePath = process.execPath;
-
-  if (!existsSync(entryPath) || !existsSync(configPath) || !existsSync(runtimePath)) {
+  if (!existsSync(runtimePath)) {
     return "";
   }
 
-  return buildRuntimeEntryCommand(runtimePath, entryPath, {
-    WS_SCRCPY_CONFIG: configPath,
-  });
+  // Both candidate lists share the same root ordering, so index i of each refers to
+  // the same bundle root. Pair them up rather than probing independently.
+  const entryCandidates = buildRuntimeAssetCandidates(moduleDir, "android-ws-scrcpy/dist/index.js");
+  const configCandidates = buildRuntimeAssetCandidates(moduleDir, "android-ws-scrcpy/ws-scrcpy.config.yaml");
+
+  for (const [index, entryPath] of entryCandidates.entries()) {
+    const configPath = configCandidates[index];
+    if (!configPath || !existsSync(entryPath) || !existsSync(configPath)) {
+      continue;
+    }
+
+    return buildRuntimeEntryCommand(runtimePath, entryPath, {
+      WS_SCRCPY_CONFIG: configPath,
+    });
+  }
+
+  return "";
 }
 
 function getBundledAndroidSidecarCommand(): string {

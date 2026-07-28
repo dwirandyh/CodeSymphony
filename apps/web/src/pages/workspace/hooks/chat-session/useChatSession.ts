@@ -97,6 +97,7 @@ import {
   applyThreadTitleUpdate,
   extractLatestThreadMetadata,
 } from "./snapshotSeed";
+import { resolveInheritedPermissionMode } from "./permissionModeInheritance";
 import { useThreadEventStream } from "./useThreadEventStream";
 import {
   explainThreadPaneEmptyStatePending,
@@ -1006,7 +1007,10 @@ export function useChatSession(
   const [closingThreadId, setClosingThreadId] = useState<string | null>(null);
   const [deferredCanonicalThreadSnapshotThreadId, setDeferredCanonicalThreadSnapshotThreadId] = useState<string | null>(null);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(null);
-  const [pendingComposerPermissionMode, setPendingComposerPermissionMode] = useState<ChatThreadPermissionMode>("default");
+  // null means "the user has not picked a mode for this worktree yet", so the composer falls
+  // back to the mode inherited from the worktree's most recent thread and thread creation lets
+  // the runtime resolve it instead of pinning an explicit value.
+  const [explicitComposerPermissionMode, setExplicitComposerPermissionMode] = useState<ChatThreadPermissionMode | null>(null);
   const [optimisticUserMessageVersion, setOptimisticUserMessageVersion] = useState(0);
 
   const streamingMessageIdsRef = useRef<Set<string>>(new Set());
@@ -1080,6 +1084,16 @@ export function useChatSession(
       : queriedThreads,
     [queriedThreads, selectedWorktreeId],
   );
+  const inheritedComposerPermissionMode = useMemo(
+    () => resolveInheritedPermissionMode(
+      queriedThreadsForSelectedWorktree ?? cachedThreadsQuery,
+      selectedWorktreeId,
+    ),
+    [cachedThreadsQuery, queriedThreadsForSelectedWorktree, selectedWorktreeId],
+  );
+  const pendingComposerPermissionMode = explicitComposerPermissionMode
+    ?? inheritedComposerPermissionMode
+    ?? "default";
   const requestedThreadId =
     rawRequestedThreadId != null
     && locallyDeletedThreadIdsRef.current.has(rawRequestedThreadId)
@@ -1293,7 +1307,7 @@ export function useChatSession(
       pendingAgentSelectionUpdatesRef.current.clear();
       disposeAllThreadCollections();
       clearAllThreadStreamState();
-      setPendingComposerPermissionMode("default");
+      setExplicitComposerPermissionMode(null);
       return;
     }
 
@@ -1314,7 +1328,7 @@ export function useChatSession(
         setThreads([placeholderThread]);
         setSelectedThreadId(placeholderThread.id);
         pendingAgentSelectionUpdatesRef.current.clear();
-        setPendingComposerPermissionMode("default");
+        setExplicitComposerPermissionMode(null);
         return;
       }
 
@@ -1324,7 +1338,7 @@ export function useChatSession(
         setThreads([]);
         setSelectedThreadId(null);
         pendingAgentSelectionUpdatesRef.current.clear();
-        setPendingComposerPermissionMode("default");
+        setExplicitComposerPermissionMode(null);
         return;
       }
 
@@ -1340,7 +1354,7 @@ export function useChatSession(
       setThreads(worktreeSwitchSeed.threads);
       setSelectedThreadId(worktreeSwitchSeed.selectedThreadId);
       pendingAgentSelectionUpdatesRef.current.clear();
-      setPendingComposerPermissionMode("default");
+      setExplicitComposerPermissionMode(null);
     }
 
     if (shouldUseProvisioningPlaceholder) {
@@ -1510,7 +1524,7 @@ export function useChatSession(
     if (shouldAutoCreateInitialThread) {
       if (creatingThreadRef.current) return;
       const creationWorktreeId = selectedWorktreeId;
-      const creationPermissionMode = pendingComposerPermissionMode;
+      const creationPermissionMode = explicitComposerPermissionMode;
       const creationSelection = lastThreadSelectionRef.current?.worktreeId === creationWorktreeId
         ? lastThreadSelectionRef.current
         : buildPreferredSelectionInput("newChat");
@@ -1519,7 +1533,7 @@ export function useChatSession(
       void (async () => {
         try {
           const created = await api.createThread(creationWorktreeId, {
-            permissionMode: creationPermissionMode,
+            ...(creationPermissionMode ? { permissionMode: creationPermissionMode } : {}),
             ...(creationSelection ? {
               agent: creationSelection.agent,
               model: creationSelection.model,
@@ -3226,14 +3240,19 @@ export function useChatSession(
     setSelectedThreadId(optimisticThread.id);
     syncThreadIntoCache(selectedWorktreeId, optimisticThread);
 
+    // Only pin the mode when the user picked one; otherwise the runtime inherits it from the
+    // worktree's most recent thread so both clients agree on the sticky value.
+    const creationPermissionModeInput = explicitComposerPermissionMode
+      ? { permissionMode: explicitComposerPermissionMode }
+      : {};
     const finalize = (options?.sendDefaultTitle === false
       ? api.createThread(selectedWorktreeId, {
-          permissionMode: composerPermissionMode,
+          ...creationPermissionModeInput,
           ...preferredSelectionInput,
         })
       : api.createThread(selectedWorktreeId, {
           title: trimmedTitle,
-          permissionMode: composerPermissionMode,
+          ...creationPermissionModeInput,
           ...preferredSelectionInput,
         }))
       .then((created) => {
@@ -3839,7 +3858,7 @@ export function useChatSession(
     );
 
     if (!activeThread) {
-      setPendingComposerPermissionMode(normalizedMode);
+      setExplicitComposerPermissionMode(normalizedMode);
       return;
     }
 
