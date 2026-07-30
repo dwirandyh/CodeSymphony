@@ -734,6 +734,7 @@ function applyAttachSnapshot(entry: TerminalRuntimeEntry, frame: TerminalAttachF
   const { terminal } = entry;
   const onAlternateScreen = frame.modes?.alternateScreen === true;
   entry.onAlternateScreen = onAlternateScreen;
+  entry.wrapper.classList.toggle("terminal-alt-screen", onAlternateScreen);
   setServerPtyGeometry(entry, frame.cols, frame.rows);
 
   // [DEBUG-pty-typing] Log inputSeq at snapshot time to detect snapshot-overwrite-during-typing
@@ -1559,6 +1560,9 @@ function createTerminalRuntime(
       return;
     }
     entry.onAlternateScreen = buffer.type === "alternate";
+    // Hide xterm's own scrollbar while a TUI (alt-screen) is active — TUIs render
+    // their own scrollbars, so xterm's would double up.
+    entry.wrapper.classList.toggle("terminal-alt-screen", entry.onAlternateScreen);
     // Alt-screen toggle flips the fit constraint: alt-screen TUIs must fit the
     // container height (non-scrollable), normal buffer is width-only. Re-fit so
     // the font recomputes immediately on enter AND exit — not just on the next

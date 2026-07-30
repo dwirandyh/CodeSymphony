@@ -160,3 +160,9 @@ html[data-mobile-chat-surface="true"] body {
   height: 6px !important;
   border-radius: 9999px;
 }
+
+/* Alt-screen TUIs (vim, htop, less, etc.) render their own scrollbars —
+   hide xterm's so they don't double up. */
+.terminal-alt-screen .xterm-scrollable-element > .scrollbar {
+  display: none !important;
+}
